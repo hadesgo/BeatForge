@@ -1,0 +1,13 @@
+output/
+.beatforge/
+.beatforge-*/
+.venv/
+.uv-cache/
+__pycache__/
+.pytest_cache/
+*.pyc
+demo/media/
+demo/music.wav
+demo/output.mp4
+demo/output-python.mp4
+*.log

@@ -1,0 +1,41 @@
+from pathlib import Path
+
+import numpy as np
+
+from beatforge.audio import AudioAnalysis
+from beatforge.lyrics import LyricLine
+from beatforge.media import MediaAsset
+from beatforge.planner import create_plan
+
+
+def test_plan_is_continuous() -> None:
+    analysis = AudioAnalysis(
+        duration=12, bpm=120, beats=[x / 2 for x in range(24)], sections=[0, 6, 12],
+        energy_times=[0, 6], energy_values=[.2, .8], average_energy=.5,
+        brightness=.5, mood="uplifting", mood_scores={"uplifting": 1},
+    )
+    lyrics = [LyricLine(0, 6, "阳光天空"), LyricLine(6, 12, "城市跳舞")]
+    assets = [
+        MediaAsset(0, Path("sun.jpg"), "image", float("inf"), 100, 100, ["阳光"], "天空", "uplifting"),
+        MediaAsset(1, Path("city.mp4"), "video", 20, 100, 100, ["城市"], "跳舞", "energetic"),
+    ]
+    shots = create_plan(analysis, lyrics, assets, None, min_shot=1.5, max_shot=4)
+    assert shots[0].start == 0
+    assert shots[-1].end == 12
+    assert all(a.end == b.start for a, b in zip(shots, shots[1:]))
+
+
+def test_ai_similarity_controls_selection() -> None:
+    analysis = AudioAnalysis(
+        duration=4, bpm=100, beats=[0, 2, 4], sections=[0, 4],
+        energy_times=[0], energy_values=[.5], average_energy=.5,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+    )
+    lyrics = [LyricLine(0, 4, "歌词")]
+    assets = [
+        MediaAsset(0, Path("a.jpg"), "image", float("inf"), 100, 100),
+        MediaAsset(1, Path("b.jpg"), "image", float("inf"), 100, 100),
+    ]
+    shots = create_plan(analysis, lyrics, assets, np.array([[.1, .9]]), min_shot=1.5, max_shot=5)
+    assert shots[0].media_id == 1
+    assert shots[0].semantic_score == .9

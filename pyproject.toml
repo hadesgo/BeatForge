@@ -1,0 +1,63 @@
+[project]
+name = "beatforge"
+version = "0.2.0"
+description = "Local-AI music video editor for consumer NVIDIA GPUs"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "librosa>=0.11.0",
+  "numpy>=2.0",
+  "pillow>=11.0",
+  "pydantic>=2.10",
+  "rich>=13.9",
+  "soundfile>=0.13",
+  "typer>=0.15",
+]
+
+[project.optional-dependencies]
+ai = [
+  "accelerate>=1.5",
+  "faster-whisper>=1.1",
+  "huggingface-hub>=0.29",
+  "sentencepiece>=0.2",
+  "transformers>=4.50",
+]
+ai-cpu = ["torch>=2.7", "torchvision>=0.22"]
+ai-cuda = ["torch>=2.7", "torchvision>=0.22"]
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[project.scripts]
+beatforge = "beatforge.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+default-groups = ["dev"]
+conflicts = [[{ extra = "ai-cpu" }, { extra = "ai-cuda" }]]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "ai-cpu" },
+  { index = "pytorch-cu128", extra = "ai-cuda" },
+]
+torchvision = [
+  { index = "pytorch-cpu", extra = "ai-cpu" },
+  { index = "pytorch-cu128", extra = "ai-cuda" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
