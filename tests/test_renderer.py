@@ -26,4 +26,5 @@ def test_end_to_end_renderer_without_models(tmp_path: Path) -> None:
     config = RenderConfig(width=320, height=180, fps=12, crf=30, preset="ultrafast", subtitle_size=20)
     render(shots, [LyricLine(0, 2, "测试字幕")], music, output, tmp_path / "cache", config)
     assert output.exists()
+    assert (tmp_path / "cache" / "lyrics.ass").exists()
     assert 1.9 <= duration(output) <= 2.1

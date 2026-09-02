@@ -64,7 +64,26 @@ uv run beatforge run my-mv/project.toml --plan-only
 uv run beatforge run my-mv/project.toml --no-ai
 ```
 
-输出包括 `output.mp4`、`.beatforge/plan.json`、`.beatforge/lyrics.srt` 和视频分析所用的缓存关键帧。`plan.json` 包含音乐结构、模型配置、素材信息、逐镜头语义得分和剪辑参数。
+输出包括 `output.mp4`、`.beatforge/plan.json`、`.beatforge/lyrics.ass` 和视频分析所用的缓存关键帧。`plan.json` 包含音乐结构、模型配置、素材信息、逐镜头语义得分和剪辑参数。
+
+## 字幕和画面动效
+
+字幕使用 ASS 渲染，可在 `[render]` 中选择三种效果：
+
+```toml
+subtitle_effect = "karaoke" # karaoke / cinematic / bounce
+subtitle_margin = 72
+subtitle_highlight_color = "&H0000D7FF"
+visual_effects = true
+vignette = true
+film_grain = 1.6
+```
+
+- `karaoke`：逐字高亮，并带轻微缩放入场；
+- `cinematic`：模糊消散和长淡入淡出；
+- `bounce`：随句子出现的弹跳缩放。
+
+图片会根据镜头能量使用推拉和平移运镜；视频会加入缓慢漂移和轻微放大。高能镜头使用锐化与白色闪切，舒缓镜头使用柔化，所有镜头可选暗角和动态胶片颗粒。
 
 ## CPU 与 RTX 5070 配置
 

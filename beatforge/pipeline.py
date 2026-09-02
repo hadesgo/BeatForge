@@ -73,6 +73,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
             "audio": project.ai.clap_model if use_ai else None,
             "vision": project.ai.vision_model if similarities is not None else None,
         },
+        "render": project.render.model_dump(),
         "analysis": analysis.as_dict(),
         "lyrics": [line.as_dict() for line in lyrics],
         "media": [asset.as_dict() for asset in assets],
@@ -86,4 +87,3 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     print("5/5 FFmpeg 成片渲染")
     render(shots, lyrics, project.music, project.output, project.cache_dir, project.render)
     return project.output
-

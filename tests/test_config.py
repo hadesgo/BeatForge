@@ -11,3 +11,5 @@ def test_project_paths_and_cpu_defaults(tmp_path: Path) -> None:
     assert config.output == (tmp_path / "output.mp4").resolve()
     assert config.ai.whisper_model == "small"
     assert config.ai.whisper_compute_type == "int8"
+    assert config.render.subtitle_effect == "karaoke"
+    assert config.render.visual_effects is True

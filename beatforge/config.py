@@ -17,6 +17,12 @@ class RenderConfig(BaseModel):
     max_shot_seconds: float = 5.5
     subtitle_font: str = "Microsoft YaHei"
     subtitle_size: int = 46
+    subtitle_effect: Literal["karaoke", "cinematic", "bounce"] = "karaoke"
+    subtitle_margin: int = 72
+    subtitle_highlight_color: str = "&H0000D7FF"
+    visual_effects: bool = True
+    vignette: bool = True
+    film_grain: float = Field(default=1.6, ge=0, le=8)
 
 
 class AIConfig(BaseModel):
@@ -84,4 +90,10 @@ min_shot_seconds = 1.8
 max_shot_seconds = 5.5
 subtitle_font = "Microsoft YaHei"
 subtitle_size = 46
+subtitle_effect = "karaoke" # karaoke / cinematic / bounce
+subtitle_margin = 72
+subtitle_highlight_color = "&H0000D7FF" # ASS 的金黄色（BGR）
+visual_effects = true
+vignette = true
+film_grain = 1.6
 '''
