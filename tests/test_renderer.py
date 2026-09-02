@@ -19,14 +19,19 @@ from beatforge.runtime import duration
 def test_end_to_end_renderer_without_models(tmp_path: Path) -> None:
     image = tmp_path / "frame.jpg"
     Image.new("RGB", (640, 360), (30, 80, 140)).save(image)
+    image_2 = tmp_path / "frame-2.jpg"
+    Image.new("RGB", (640, 360), (180, 90, 40)).save(image_2)
     music = tmp_path / "music.wav"
     sample_rate = 22_050
     time = np.arange(sample_rate * 2) / sample_rate
     sf.write(music, (.1 * np.sin(2 * np.pi * 220 * time)).astype(np.float32), sample_rate)
-    shots = [Shot(0, 0, 2, 2, 0, str(image), "image", 0, "测试字幕", .5, "steady", "fade", .8)]
+    shots = [
+        Shot(0, 0, 1, 1, 0, str(image), "image", 0, "测试", .5, "steady", "fade", .8),
+        Shot(1, 1, 2, 1, 1, str(image_2), "image", 0, "字幕", .7, "dynamic", "fade", .7),
+    ]
     output = tmp_path / "output.mp4"
     config = RenderConfig(width=320, height=180, fps=12, crf=30, preset="ultrafast", subtitle_size=20)
-    lyrics = [LyricLine(0, 2, "测试字幕")]
+    lyrics = [LyricLine(0, 1, "测试"), LyricLine(1, 2, "字幕")]
     analysis = AudioAnalysis(
         duration=2, bpm=100, beats=[0, 1, 2], sections=[0, 2],
         energy_times=[0], energy_values=[.5], average_energy=.5,

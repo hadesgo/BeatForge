@@ -131,6 +131,34 @@ wheels = [
 ]
 
 [[package]]
+name = "all-in-one-infer"
+version = "3.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "demucs-infer" },
+    { name = "huggingface-hub" },
+    { name = "hydra-core" },
+    { name = "librosa", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "librosa", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "madmom-infer" },
+    { name = "matplotlib" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "omegaconf" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "soundfile" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "extra == 'extra-9-beatforge-ai-cuda'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/46/29/021721b25cecf177463362ea7ac34b8fd26dc49aa5036f907b6b15c0495f/all_in_one_infer-3.1.0.tar.gz", hash = "sha256:0a027b0aa216bd0d4cc96a91642b8111573c65fceeae29f81ff9661578416383", size = 93112, upload-time = "2026-07-12T01:13:02.663Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d4/23/a76663f2ed86f986943ec8a549387e6ac00e98d09d1df32b6889d309afc1/all_in_one_infer-3.1.0-py3-none-any.whl", hash = "sha256:c41d6203726e058c6ecf02c513a6c2473d46145b4839446691c211184b5abdc1", size = 67910, upload-time = "2026-07-12T01:13:01.463Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -147,6 +175,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/5f/56/a8120250d128bed16
 wheels = [
     { url = "https://files.pythonhosted.org/packages/99/91/8acff4f5e50511b911bbccb72b8628a49c68ce14148cd9f6431094859a90/annotated_types-0.8.0-py3-none-any.whl", hash = "sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0", size = 13427, upload-time = "2026-07-23T20:16:12.938Z" },
 ]
+
+[[package]]
+name = "antlr4-python3-runtime"
+version = "4.9.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz", hash = "sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b", size = 117034, upload-time = "2021-11-06T17:52:23.524Z" }
 
 [[package]]
 name = "anyio"
@@ -215,6 +249,27 @@ wheels = [
 ]
 
 [[package]]
+name = "beat-this"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "rotary-embedding-torch" },
+    { name = "soxr" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "extra == 'extra-9-beatforge-ai-cuda'" },
+    { name = "torchaudio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d1/c4/7ce01e047c1e8d99490e95172d710e08901c24fb24e19a5dd4f885177c99/beat_this-1.1.0.tar.gz", hash = "sha256:3017c741f972972a650edcaccfe5760687fe4f5587feaa98896d90f866c2435c", size = 40635, upload-time = "2026-04-14T10:16:39.5Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/0e/e23cbbe6e3efcd54e84dec22b6d88954655036a993cc3843ab741bc24de4/beat_this-1.1.0-py3-none-any.whl", hash = "sha256:3f2b2d1e027c6dac380bf80c71555e3c28a4036a7f1af20129a945915a72a645", size = 40060, upload-time = "2026-04-14T10:16:37.955Z" },
+]
+
+[[package]]
 name = "beatforge"
 version = "0.2.0"
 source = { editable = "." }
@@ -248,6 +303,10 @@ ai-cuda = [
     { name = "torch", version = "2.8.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" } },
     { name = "torchvision", version = "0.23.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" } },
 ]
+music-ai = [
+    { name = "all-in-one-infer" },
+    { name = "beat-this" },
+]
 qwen = [
     { name = "qwen-asr" },
     { name = "qwen3-vl-embedding" },
@@ -261,6 +320,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", marker = "extra == 'ai'", specifier = ">=1.5" },
+    { name = "all-in-one-infer", marker = "extra == 'music-ai'", specifier = ">=3.0" },
+    { name = "beat-this", marker = "extra == 'music-ai'" },
     { name = "faster-whisper", marker = "extra == 'ai'", specifier = ">=1.1" },
     { name = "huggingface-hub", marker = "extra == 'ai'", specifier = ">=0.29" },
     { name = "librosa", specifier = ">=0.11.0" },
@@ -279,7 +340,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'ai'", specifier = ">=4.57.6" },
     { name = "typer", specifier = ">=0.15" },
 ]
-provides-extras = ["ai", "ai-cpu", "ai-cuda", "qwen"]
+provides-extras = ["ai", "ai-cpu", "ai-cuda", "qwen", "music-ai"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.3" }]
@@ -621,6 +682,29 @@ wheels = [
 ]
 
 [[package]]
+name = "demucs-infer"
+version = "4.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "julius" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "pyyaml" },
+    { name = "soundfile" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "extra == 'extra-9-beatforge-ai-cuda'" },
+    { name = "torchaudio" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/67/14/627a789ae0414469cd33dab1f99a41c84428533d9e1a66d33097476f0c90/demucs_infer-4.2.2.tar.gz", hash = "sha256:7a2a2fb1c0db57192fed6485f106986f4cd04c475c989e84a8f4022ce19e26b2", size = 69104, upload-time = "2026-07-12T01:00:24.146Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c9/c3/4004c48a48a9507045c3dc107f51bf0abce5165bd695d10eda94f0a38844/demucs_infer-4.2.2-py3-none-any.whl", hash = "sha256:df07b115690021dcfa6b2a6de1b7b352741111bc46fad31ca83eaaba6afced8b", size = 87489, upload-time = "2026-07-12T01:00:22.941Z" },
+]
+
+[[package]]
 name = "dill"
 version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -658,6 +742,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/51/c0/be3c5934bba18fa0fa92e183158423687464e43c484d04fb51dfde3b9bf6/dynet38-2.2-cp311-cp311-win_amd64.whl", hash = "sha256:3d5a88d2ea7b518b422d57b3fbc123cd7f42e78c80357736f6f7b8f179fac6d9", size = 1306616, upload-time = "2025-12-29T12:14:42.027Z" },
     { url = "https://files.pythonhosted.org/packages/69/35/dc76f2a745762caffa2326a50c2cf4eea06279f2fa03927e0d93f9c36e5a/dynet38-2.2-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:772c053aca8956d7e0ba5f463ed52435800482fb8e3c8cbb411cdffa8a9e90a2", size = 3643925, upload-time = "2025-12-30T19:08:24.37Z" },
     { url = "https://files.pythonhosted.org/packages/ff/4f/a5b22e11549f0a5dc6feccdb50414aaf3c05decf0d8ca29288984a21fc5a/dynet38-2.2-cp312-cp312-win_amd64.whl", hash = "sha256:fd9967ed3ec071cc4c0c084d758ab44dac34cb37beb625ea9fcf2221c2085975", size = 1299414, upload-time = "2025-12-29T12:14:44Z" },
+]
+
+[[package]]
+name = "einops"
+version = "0.8.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/77/850bef8d72ffb9219f0b1aac23fbc1bf7d038ee6ea666f331fa273031aa2/einops-0.8.2.tar.gz", hash = "sha256:609da665570e5e265e27283aab09e7f279ade90c4f01bcfca111f3d3e13f2827", size = 56261, upload-time = "2026-01-26T04:13:17.638Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/09/f8d8f8f31e4483c10a906437b4ce31bdf3d6d417b73fe33f1a8b59e34228/einops-0.8.2-py3-none-any.whl", hash = "sha256:54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193", size = 65638, upload-time = "2026-01-26T04:13:18.546Z" },
 ]
 
 [[package]]
@@ -965,6 +1058,20 @@ wheels = [
 ]
 
 [[package]]
+name = "hydra-core"
+version = "1.3.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "antlr4-python3-runtime" },
+    { name = "omegaconf" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/78/03/adfa2bf3a9eef568a85f2e7cf18ce1938e7aa0b5257c432e5eb48f89960a/hydra_core-1.3.6.tar.gz", hash = "sha256:8c4c215b6cfba68e9a4e76f565bd7399fc2a86b93cfe8cb7328b046834dfbee5", size = 3272413, upload-time = "2026-08-29T14:36:08.092Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/fd/612cc7905787100dc9225ae6ad71b42b60cbc23cd56ca55afcdd1e000f81/hydra_core-1.3.6-py3-none-any.whl", hash = "sha256:55951f49c7e19c29f4281cce2eeaa6e73ef6c5620093a4efb402a7e4b839fc38", size = 163055, upload-time = "2026-08-29T14:36:06.385Z" },
+]
+
+[[package]]
 name = "idna"
 version = "3.19"
 source = { registry = "https://pypi.org/simple" }
@@ -1083,6 +1190,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d5/1d/537ab090f302b838943a1b56497dd53059b9a9b46a074936470173a2e207/joblib-1.6.0.tar.gz", hash = "sha256:2ccc96785b12046c08fd6d55839c12857831b54a3c1673ffadd2f04bfc4eda03", size = 327903, upload-time = "2026-08-31T09:39:04.122Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/18/53/84099323c2ec4be98d935f63c033ac4151ee83836ca1050ede3b3aadf155/joblib-1.6.0-py3-none-any.whl", hash = "sha256:3dbbf9f6e4b592a2357b854608e980fe6390d131d7a82f011a377ef2ebef7aba", size = 306115, upload-time = "2026-08-31T09:39:02.298Z" },
+]
+
+[[package]]
+name = "julius"
+version = "0.2.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch", version = "2.8.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "extra == 'extra-9-beatforge-ai-cuda'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1d/c6/5c2aea2b11ead1680bb5b17c996def31f8ccade471cada37cdb93855e06f/julius-0.2.8.tar.gz", hash = "sha256:d691e651200930affea4f6c849c26e95fec846087281ae3d1a7757eac90253d5", size = 48081, upload-time = "2026-06-03T16:05:34.52Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/86/43/efdb0bcb07c47826fa55857cec0deb743f74cd83b6ba5ec9e413505a72e6/julius-0.2.8-py3-none-any.whl", hash = "sha256:6891235cbc355e629d839f87489bff8ca46e57a0e7cc35abb909c7a2aa538c25", size = 21819, upload-time = "2026-06-03T16:05:33.443Z" },
 ]
 
 [[package]]
@@ -1261,6 +1383,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/be/3c/e97f69c62a2d972066d9a2612ce1f3de313035ac897a5b9f787cad8b55f7/llvmlite-0.49.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:6acba646d88abbc87d5c113a3d62c1fbf8b8fee11c6493f516803e30f21ae870", size = 59890658, upload-time = "2026-08-11T16:24:05.451Z" },
     { url = "https://files.pythonhosted.org/packages/69/e6/e942ee08605fc0526ff3854260c384d8315a5830e16c4c2a5aebc14dc9bf/llvmlite-0.49.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4ec8ad805e7515cb8440a690eb3cef4d34acb29eef80b705ec4e1c1ad3c43c68", size = 58344481, upload-time = "2026-08-11T16:24:13.503Z" },
     { url = "https://files.pythonhosted.org/packages/84/49/2a44871cac6b5a2fd4aabd68cfdaf6de9a5c7edb36dee5d47b77bda4b50f/llvmlite-0.49.0-cp312-cp312-win_amd64.whl", hash = "sha256:3a9c9e3af4e214acfefa4f73ebe7bc3fb35854a62b654edb3953f5ae33c08ba3", size = 41865543, upload-time = "2026-08-11T16:24:20.41Z" },
+]
+
+[[package]]
+name = "madmom-infer"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a1/e6/151625e3df0ee3b210f5d17da6f7eb7cf7d7dc6289454bc24560baa52f2a/madmom_infer-0.2.0.tar.gz", hash = "sha256:6f45b3fc0d7b5808586da229cef98aa7ea10448cd38d3e69dd078142b3ba729d", size = 66366, upload-time = "2026-07-12T00:31:30.997Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0d/63/4dfb8d7acfd4226d5083a278ff7f97c6fe1cb70fff178e4d7fb854590919/madmom_infer-0.2.0-py3-none-any.whl", hash = "sha256:f4013a7ac2135f2f198d97f9e7840db4fbd993e2922f70b28862394c8f8d28f1", size = 79998, upload-time = "2026-07-12T00:31:29.478Z" },
 ]
 
 [[package]]
@@ -1700,7 +1837,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.10.2.21"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "extra == 'extra-9-beatforge-ai-cuda' or extra != 'extra-9-beatforge-ai-cpu'" },
+    { name = "nvidia-cublas-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fa/41/e79269ce215c857c935fd86bcfe91a451a584dfc27f1e068f568b9ad1ab7/nvidia_cudnn_cu12-9.10.2.21-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:c9132cc3f8958447b4910a1720036d9eff5928cc3179b0a51fb6d167c6cc87d8", size = 705026878, upload-time = "2025-06-06T21:52:51.348Z" },
@@ -1713,7 +1850,7 @@ name = "nvidia-cufft-cu12"
 version = "11.3.3.83"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "extra == 'extra-9-beatforge-ai-cuda' or extra != 'extra-9-beatforge-ai-cpu'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/bc/7771846d3a0272026c416fbb7e5f4c1f146d6d80704534d0b187dd6f4800/nvidia_cufft_cu12-11.3.3.83-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:848ef7224d6305cdb2a4df928759dca7b1201874787083b6e7550dd6765ce69a", size = 193109211, upload-time = "2025-03-07T01:44:56.873Z" },
@@ -1745,9 +1882,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.7.3.90"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "extra == 'extra-9-beatforge-ai-cuda' or extra != 'extra-9-beatforge-ai-cpu'" },
-    { name = "nvidia-cusparse-cu12", marker = "extra == 'extra-9-beatforge-ai-cuda' or extra != 'extra-9-beatforge-ai-cpu'" },
-    { name = "nvidia-nvjitlink-cu12", marker = "extra == 'extra-9-beatforge-ai-cuda' or extra != 'extra-9-beatforge-ai-cpu'" },
+    { name = "nvidia-cublas-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "nvidia-cusparse-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/32/f7cd6ce8a7690544d084ea21c26e910a97e077c9b7f07bf5de623ee19981/nvidia_cusolver_cu12-11.7.3.90-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:db9ed69dbef9715071232caa9b69c52ac7de3a95773c2db65bdba85916e4e5c0", size = 267229841, upload-time = "2025-03-07T01:46:54.356Z" },
@@ -1760,7 +1897,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.5.8.93"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "extra == 'extra-9-beatforge-ai-cuda' or extra != 'extra-9-beatforge-ai-cpu'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bc/f7/cd777c4109681367721b00a106f491e0d0d15cfa1fd59672ce580ce42a97/nvidia_cusparse_cu12-12.5.8.93-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:9b6c161cb130be1a07a27ea6923df8141f3c295852f4b260c65f18f3e0a091dc", size = 288117129, upload-time = "2025-03-07T01:47:40.407Z" },
@@ -1805,6 +1942,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/10/c0/1b303feea90d296f6176f32a2a70b5ef230f9bdeb3a72bddb0dc922dc137/nvidia_nvtx_cu12-12.8.90-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d7ad891da111ebafbf7e015d34879f7112832fc239ff0d7d776b6cb685274615", size = 91161, upload-time = "2025-03-07T01:42:23.922Z" },
     { url = "https://files.pythonhosted.org/packages/a2/eb/86626c1bbc2edb86323022371c39aa48df6fd8b0a1647bc274577f72e90b/nvidia_nvtx_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:5b17e2001cc0d751a5bc2c6ec6d26ad95913324a4adb86788c944f8ce9ba441f", size = 89954, upload-time = "2025-03-07T01:42:44.131Z" },
     { url = "https://files.pythonhosted.org/packages/9f/99/4c9c0c329bf9fc125008c3b54c7c94c0023518d06fc025ae36431375e1fe/nvidia_nvtx_cu12-12.8.90-py3-none-win_amd64.whl", hash = "sha256:619c8304aedc69f02ea82dd244541a83c3d9d40993381b3b590f1adaed3db41e", size = 56492, upload-time = "2025-03-07T01:52:24.69Z" },
+]
+
+[[package]]
+name = "omegaconf"
+version = "2.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "antlr4-python3-runtime" },
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ce/3d/e4b57b8d9008c6ebe0d5eff901f91d5700cf7bdb8c8863df817463a7fd5e/omegaconf-2.3.1.tar.gz", hash = "sha256:e5e7de64aeebeddaf8e6d3f7a783b32ac2a01c0fbd9c878012caecb891a1f42a", size = 3298472, upload-time = "2026-06-11T05:05:12.885Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/0e/152509871bf30df6fc38569f52a2db9b55dd41aae957adae50a053ac7778/omegaconf-2.3.1-py3-none-any.whl", hash = "sha256:3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0", size = 79502, upload-time = "2026-06-11T05:05:09.954Z" },
 ]
 
 [[package]]
@@ -2501,6 +2651,22 @@ wheels = [
 ]
 
 [[package]]
+name = "rotary-embedding-torch"
+version = "0.9.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torch", version = "2.8.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "extra == 'extra-9-beatforge-ai-cuda'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fc/63/776d55b395aed9d2815afc1740056e919691d1be1ceee203d101d33d1674/rotary_embedding_torch-0.9.1.tar.gz", hash = "sha256:f43c39cd9c0aaa17d47e876db89a552a203dd8af35e7980f484ab7ad7ea8bf69", size = 13246, upload-time = "2026-06-20T23:39:14.667Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ea/63/ca681366df98d207876c6ad7761ef6910668c83ec766fd5a70c56b9c3567/rotary_embedding_torch-0.9.1-py3-none-any.whl", hash = "sha256:489ef53e21ab4c4eb35c0c97b551d724f5eea71c2bca39acb8fee8d88b142a76", size = 17423, upload-time = "2026-06-20T23:39:13.427Z" },
+]
+
+[[package]]
 name = "safehttpx"
 version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
@@ -3009,6 +3175,21 @@ wheels = [
 ]
 
 [[package]]
+name = "torchaudio"
+version = "2.11.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/77/0eec7f175d88f312296bd5b11c23bd58da37c1021f53da3db4df449ce3ee/torchaudio-2.11.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:492dd64645e9d0bb843e94f1d9a4d1e31426262ffc594fafecc1697df9df5eb9", size = 684142, upload-time = "2026-03-23T18:13:36.805Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/f9/6f7ebe071b44592c85269762b55b63ab0a091b5f479f73544738f7564a1e/torchaudio-2.11.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:73dab4841f94d888bc7c2aed7b5547c643edc974306919fe1adfb65d57cccf4b", size = 1626527, upload-time = "2026-03-23T18:13:39.011Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/70/17408e0d154d0c894537a88dcbadc48e8ad3b6e1ef4a1dabda5d40245ee0/torchaudio-2.11.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:1a07ec72fd6f26a588c39b5f029e0130d16bb40bc4221635580bf8fb18fcbc80", size = 1771930, upload-time = "2026-03-23T18:13:37.963Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/75/b6d03fc75b409bdaec597274d1bdd4213db716ed16f6801386b31d59c551/torchaudio-2.11.0-cp311-cp311-win_amd64.whl", hash = "sha256:bb59ba4452bbbe95d75ad3ef18df9824955625f36698ce9a5998a4a9f3c1ba1d", size = 328658, upload-time = "2026-03-23T18:13:44.545Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/b1/77658817acacd01a72b714440c62f419efc4d90170e704e8e7a2c0918988/torchaudio-2.11.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:a1cf1acc883bee9cb906a933572fed6a8a933f86ef34e9ea7d803f72317e8c1b", size = 684226, upload-time = "2026-03-23T18:13:40.023Z" },
+    { url = "https://files.pythonhosted.org/packages/78/28/c7adc053039f286c2aca0038b766cbe3294e66fec6b29a820e95128f9ede/torchaudio-2.11.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:bc653defca1c16154398517a1adc98d0fb7f1dd08e58ced217558d213c2c6e29", size = 1626670, upload-time = "2026-03-23T18:13:42.162Z" },
+    { url = "https://files.pythonhosted.org/packages/88/d8/d6d0f896e064aa67377484efef4911cdcc07bce2929474e1417cc0af18c2/torchaudio-2.11.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:6503c0bdb29daf2e6281bb70ea2dfe2c3553b782b619eb5d73bdadd8a3f7cecf", size = 1771992, upload-time = "2026-03-23T18:13:33.188Z" },
+    { url = "https://files.pythonhosted.org/packages/23/a8/941277ecc39f7a0a169d554302a1f1afd87c1d94a8aec828891916cea59a/torchaudio-2.11.0-cp312-cp312-win_amd64.whl", hash = "sha256:478110f981e5d40a8d82221732c57a56c85a1d5895fb8fe646e86ee15eded3bd", size = 328663, upload-time = "2026-03-23T18:13:19.218Z" },
+]
+
+[[package]]
 name = "torchvision"
 version = "0.23.0"
 source = { registry = "https://download.pytorch.org/whl/cpu" }
@@ -3178,7 +3359,7 @@ name = "triton"
 version = "3.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "setuptools", marker = "extra == 'extra-9-beatforge-ai-cuda' or extra != 'extra-9-beatforge-ai-cpu'" },
+    { name = "setuptools", marker = "(python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu') or (sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/39/43325b3b651d50187e591eefa22e236b2981afcebaefd4f2fc0ea99df191/triton-3.4.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7b70f5e6a41e52e48cfc087436c8a28c17ff98db369447bcaff3b887a3ab4467", size = 155531138, upload-time = "2025-07-30T19:58:29.908Z" },

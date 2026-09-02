@@ -33,6 +33,9 @@ class RenderConfig(BaseModel):
     visual_effects: bool = True
     vignette: bool = True
     film_grain: float = Field(default=1.6, ge=0, le=8)
+    professional_transitions: bool = True
+    transition_min_seconds: float = Field(default=.16, ge=.05, le=1.0)
+    transition_max_seconds: float = Field(default=.55, ge=.1, le=1.5)
 
 
 class AIConfig(BaseModel):
@@ -45,8 +48,11 @@ class AIConfig(BaseModel):
     whisper_model: str = "small"
     whisper_compute_type: str = "int8"
     clap_model: str = "laion/clap-htsat-fused"
+    music_structure_backend: Literal["librosa", "beat-this", "allin1"] = "allin1"
     vision_backend: Literal["qwen3-vl-embedding", "siglip2"] = "qwen3-vl-embedding"
     vision_model: str = "Qwen/Qwen3-VL-Embedding-2B"
+    vision_reranker_model: str | None = "Qwen/Qwen3-VL-Reranker-2B"
+    vision_rerank_top_k: int = Field(default=5, ge=0, le=20)
     frame_samples: int = Field(default=3, ge=1, le=12)
 
 
@@ -96,8 +102,11 @@ qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
 whisper_model = "small" # RTX 5070 可改为 large-v3-turbo
 whisper_compute_type = "int8" # RTX 5070 可改为 int8_float16
 clap_model = "laion/clap-htsat-fused"
+music_structure_backend = "allin1" # 需要 music-ai extra；也可用 beat-this 或 librosa
 vision_backend = "qwen3-vl-embedding"
 vision_model = "Qwen/Qwen3-VL-Embedding-2B"
+vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
+vision_rerank_top_k = 5
 frame_samples = 3
 
 [render]
@@ -117,6 +126,9 @@ subtitle_highlight_color = "&H0000D7FF" # ASS 的金黄色（BGR）
 visual_effects = true
 vignette = true
 film_grain = 1.6
+professional_transitions = true
+transition_min_seconds = 0.16
+transition_max_seconds = 0.55
 
 [render.subtitle_fonts]
 energetic = "Arial Black"

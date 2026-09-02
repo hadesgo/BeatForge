@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,10 @@ from beatforge.runtime import command
 class VisionIndex:
     """Qwen3-VL-Embedding index with a SigLIP2 compatibility backend."""
 
-    def __init__(self, model_name: str, device: str, offline: bool, cache_dir: Path, *, backend: str) -> None:
+    def __init__(
+        self, model_name: str, device: str, offline: bool, cache_dir: Path, *, backend: str,
+        reranker_model: str | None = None, rerank_top_k: int = 0,
+    ) -> None:
         try:
             import torch
             from transformers import AutoModel, AutoProcessor
@@ -22,6 +26,9 @@ class VisionIndex:
         self.torch = torch
         self.device = device
         self.backend = backend
+        self.offline = offline
+        self.reranker_model = reranker_model
+        self.rerank_top_k = rerank_top_k
         self.cache_dir = cache_dir / "frames"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         if backend == "qwen3-vl-embedding":
@@ -47,7 +54,10 @@ class VisionIndex:
                 else:
                     item = {"image": self._video_frames(asset, frame_samples)}
                 asset_features.append(self._qwen_process([item])[0])
-            return text_features @ np.stack(asset_features).T
+            scores = text_features @ np.stack(asset_features).T
+            if self.reranker_model and self.rerank_top_k > 0:
+                scores = self._rerank(texts, assets, scores, frame_samples)
+            return scores
         image_features = np.stack([self._asset_embedding(asset, frame_samples) for asset in assets])
         text_features = self._text_embeddings(texts)
         return text_features @ image_features.T
@@ -80,6 +90,50 @@ class VisionIndex:
             output = output.float().cpu().numpy()
         output = np.asarray(output)
         return output / np.maximum(np.linalg.norm(output, axis=-1, keepdims=True), 1e-8)
+
+    def _rerank(self, texts: list[str], assets: list[MediaAsset], base: np.ndarray, frame_samples: int) -> np.ndarray:
+        del self.model
+        gc.collect()
+        if self.torch.cuda.is_available():
+            self.torch.cuda.empty_cache()
+        try:
+            from src.models.qwen3_vl_reranker import Qwen3VLReranker
+        except ImportError as exc:
+            raise RuntimeError("Qwen3-VL-Reranker 官方实现不可用，请重新安装 qwen extra") from exc
+        dtype = self.torch.bfloat16 if self.device == "cuda" else self.torch.float32
+        reranker = Qwen3VLReranker(
+            model_name_or_path=self.reranker_model,
+            torch_dtype=dtype, attn_implementation="sdpa",
+            local_files_only=self.offline, max_length=4096, max_frames=12,
+        )
+        output = base.copy()
+        for row, text in enumerate(texts):
+            candidates = np.argsort(base[row])[-min(self.rerank_top_k, len(assets)):][::-1]
+            documents = []
+            for index in candidates:
+                asset = assets[int(index)]
+                documents.append(
+                    {"image": str(asset.file)} if asset.kind == "image"
+                    else {"image": self._video_frames(asset, frame_samples)}
+                )
+            values = reranker.process({
+                "instruction": "判断候选画面与歌词意境、叙事动作和情绪是否适合作为精良 MV 镜头。",
+                "query": {"text": text}, "documents": documents,
+            })
+            if hasattr(values, "float"):
+                values = values.float().cpu().numpy()
+            output[row, candidates] = blend_rerank_scores(base[row, candidates], np.asarray(values).reshape(-1))
+        self.model = reranker
+        return output
+
+
+def blend_rerank_scores(base: np.ndarray, reranked: np.ndarray) -> np.ndarray:
+    """Blend broad embedding recall with precise pairwise judgement."""
+    if reranked.size == 0:
+        return base
+    low, high = float(reranked.min()), float(reranked.max())
+    normalized = (reranked - low) / max(high - low, 1e-8)
+    return base * .3 + normalized * .7
 
     def _asset_embedding(self, asset: MediaAsset, samples: int) -> np.ndarray:
         images = [Image.open(asset.file).convert("RGB")] if asset.kind == "image" else self._video_frames(asset, samples)

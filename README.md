@@ -16,6 +16,9 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `Qwen/Qwen3-ForcedAligner-0.6B`：生成字符/单词级真实演唱时间；
 - `laion/clap-htsat-fused`：音乐情绪、质感和强度的零样本分类；
 - `Qwen/Qwen3-VL-Embedding-2B`：中文歌词与图片/视频的跨模态检索；
+- `Qwen/Qwen3-VL-Reranker-2B`：对初选画面进行歌词意境和叙事适配精排；
+- `All-In-One-Infer`：识别 intro、verse、chorus、bridge、solo、outro 和强拍；
+- `Beat This!`：可选的高精度 beat/downbeat 后备；
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
@@ -32,13 +35,13 @@ uv sync
 当前 CPU 电脑的 AI 环境：
 
 ```powershell
-uv sync --extra ai --extra ai-cpu --extra qwen
+uv sync --extra ai --extra ai-cpu --extra qwen --extra music-ai
 ```
 
 RTX 5070 电脑的 AI 环境：
 
 ```powershell
-uv sync --extra ai --extra ai-cuda --extra qwen
+uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 ```
 
 CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。模型权重不会在 `uv sync` 时下载；第一次运行相应模型时才会进入 Hugging Face 本地缓存。
@@ -115,6 +118,8 @@ qwen_asr_model = "Qwen/Qwen3-ASR-1.7B"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
 vision_backend = "qwen3-vl-embedding"
 vision_model = "Qwen/Qwen3-VL-Embedding-2B"
+vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
+music_structure_backend = "allin1"
 frame_samples = 3
 ```
 
@@ -128,6 +133,8 @@ qwen_asr_model = "Qwen/Qwen3-ASR-1.7B"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
 vision_backend = "qwen3-vl-embedding"
 vision_model = "Qwen/Qwen3-VL-Embedding-2B"
+vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
+music_structure_backend = "allin1"
 frame_samples = 5
 ```
 
@@ -141,11 +148,27 @@ Qwen3-VL-Embedding 会直接比较歌词、图片和视频关键帧。文件名�
 {
   "description": "女孩在海边回头，夕阳逆光",
   "tags": ["女孩", "海边", "日落", "回忆", "离别"],
-  "mood": "melancholic"
+  "mood": "melancholic",
+  "shot_size": "medium_close_up",
+  "camera_motion": "slow_push_in",
+  "quality_score": 0.9,
+  "dominant_color": [184, 112, 74]
 }
 ```
 
 视频默认均匀抽取 3 个关键帧并平均视觉向量。提高 `frame_samples` 会提升长视频覆盖率，也会增加分析时间。
+
+## 专业剪辑策略
+
+- 优先在 downbeat 和乐段边界切镜，而不是每句歌词机械切换；
+- 主歌保持色彩和主体连续，副歌提高视频镜头比例和切换强度；
+- 副歌复现少量视觉母题，让成片有记忆点；
+- 同景别连续出现会扣分，画质、曝光、清晰度和分辨率参与选镜；
+- 相邻镜头主色差异过大时降低分数，冲击型剪辑除外；
+- 使用带 handle 的真实 xfade，避免每个镜头先黑场再出现；
+- intro/outro 留呼吸，chorus 紧凑，bridge/solo 给旋律性镜头更长时间。
+
+这些决策会写入 `plan.json` 的 `section`、`edit_intent`、`melody`、`quality_score` 和 `art_direction`，方便人工复核。
 
 ## 测试
 
@@ -176,6 +199,7 @@ beatforge/audio.py                    节拍、章节与能量分析
 beatforge/director.py                 AI 字体、字幕与视觉艺术指导
 beatforge/models/transcriber.py       Qwen3-ASR/Whisper 时间轴
 beatforge/models/audio_semantics.py   CLAP 音乐语义
+beatforge/models/music_structure.py   All-In-One/Beat This 结构分析
 beatforge/models/vision_index.py      Qwen3-VL-Embedding/SigLIP2 检索
 beatforge/planner.py                  多目标镜头编排
 beatforge/renderer.py                 FFmpeg 成片渲染

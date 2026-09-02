@@ -42,6 +42,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
 
     print("2/5 音乐结构与氛围分析")
     mood_scores = None
+    structure = None
     if use_ai:
         from beatforge.models.audio_semantics import classify_music
         mood_scores = classify_music(
@@ -49,7 +50,11 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
             device=device, offline=project.ai.offline,
         )
         release_gpu()
-    analysis = analyze_music(project.music, mood_scores)
+        if project.ai.music_structure_backend != "librosa":
+            from beatforge.models.music_structure import analyze_beats
+            structure = analyze_beats(project.music, project.ai.music_structure_backend, device)
+            release_gpu()
+    analysis = analyze_music(project.music, mood_scores, structure)
     print(f"    {analysis.bpm:.1f} BPM · {analysis.mood} · {len(analysis.sections) - 1} 个章节")
 
     print("3/5 素材视觉语义索引")
@@ -60,6 +65,8 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         index = VisionIndex(
             project.ai.vision_model, device, project.ai.offline, project.cache_dir,
             backend=project.ai.vision_backend,
+            reranker_model=project.ai.vision_reranker_model,
+            rerank_top_k=project.ai.vision_rerank_top_k,
         )
         similarities = index.similarities([line.text for line in lyrics], assets, project.ai.frame_samples)
         del index
@@ -81,6 +88,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
             "aligner": project.ai.qwen_aligner_model if use_ai and project.ai.asr_backend == "qwen3" else None,
             "audio": project.ai.clap_model if use_ai else None,
             "vision": project.ai.vision_model if similarities is not None else None,
+            "vision_reranker": project.ai.vision_reranker_model if similarities is not None else None,
         },
         "render": project.render.model_dump(mode="json"),
         "art_direction": art.as_dict(),

@@ -14,8 +14,11 @@ qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
 whisper_model = "small"
 whisper_compute_type = "int8"
 clap_model = "laion/clap-htsat-fused"
+music_structure_backend = "allin1"
 vision_backend = "qwen3-vl-embedding"
 vision_model = "Qwen/Qwen3-VL-Embedding-2B"
+vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
+vision_rerank_top_k = 5
 frame_samples = 3
 
 [render]

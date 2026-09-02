@@ -42,10 +42,18 @@ def create_art_direction(analysis: AudioAnalysis, lyrics: list[LyricLine], confi
     base_effect = config.subtitle_effect if config.subtitle_effect != "auto" else default_effect
     line_effects = []
     for line in lyrics:
-        energy = analysis.energy_at((line.start + line.end) / 2)
-        melody = analysis.melody_at((line.start + line.end) / 2)
+        midpoint = (line.start + line.end) / 2
+        energy = analysis.energy_at(midpoint)
+        melody = analysis.melody_at(midpoint)
+        section = _section_at(analysis, midpoint)
         if config.subtitle_effect != "auto":
             effect = config.subtitle_effect
+        elif section == "outro":
+            effect = "cinematic"
+        elif section in {"bridge", "solo"} and energy < .7:
+            effect = "glow" if melody > .5 else "cinematic"
+        elif section == "chorus" and energy > .58:
+            effect = "bounce" if analysis.rhythmic_density > 75 else "karaoke"
         elif energy > .76 or (energy > .58 and analysis.rhythmic_density > 75):
             effect = "bounce"
         elif energy < .24:
@@ -63,3 +71,10 @@ def create_art_direction(analysis: AudioAnalysis, lyrics: list[LyricLine], confi
         grade_filter=grade, camera_intensity=round(camera * (.85 + analysis.melodic_motion * .3), 3),
         transition_tone=tone, grain=config.film_grain, vignette=config.vignette,
     )
+
+
+def _section_at(analysis: AudioAnalysis, time: float) -> str:
+    for index, (start, end) in enumerate(zip(analysis.sections, analysis.sections[1:])):
+        if start <= time < end:
+            return analysis.section_labels[index] if index < len(analysis.section_labels) else "unknown"
+    return "unknown"

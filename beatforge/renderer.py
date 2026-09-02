@@ -16,14 +16,22 @@ def render(
     clips = cache / "clips"
     clips.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
+    transitions = [
+        _transition_spec(shot, shots[index + 1], art, config)
+        for index, shot in enumerate(shots[:-1])
+    ] if config.professional_transitions else []
     for index, shot in enumerate(shots):
         print(f"\r渲染镜头 {index + 1}/{len(shots)}", end="", flush=True)
-        _render_shot(shot, clips / f"{index:05}.mp4", config, art, index == len(shots) - 1)
+        handle = transitions[index][1] if index < len(transitions) else 0.0
+        _render_shot(shot, clips / f"{index:05}.mp4", config, art, shot.duration + handle)
     print()
-    concat_file = cache / "clips.txt"
-    concat_file.write_text("\n".join(f"file '{(clips / f'{i:05}.mp4').as_posix()}'" for i in range(len(shots))), "utf-8")
     picture = cache / "picture.mp4"
-    command(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(picture)])
+    if transitions:
+        _compose_transitions(shots, clips, picture, transitions, config)
+    else:
+        concat_file = cache / "clips.txt"
+        concat_file.write_text("\n".join(f"file '{(clips / f'{i:05}.mp4').as_posix()}'" for i in range(len(shots))), "utf-8")
+        command(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(picture)])
     subtitle = cache / "lyrics.ass"
     write_ass(
         lyrics, subtitle, width=config.width, height=config.height,
@@ -45,8 +53,8 @@ def render(
     command(args)
 
 
-def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection, is_last: bool) -> None:
-    frames = max(1, round(shot.duration * cfg.fps))
+def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection, render_duration: float) -> None:
+    frames = max(1, round(render_duration * cfg.fps))
     if shot.kind == "image":
         melody_boost = 1 + shot.melody * .22
         zoom_amount = {"dynamic": .14, "gentle": .045}.get(shot.motion, .08) * art.camera_intensity * melody_boost
@@ -64,11 +72,6 @@ def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
                   f"crop={cfg.width}:{cfg.height}:x='(iw-ow)/2+sin(n/32)*{drift}':"
                   f"y='(ih-oh)/2+cos(n/41)*{max(2, drift // 2)}'")
     grade = art.grade_filter
-    fade = .07 if shot.transition == "flash" else .2 if shot.transition == "dip" else .12
-    fade_color = "white" if shot.transition == "flash" or (art.transition_tone == "bright" and shot.energy > .65) else "black"
-    transitions = [f"fade=t=in:st=0:d={fade}:color={fade_color}"]
-    out_fade = min(.5 if is_last else fade, shot.duration / 3)
-    transitions.append(f"fade=t=out:st={max(0, shot.duration - out_fade)}:d={out_fade}:color={fade_color}")
     effects: list[str] = []
     if cfg.visual_effects:
         if shot.motion == "dynamic":
@@ -84,7 +87,49 @@ def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
         args += ["-loop", "1", "-framerate", str(cfg.fps)]
     else:
         args += ["-stream_loop", "-1", "-ss", str(shot.source_start)]
-    args += ["-i", shot.file, "-t", str(shot.duration), "-an", "-vf", ",".join([visual, grade, *effects, *transitions]),
+    args += ["-i", shot.file, "-t", str(render_duration), "-an", "-vf", ",".join([visual, grade, *effects]),
              "-r", str(cfg.fps), "-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf),
              "-pix_fmt", "yuv420p", str(output)]
+    command(args)
+
+
+def _transition_spec(shot: Shot, following: Shot, art: ArtDirection, cfg: RenderConfig) -> tuple[str, float]:
+    if shot.edit_intent == "impact" or following.edit_intent == "impact":
+        name, duration = ("fadewhite", .16) if art.transition_tone == "bright" else ("smoothleft", .22)
+    elif following.section == "outro":
+        name, duration = "fadeblack", .5
+    elif art.mood == "dreamy":
+        name, duration = "dissolve", .48
+    elif art.mood in {"melancholic", "cinematic", "dark"}:
+        name, duration = "fadeblack", .34
+    else:
+        name, duration = "fade", .24
+    duration = max(cfg.transition_min_seconds, min(cfg.transition_max_seconds, duration, shot.duration / 3, following.duration / 3))
+    return name, round(duration, 3)
+
+
+def _compose_transitions(
+    shots: list[Shot], clips: Path, output: Path,
+    transitions: list[tuple[str, float]], cfg: RenderConfig,
+) -> None:
+    args = ["ffmpeg", "-y", "-v", "error"]
+    for index in range(len(shots)):
+        args += ["-i", str(clips / f"{index:05}.mp4")]
+    filters = []
+    current = "[0:v]"
+    timeline = shots[0].duration
+    for index, (name, duration) in enumerate(transitions):
+        label = f"[x{index + 1}]"
+        filters.append(
+            f"{current}[{index + 1}:v]xfade=transition={name}:duration={duration}:offset={round(timeline, 3)}{label}"
+        )
+        current = label
+        timeline += shots[index + 1].duration
+    end_fade = min(.5, shots[-1].duration / 3)
+    filters.append(f"{current}fade=t=in:st=0:d=0.25,fade=t=out:st={max(0, timeline - end_fade):.3f}:d={end_fade:.3f}[vout]")
+    args += [
+        "-filter_complex", ";".join(filters), "-map", "[vout]", "-an",
+        "-r", str(cfg.fps), "-c:v", "libx264", "-preset", cfg.preset,
+        "-crf", str(cfg.crf), "-pix_fmt", "yuv420p", str(output),
+    ]
     command(args)

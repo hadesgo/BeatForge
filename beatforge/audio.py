@@ -23,6 +23,8 @@ class AudioAnalysis:
     melody_values: list[float] = field(default_factory=list)
     melodic_motion: float = 0.0
     rhythmic_density: float = 0.0
+    downbeats: list[float] = field(default_factory=list)
+    section_labels: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -40,12 +42,19 @@ class AudioAnalysis:
         return self.melody_values[max(0, min(index, len(self.melody_values) - 1))]
 
 
-def analyze_music(file: Path, mood_scores: dict[str, float] | None = None) -> AudioAnalysis:
+def analyze_music(
+    file: Path,
+    mood_scores: dict[str, float] | None = None,
+    structure: dict | None = None,
+) -> AudioAnalysis:
     samples, sample_rate = librosa.load(file, sr=22_050, mono=True)
     total = librosa.get_duration(y=samples, sr=sample_rate)
     harmonic, percussive = librosa.effects.hpss(samples)
     tempo, beat_frames = librosa.beat.beat_track(y=percussive, sr=sample_rate, units="frames")
-    beats = librosa.frames_to_time(beat_frames, sr=sample_rate).tolist()
+    librosa_beats = librosa.frames_to_time(beat_frames, sr=sample_rate).tolist()
+    beats = structure.get("beats", librosa_beats) if structure else librosa_beats
+    if len(beats) > 1:
+        tempo = 60 / np.median(np.diff(beats))
     rms = librosa.feature.rms(y=samples, frame_length=2048, hop_length=512)[0]
     lo, hi = np.quantile(rms, [0.1, 0.95]) if len(rms) else (0.0, 1.0)
     normalized = np.clip((rms - lo) / max(hi - lo, 1e-8), 0, 1)
@@ -66,6 +75,17 @@ def analyze_music(file: Path, mood_scores: dict[str, float] | None = None) -> Au
     else:
         sections = [0.0]
     sections = sorted(set([0.0, *sections, float(total)]))
+    section_labels = _label_sections(sections, energy_times, normalized)
+    if structure and structure.get("sections"):
+        predicted = structure["sections"]
+        sections = sorted(set([0.0, *(float(item["start"]) for item in predicted), float(total)]))
+        section_labels = []
+        for start in sections[:-1]:
+            match = next(
+                (item for item in predicted if float(item["start"]) <= start < float(item["end"])),
+                None,
+            )
+            section_labels.append(str(match["label"]) if match else "unknown")
 
     scores = mood_scores or _heuristic_mood(float(np.mean(normalized)), brightness, float(np.asarray(tempo).item()))
     mood = max(scores, key=scores.get)
@@ -84,7 +104,29 @@ def analyze_music(file: Path, mood_scores: dict[str, float] | None = None) -> Au
         melody_values=[round(float(x), 4) for x in melody_values],
         melodic_motion=round(float(np.mean(melody_values)), 4),
         rhythmic_density=round(float(len(onset_frames) / max(total, 1) * 60), 3),
+        downbeats=structure.get("downbeats", []) if structure else [],
+        section_labels=section_labels,
     )
+
+
+def _label_sections(boundaries: list[float], times: np.ndarray, energy: np.ndarray) -> list[str]:
+    count = max(0, len(boundaries) - 1)
+    if count == 0:
+        return []
+    levels = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        values = energy[(times >= start) & (times < end)]
+        levels.append(float(np.mean(values)) if len(values) else 0.0)
+    labels = []
+    threshold = float(np.median(levels))
+    for index, level in enumerate(levels):
+        if index == 0:
+            labels.append("intro")
+        elif index == count - 1:
+            labels.append("outro")
+        else:
+            labels.append("chorus" if level >= threshold else "verse")
+    return labels
 
 
 def _heuristic_mood(energy: float, brightness: float, bpm: float) -> dict[str, float]:

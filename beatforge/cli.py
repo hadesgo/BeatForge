@@ -71,6 +71,10 @@ def doctor() -> None:
         except ModuleNotFoundError:
             qwen_vl = None
     table.add_row("Qwen3-VL Embedding", "OK" if qwen_vl else "未安装", "qwen extra")
+    table.add_row(
+        "Music Structure", "OK" if importlib.util.find_spec("allin1_infer") else "未安装",
+        "music-ai extra（All-In-One）",
+    )
     console.print(table)
 
 
@@ -99,6 +103,8 @@ def download_models(
         else [whisper_repos.get(config.whisper_model, config.whisper_model)]
     )
     models = [*asr_models, config.clap_model, config.vision_model]
+    if config.vision_reranker_model:
+        models.append(config.vision_reranker_model)
     for model in models:
         console.print(f"下载 {model}")
         snapshot_download(model)
