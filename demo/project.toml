@@ -8,10 +8,14 @@ cache_dir = ".beatforge"
 enabled = true
 device = "auto"
 offline = false
+asr_backend = "qwen3"
+qwen_asr_model = "Qwen/Qwen3-ASR-1.7B"
+qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
 whisper_model = "small"
 whisper_compute_type = "int8"
 clap_model = "laion/clap-htsat-fused"
-vision_model = "google/siglip2-base-patch16-224"
+vision_backend = "qwen3-vl-embedding"
+vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 frame_samples = 3
 
 [render]
@@ -22,11 +26,20 @@ crf = 23
 preset = "veryfast"
 min_shot_seconds = 1.5
 max_shot_seconds = 4.0
-subtitle_font = "Microsoft YaHei"
+subtitle_font = "auto"
 subtitle_size = 38
-subtitle_effect = "karaoke"
+subtitle_effect = "auto"
 subtitle_margin = 54
 subtitle_highlight_color = "&H0000D7FF"
 visual_effects = true
 vignette = true
 film_grain = 1.2
+
+[render.subtitle_fonts]
+energetic = "Arial Black"
+uplifting = "Microsoft YaHei"
+melancholic = "SimSun"
+dreamy = "Microsoft YaHei Light"
+romantic = "KaiTi"
+dark = "SimHei"
+cinematic = "Microsoft YaHei"

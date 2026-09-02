@@ -26,6 +26,7 @@ class Shot:
     motion: str
     transition: str
     semantic_score: float
+    melody: float = 0.0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -71,6 +72,7 @@ def create_plan(
             motion="dynamic" if energy > 0.68 else "gentle" if energy < 0.3 else "steady",
             transition="flash" if energy > 0.75 else "dip" if index % 4 == 0 else "fade",
             semantic_score=round(semantic, 4),
+            melody=round(analysis.melody_at(midpoint), 4),
         ))
     return shots
 

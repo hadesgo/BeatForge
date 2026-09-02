@@ -5,6 +5,7 @@ from pathlib import Path
 
 from beatforge.audio import analyze_music
 from beatforge.config import ProjectConfig
+from beatforge.director import create_art_direction
 from beatforge.lyrics import read_lrc, write_srt
 from beatforge.media import discover_media
 from beatforge.planner import create_plan
@@ -27,7 +28,10 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     elif use_ai:
         from beatforge.models.transcriber import transcribe
         lyrics = transcribe(
-            project.music, model_name=project.ai.whisper_model, device=device,
+            project.music, backend=project.ai.asr_backend,
+            qwen_model=project.ai.qwen_asr_model,
+            qwen_aligner=project.ai.qwen_aligner_model,
+            whisper_model=project.ai.whisper_model, device=device,
             compute_type=project.ai.whisper_compute_type, offline=project.ai.offline,
         )
         write_srt(lyrics, project.cache_dir / "whisper.srt")
@@ -53,11 +57,14 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     similarities = None
     if use_ai and lyrics:
         from beatforge.models.vision_index import VisionIndex
-        index = VisionIndex(project.ai.vision_model, device, project.ai.offline, project.cache_dir)
+        index = VisionIndex(
+            project.ai.vision_model, device, project.ai.offline, project.cache_dir,
+            backend=project.ai.vision_backend,
+        )
         similarities = index.similarities([line.text for line in lyrics], assets, project.ai.frame_samples)
         del index
         release_gpu()
-    print(f"    {len(assets)} 个素材 · {'SigLIP2' if similarities is not None else '文件标签'}")
+    print(f"    {len(assets)} 个素材 · {project.ai.vision_backend if similarities is not None else '文件标签'}")
 
     print("4/5 AI 镜头编排")
     shots = create_plan(
@@ -65,15 +72,18 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         min_shot=project.render.min_shot_seconds,
         max_shot=project.render.max_shot_seconds,
     )
+    art = create_art_direction(analysis, lyrics, project.render)
     plan_file = project.cache_dir / "plan.json"
     plan = {
         "version": 2,
         "models": {
-            "whisper": project.ai.whisper_model if use_ai else None,
+            "asr": project.ai.qwen_asr_model if use_ai and project.ai.asr_backend == "qwen3" else project.ai.whisper_model if use_ai else None,
+            "aligner": project.ai.qwen_aligner_model if use_ai and project.ai.asr_backend == "qwen3" else None,
             "audio": project.ai.clap_model if use_ai else None,
             "vision": project.ai.vision_model if similarities is not None else None,
         },
-        "render": project.render.model_dump(),
+        "render": project.render.model_dump(mode="json"),
+        "art_direction": art.as_dict(),
         "analysis": analysis.as_dict(),
         "lyrics": [line.as_dict() for line in lyrics],
         "media": [asset.as_dict() for asset in assets],
@@ -85,5 +95,5 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         return plan_file
 
     print("5/5 FFmpeg 成片渲染")
-    render(shots, lyrics, project.music, project.output, project.cache_dir, project.render)
+    render(shots, lyrics, project.music, project.output, project.cache_dir, project.render, art)
     return project.output

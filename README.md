@@ -5,18 +5,18 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 ## AI 流程
 
 ```text
-音乐 ── Whisper ── 歌词时间轴 ───────────────┐
-  └── librosa + CLAP ── 节拍/章节/氛围 ─────┼── 镜头打分与编排 ── FFmpeg
-图片/视频 ── 关键帧 ── SigLIP2 视觉向量 ─────┘
+音乐 ── Qwen3-ASR + ForcedAligner ── 逐字时间轴 ──┐
+  └── librosa + CLAP ── 旋律/节拍/章节/意境 ─────┼── AI 艺术指导 ── FFmpeg
+图片/视频 ── Qwen3-VL-Embedding 视觉向量 ─────────┘
                          ↑
                     每句歌词向量
 ```
 
-- `faster-whisper small`：CPU 默认转写模型，使用 INT8；
-- `faster-whisper large-v3-turbo`：RTX 5070 推荐转写模型，使用 INT8/FP16；
+- `Qwen/Qwen3-ASR-1.7B`：默认歌曲识别模型；
+- `Qwen/Qwen3-ForcedAligner-0.6B`：生成字符/单词级真实演唱时间；
 - `laion/clap-htsat-fused`：音乐情绪、质感和强度的零样本分类；
-- `google/siglip2-base-patch16-224`：中文歌词与图片/视频关键帧的跨模态匹配；
-- `librosa`：节拍、能量、音色亮度和章节边界；
+- `Qwen/Qwen3-VL-Embedding-2B`：中文歌词与图片/视频的跨模态检索；
+- `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
 模型分阶段加载并释放，不会同时占用显存。当前无 NVIDIA 显卡的电脑可以用 CPU 完成开发和验证；目标 5070 机器可切换 CUDA 12.8 环境。
@@ -32,13 +32,13 @@ uv sync
 当前 CPU 电脑的 AI 环境：
 
 ```powershell
-uv sync --extra ai --extra ai-cpu
+uv sync --extra ai --extra ai-cpu --extra qwen
 ```
 
 RTX 5070 电脑的 AI 环境：
 
 ```powershell
-uv sync --extra ai --extra ai-cuda
+uv sync --extra ai --extra ai-cuda --extra qwen
 ```
 
 CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。模型权重不会在 `uv sync` 时下载；第一次运行相应模型时才会进入 Hugging Face 本地缓存。
@@ -50,7 +50,7 @@ uv run beatforge init my-mv
 uv run beatforge run my-mv/project.toml
 ```
 
-将音乐放到 `my-mv/music.mp3`，图片和视频放到 `my-mv/media/`。如果已有 LRC，保存为 `my-mv/lyrics.lrc`；如果要使用 Whisper，删除该文件并删除或注释 `project.toml` 的 `lyrics` 配置。
+将音乐放到 `my-mv/music.mp3`，图片和视频放到 `my-mv/media/`。如果已有 LRC，保存为 `my-mv/lyrics.lrc`；如果要使用 Qwen3-ASR，删除该文件并删除或注释 `project.toml` 的 `lyrics` 配置。
 
 只生成剪辑决策，不渲染：
 
@@ -68,10 +68,12 @@ uv run beatforge run my-mv/project.toml --no-ai
 
 ## 字幕和画面动效
 
-字幕使用 ASS 渲染，可在 `[render]` 中选择三种效果：
+字幕使用 ASS 渲染。`auto` 会根据 CLAP 情绪、局部能量、节奏密度和旋律变化为每句歌词单独选择效果：
 
 ```toml
-subtitle_effect = "karaoke" # karaoke / cinematic / bounce
+subtitle_font = "auto"
+subtitle_fonts_dir = "fonts"
+subtitle_effect = "auto"
 subtitle_margin = 72
 subtitle_highlight_color = "&H0000D7FF"
 visual_effects = true
@@ -82,8 +84,24 @@ film_grain = 1.6
 - `karaoke`：逐字高亮，并带轻微缩放入场；
 - `cinematic`：模糊消散和长淡入淡出；
 - `bounce`：随句子出现的弹跳缩放。
+- `float`：伴随舒缓旋律缓慢上浮；
+- `glow`：适合浪漫和梦幻段落的柔光入场；
+- `typewriter`：适合暗黑、叙事感段落的逐字出现。
 
-图片会根据镜头能量使用推拉和平移运镜；视频会加入缓慢漂移和轻微放大。高能镜头使用锐化与白色闪切，舒缓镜头使用柔化，所有镜头可选暗角和动态胶片颗粒。
+可以把 `.ttf`/`.otf` 放入项目的 `fonts/`，然后为不同意境配置字体族名：
+
+```toml
+[render.subtitle_fonts]
+energetic = "My Display Font"
+uplifting = "My Sans Font"
+melancholic = "My Serif Font"
+dreamy = "My Light Font"
+romantic = "My Handwriting Font"
+dark = "My Condensed Font"
+cinematic = "My Cinema Font"
+```
+
+图片和视频的推拉幅度同时参考局部能量、旋律变化率和歌曲意境。高能/高节奏密度段落使用锐化与亮色闪切，低能段落使用柔化与长淡入，梦幻和抒情歌曲降低镜头运动，所有镜头可选暗角和动态胶片颗粒。最终选择会写入 `plan.json` 的 `art_direction` 和每个 `shot.melody`。
 
 ## CPU 与 RTX 5070 配置
 
@@ -92,8 +110,11 @@ CPU 默认配置：
 ```toml
 [ai]
 device = "auto"
-whisper_model = "small"
-whisper_compute_type = "int8"
+asr_backend = "qwen3"
+qwen_asr_model = "Qwen/Qwen3-ASR-1.7B"
+qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
+vision_backend = "qwen3-vl-embedding"
+vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 frame_samples = 3
 ```
 
@@ -102,16 +123,19 @@ RTX 5070 12GB 推荐配置：
 ```toml
 [ai]
 device = "cuda"
-whisper_model = "large-v3-turbo"
-whisper_compute_type = "int8_float16"
+asr_backend = "qwen3"
+qwen_asr_model = "Qwen/Qwen3-ASR-1.7B"
+qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
+vision_backend = "qwen3-vl-embedding"
+vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 frame_samples = 5
 ```
 
-运行 `uv run beatforge doctor` 检查实际使用 CPU 还是 CUDA。Windows 上 Faster Whisper GPU 模式还需要 CUDA 12 的 cuBLAS 与 cuDNN 9 动态库。
+运行 `uv run beatforge doctor` 检查实际使用 CPU 还是 CUDA。Faster Whisper 和 SigLIP2 仍可通过 `asr_backend`/`vision_backend` 作为兼容后备。
 
 ## 素材语义
 
-SigLIP2 会直接比较歌词和画面。文件名和 sidecar 标签作为模型关闭时的后备。例如 `海边_日落_回忆.jpg`，或创建 `portrait.jpg.json`：
+Qwen3-VL-Embedding 会直接比较歌词、图片和视频关键帧。文件名和 sidecar 标签作为模型关闭时的后备。例如 `海边_日落_回忆.jpg`，或创建 `portrait.jpg.json`：
 
 ```json
 {
@@ -149,9 +173,10 @@ uv run beatforge run demo/project.toml --plan-only
 
 ```text
 beatforge/audio.py                    节拍、章节与能量分析
-beatforge/models/transcriber.py       Whisper 时间轴
+beatforge/director.py                 AI 字体、字幕与视觉艺术指导
+beatforge/models/transcriber.py       Qwen3-ASR/Whisper 时间轴
 beatforge/models/audio_semantics.py   CLAP 音乐语义
-beatforge/models/vision_index.py      SigLIP2 歌词/画面检索
+beatforge/models/vision_index.py      Qwen3-VL-Embedding/SigLIP2 检索
 beatforge/planner.py                  多目标镜头编排
 beatforge/renderer.py                 FFmpeg 成片渲染
 beatforge/pipeline.py                 分阶段模型生命周期

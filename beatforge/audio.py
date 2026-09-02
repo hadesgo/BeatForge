@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import librosa
@@ -19,6 +19,10 @@ class AudioAnalysis:
     brightness: float
     mood: str
     mood_scores: dict[str, float]
+    melody_times: list[float] = field(default_factory=list)
+    melody_values: list[float] = field(default_factory=list)
+    melodic_motion: float = 0.0
+    rhythmic_density: float = 0.0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -28,6 +32,12 @@ class AudioAnalysis:
             return self.average_energy
         index = int(np.searchsorted(self.energy_times, time, side="right") - 1)
         return self.energy_values[max(0, min(index, len(self.energy_values) - 1))]
+
+    def melody_at(self, time: float) -> float:
+        if not self.melody_times:
+            return self.melodic_motion
+        index = int(np.searchsorted(self.melody_times, time, side="right") - 1)
+        return self.melody_values[max(0, min(index, len(self.melody_values) - 1))]
 
 
 def analyze_music(file: Path, mood_scores: dict[str, float] | None = None) -> AudioAnalysis:
@@ -44,6 +54,11 @@ def analyze_music(file: Path, mood_scores: dict[str, float] | None = None) -> Au
     brightness = float(np.clip(np.mean(centroid) / 5000, 0, 1))
 
     chroma = librosa.feature.chroma_cqt(y=harmonic, sr=sample_rate)
+    chroma_delta = np.mean(np.abs(np.diff(chroma, axis=1, prepend=chroma[:, :1])), axis=0)
+    motion_ceiling = float(np.quantile(chroma_delta, .95)) if chroma_delta.size else 1.0
+    melody_values = np.clip(chroma_delta / max(motion_ceiling, 1e-8), 0, 1)
+    melody_times = librosa.frames_to_time(np.arange(chroma.shape[1]), sr=sample_rate)
+    onset_frames = librosa.onset.onset_detect(y=percussive, sr=sample_rate)
     section_count = max(2, min(12, round(total / 20)))
     if chroma.shape[1] >= section_count:
         boundaries = librosa.segment.agglomerative(chroma, section_count)
@@ -65,6 +80,10 @@ def analyze_music(file: Path, mood_scores: dict[str, float] | None = None) -> Au
         brightness=round(brightness, 4),
         mood=mood,
         mood_scores=scores,
+        melody_times=[round(float(x), 3) for x in melody_times],
+        melody_values=[round(float(x), 4) for x in melody_values],
+        melodic_motion=round(float(np.mean(melody_values)), 4),
+        rhythmic_density=round(float(len(onset_frames) / max(total, 1) * 60), 3),
     )
 
 

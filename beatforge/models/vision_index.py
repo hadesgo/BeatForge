@@ -11,9 +11,9 @@ from beatforge.runtime import command
 
 
 class VisionIndex:
-    """SigLIP2 image/text embedding index, loaded for one pipeline stage only."""
+    """Qwen3-VL-Embedding index with a SigLIP2 compatibility backend."""
 
-    def __init__(self, model_name: str, device: str, offline: bool, cache_dir: Path) -> None:
+    def __init__(self, model_name: str, device: str, offline: bool, cache_dir: Path, *, backend: str) -> None:
         try:
             import torch
             from transformers import AutoModel, AutoProcessor
@@ -21,8 +21,12 @@ class VisionIndex:
             raise RuntimeError("缺少 AI 依赖；CPU 电脑请运行 uv sync --extra ai --extra ai-cpu") from exc
         self.torch = torch
         self.device = device
+        self.backend = backend
         self.cache_dir = cache_dir / "frames"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if backend == "qwen3-vl-embedding":
+            self._init_qwen(model_name, device, offline)
+            return
         dtype = torch.float16 if device == "cuda" else torch.float32
         self.processor = AutoProcessor.from_pretrained(model_name, local_files_only=offline)
         self.model = AutoModel.from_pretrained(
@@ -30,9 +34,52 @@ class VisionIndex:
         ).to(device).eval()
 
     def similarities(self, texts: list[str], assets: list[MediaAsset], frame_samples: int) -> np.ndarray:
+        if self.backend == "qwen3-vl-embedding":
+            query_inputs = [{
+                "text": text,
+                "instruction": "检索与歌词意境、人物、场景和情绪最匹配的音乐视频画面。",
+            } for text in texts]
+            text_features = self._qwen_process(query_inputs)
+            asset_features = []
+            for asset in assets:
+                if asset.kind == "image":
+                    item = {"image": str(asset.file)}
+                else:
+                    item = {"image": self._video_frames(asset, frame_samples)}
+                asset_features.append(self._qwen_process([item])[0])
+            return text_features @ np.stack(asset_features).T
         image_features = np.stack([self._asset_embedding(asset, frame_samples) for asset in assets])
         text_features = self._text_embeddings(texts)
         return text_features @ image_features.T
+
+    def _init_qwen(self, model_name: str, device: str, offline: bool) -> None:
+        try:
+            try:
+                from qwen3_vl_embedding import Qwen3VLEmbedder
+            except ImportError:
+                from src.models.qwen3_vl_embedding import Qwen3VLEmbedder
+        except ImportError as exc:
+            raise RuntimeError("缺少 Qwen3-VL-Embedding 官方实现，请安装 uv 的 qwen extra") from exc
+        dtype = self.torch.bfloat16 if device == "cuda" else self.torch.float32
+        self.model = Qwen3VLEmbedder(
+            model_name_or_path=model_name,
+            torch_dtype=dtype,
+            attn_implementation="sdpa",
+            local_files_only=offline,
+            max_length=4096,
+            max_frames=12,
+        )
+        self.processor = None
+
+    def _qwen_process(self, inputs: list[dict]) -> np.ndarray:
+        with self.torch.inference_mode():
+            output = self.model.process(inputs)
+        if isinstance(output, tuple):
+            output = output[0]
+        if hasattr(output, "float"):
+            output = output.float().cpu().numpy()
+        output = np.asarray(output)
+        return output / np.maximum(np.linalg.norm(output, axis=-1, keepdims=True), 1e-8)
 
     def _asset_embedding(self, asset: MediaAsset, samples: int) -> np.ndarray:
         images = [Image.open(asset.file).convert("RGB")] if asset.kind == "image" else self._video_frames(asset, samples)

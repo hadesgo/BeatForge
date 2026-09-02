@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from beatforge.lyrics import parse_lrc, srt_timestamp, write_ass
+from beatforge.lyrics import LyricLine, LyricToken, parse_lrc, srt_timestamp, write_ass
 
 
 def test_parse_lrc() -> None:
@@ -33,4 +33,21 @@ def test_ass_alternative_effects(tmp_path: Path) -> None:
             lines, target, width=1280, height=720, font="Arial", size=40,
             margin=60, effect=effect,
         )
+        assert expected in target.read_text("utf-8-sig")
+
+
+def test_ass_uses_forced_alignment_token_timing(tmp_path: Path) -> None:
+    line = LyricLine(1, 3, "星光", [LyricToken("星", 1, 1.4), LyricToken("光", 1.4, 3)])
+    target = tmp_path / "aligned.ass"
+    write_ass([line], target, width=1280, height=720, font="Arial", size=40, margin=60)
+    content = target.read_text("utf-8-sig")
+    assert r"{\kf40}星" in content
+    assert r"{\kf160}光" in content
+
+
+def test_richer_ass_effects(tmp_path: Path) -> None:
+    lines = [LyricLine(0, 2, "旋律")]
+    for effect, expected in (("float", r"\move"), ("glow", r"\blur3"), ("typewriter", r"\alpha&HFF&")):
+        target = tmp_path / f"{effect}.ass"
+        write_ass(lines, target, width=1280, height=720, font="Arial", size=40, margin=60, effect=effect)
         assert expected in target.read_text("utf-8-sig")

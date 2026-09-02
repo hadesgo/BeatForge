@@ -7,6 +7,8 @@ import pytest
 import soundfile as sf
 
 from beatforge.config import RenderConfig
+from beatforge.audio import AudioAnalysis
+from beatforge.director import create_art_direction
 from beatforge.lyrics import LyricLine
 from beatforge.planner import Shot
 from beatforge.renderer import render
@@ -24,7 +26,14 @@ def test_end_to_end_renderer_without_models(tmp_path: Path) -> None:
     shots = [Shot(0, 0, 2, 2, 0, str(image), "image", 0, "测试字幕", .5, "steady", "fade", .8)]
     output = tmp_path / "output.mp4"
     config = RenderConfig(width=320, height=180, fps=12, crf=30, preset="ultrafast", subtitle_size=20)
-    render(shots, [LyricLine(0, 2, "测试字幕")], music, output, tmp_path / "cache", config)
+    lyrics = [LyricLine(0, 2, "测试字幕")]
+    analysis = AudioAnalysis(
+        duration=2, bpm=100, beats=[0, 1, 2], sections=[0, 2],
+        energy_times=[0], energy_values=[.5], average_energy=.5,
+        brightness=.5, mood="uplifting", mood_scores={"uplifting": 1},
+    )
+    art = create_art_direction(analysis, lyrics, config)
+    render(shots, lyrics, music, output, tmp_path / "cache", config, art)
     assert output.exists()
     assert (tmp_path / "cache" / "lyrics.ass").exists()
     assert 1.9 <= duration(output) <= 2.1

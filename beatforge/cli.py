@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import platform
 import shutil
 from pathlib import Path
@@ -62,6 +63,14 @@ def doctor() -> None:
         table.add_row("CTranslate2", "OK", types)
     except (ImportError, RuntimeError) as exc:
         table.add_row("CTranslate2", "未就绪", str(exc))
+    table.add_row("Qwen3-ASR", "OK" if importlib.util.find_spec("qwen_asr") else "未安装", "qwen extra")
+    qwen_vl = importlib.util.find_spec("qwen3_vl_embedding")
+    if qwen_vl is None:
+        try:
+            qwen_vl = importlib.util.find_spec("src.models.qwen3_vl_embedding")
+        except ModuleNotFoundError:
+            qwen_vl = None
+    table.add_row("Qwen3-VL Embedding", "OK" if qwen_vl else "未安装", "qwen extra")
     console.print(table)
 
 
@@ -84,7 +93,12 @@ def download_models(
         "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
         "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
     }
-    models = [whisper_repos.get(config.whisper_model, config.whisper_model), config.clap_model, config.vision_model]
+    asr_models = (
+        [config.qwen_asr_model, config.qwen_aligner_model]
+        if config.asr_backend == "qwen3"
+        else [whisper_repos.get(config.whisper_model, config.whisper_model)]
+    )
+    models = [*asr_models, config.clap_model, config.vision_model]
     for model in models:
         console.print(f"下载 {model}")
         snapshot_download(model)
