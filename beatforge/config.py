@@ -54,6 +54,11 @@ class AIConfig(BaseModel):
     vision_reranker_model: str | None = "Qwen/Qwen3-VL-Reranker-2B"
     vision_rerank_top_k: int = Field(default=5, ge=0, le=20)
     frame_samples: int = Field(default=3, ge=1, le=12)
+    director_enabled: bool = True
+    director_model: str = "Qwen/Qwen3.5-4B"
+    director_base_url: str = "http://127.0.0.1:8080/v1"
+    director_timeout_seconds: float = Field(default=90, ge=2, le=600)
+    director_temperature: float = Field(default=.25, ge=0, le=1.5)
 
 
 class ProjectConfig(BaseModel):
@@ -108,6 +113,11 @@ vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 vision_rerank_top_k = 5
 frame_samples = 3
+director_enabled = true # 需要自行启动 llama.cpp/Ollama/LM Studio；连接失败会回退规则导演
+director_model = "Qwen/Qwen3.5-4B"
+director_base_url = "http://127.0.0.1:8080/v1"
+director_timeout_seconds = 90
+director_temperature = 0.25
 
 [render]
 width = 1920

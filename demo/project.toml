@@ -20,6 +20,11 @@ vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 vision_rerank_top_k = 5
 frame_samples = 3
+director_enabled = true
+director_model = "Qwen/Qwen3.5-4B"
+director_base_url = "http://127.0.0.1:8080/v1"
+director_timeout_seconds = 90
+director_temperature = 0.25
 
 [render]
 width = 960

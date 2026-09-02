@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 
 from beatforge.audio import AudioAnalysis
 from beatforge.config import RenderConfig
 from beatforge.lyrics import LyricLine
 
+if TYPE_CHECKING:
+    from beatforge.models.ai_director import DirectorTreatment
+
 
 @dataclass(slots=True)
 class ArtDirection:
+    concept: str
+    narrative_arc: str
+    visual_style: str
+    color_arc: list[str]
+    motifs: list[int]
     mood: str
     font: str
     highlight_color: str
@@ -35,9 +44,15 @@ PROFILES = {
 }
 
 
-def create_art_direction(analysis: AudioAnalysis, lyrics: list[LyricLine], config: RenderConfig) -> ArtDirection:
+def create_art_direction(
+    analysis: AudioAnalysis,
+    lyrics: list[LyricLine],
+    config: RenderConfig,
+    treatment: DirectorTreatment | None = None,
+) -> ArtDirection:
     mood = analysis.mood if analysis.mood in PROFILES else "cinematic"
-    default_effect, grade, camera, tone = PROFILES[mood]
+    profile = treatment.grade_profile if treatment else mood
+    default_effect, grade, camera, tone = PROFILES[profile]
     font = config.subtitle_font if config.subtitle_font != "auto" else config.subtitle_fonts.get(mood, "Microsoft YaHei")
     base_effect = config.subtitle_effect if config.subtitle_effect != "auto" else default_effect
     line_effects = []
@@ -45,9 +60,12 @@ def create_art_direction(analysis: AudioAnalysis, lyrics: list[LyricLine], confi
         midpoint = (line.start + line.end) / 2
         energy = analysis.energy_at(midpoint)
         melody = analysis.melody_at(midpoint)
-        section = _section_at(analysis, midpoint)
+        section, section_index = _section_info(analysis, midpoint)
+        section_direction = treatment.section(section_index) if treatment else None
         if config.subtitle_effect != "auto":
             effect = config.subtitle_effect
+        elif section_direction:
+            effect = section_direction.subtitle_effect
         elif section == "outro":
             effect = "cinematic"
         elif section in {"bridge", "solo"} and energy < .7:
@@ -66,15 +84,25 @@ def create_art_direction(analysis: AudioAnalysis, lyrics: list[LyricLine], confi
             effect = base_effect
         line_effects.append(effect)
     return ArtDirection(
+        concept=treatment.concept if treatment else f"{mood} music video",
+        narrative_arc=treatment.narrative_arc if treatment else "Follow the energy and lyrical progression of the song.",
+        visual_style=treatment.visual_style if treatment else profile,
+        color_arc=treatment.color_arc if treatment else [profile],
+        motifs=treatment.motif_asset_ids if treatment else [],
         mood=mood, font=font, highlight_color=config.subtitle_highlight_color,
         base_subtitle_effect=base_effect, line_effects=line_effects,
         grade_filter=grade, camera_intensity=round(camera * (.85 + analysis.melodic_motion * .3), 3),
-        transition_tone=tone, grain=config.film_grain, vignette=config.vignette,
+        transition_tone=treatment.transition_tone if treatment and treatment.transition_tone != "neutral" else tone,
+        grain=config.film_grain, vignette=config.vignette,
     )
 
 
 def _section_at(analysis: AudioAnalysis, time: float) -> str:
+    return _section_info(analysis, time)[0]
+
+
+def _section_info(analysis: AudioAnalysis, time: float) -> tuple[str, int]:
     for index, (start, end) in enumerate(zip(analysis.sections, analysis.sections[1:])):
         if start <= time < end:
-            return analysis.section_labels[index] if index < len(analysis.section_labels) else "unknown"
-    return "unknown"
+            return (analysis.section_labels[index] if index < len(analysis.section_labels) else "unknown", index)
+    return "unknown", max(0, len(analysis.sections) - 2)

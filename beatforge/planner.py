@@ -3,12 +3,16 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from beatforge.audio import AudioAnalysis
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
+
+if TYPE_CHECKING:
+    from beatforge.models.ai_director import DirectorTreatment, SectionDirection
 
 
 @dataclass(slots=True)
@@ -29,6 +33,7 @@ class Shot:
     melody: float = 0.0
     section: str = "unknown"
     edit_intent: str = "continuity"
+    transition_tone: str = "neutral"
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -42,8 +47,9 @@ def create_plan(
     *,
     min_shot: float,
     max_shot: float,
+    treatment: DirectorTreatment | None = None,
 ) -> list[Shot]:
-    boundaries = _boundaries(analysis, lyrics, min_shot, max_shot)
+    boundaries = _boundaries(analysis, lyrics, min_shot, max_shot, treatment)
     lyric_rows = {id(line): i for i, line in enumerate(lyrics)}
     usage: dict[int, int] = {}
     recent: list[int] = []
@@ -54,7 +60,8 @@ def create_plan(
         midpoint = (start + end) / 2
         line = next((line for line in lyrics if line.start <= midpoint < line.end), None)
         energy = analysis.energy_at(midpoint)
-        section = _section_at(analysis, midpoint)
+        section, section_index = _section_info(analysis, midpoint)
+        direction = treatment.section(section_index) if treatment else None
         ranked: list[tuple[float, MediaAsset, float]] = []
         for asset in assets:
             semantic = float(similarities[lyric_rows[id(line)], asset.id]) if line and similarities is not None else _tag_score(line, asset)
@@ -66,7 +73,8 @@ def create_plan(
             shot_variety = -.05 if previous and previous.shot_size != "unknown" and previous.shot_size == asset.shot_size else 0
             section_fit = .10 if section == "chorus" and asset.kind == "video" else .06 if section in {"intro", "outro"} and asset.kind == "image" else 0
             motif = .12 if section == "chorus" and asset.id in chorus_motifs else 0
-            score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif - repeat
+            director_score = _director_asset_score(asset, direction, treatment)
+            score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif + director_score - repeat
             ranked.append((score, asset, semantic))
         _, selected, semantic = max(ranked, key=lambda item: item[0])
         usage[selected.id] = usage.get(selected.id, 0) + 1
@@ -87,19 +95,29 @@ def create_plan(
             semantic_score=round(semantic, 4),
             melody=round(analysis.melody_at(midpoint), 4),
             section=section,
-            edit_intent="impact" if section == "chorus" and energy > .65 else "breathe" if section in {"intro", "outro"} else "continuity",
+            edit_intent=direction.edit_intent if direction else "impact" if section == "chorus" and energy > .65 else "breathe" if section in {"intro", "outro"} else "continuity",
+            transition_tone=direction.transition_tone if direction else "neutral",
         ))
     return shots
 
 
-def _boundaries(analysis: AudioAnalysis, lyrics: list[LyricLine], minimum: float, maximum: float) -> list[float]:
+def _boundaries(
+    analysis: AudioAnalysis,
+    lyrics: list[LyricLine],
+    minimum: float,
+    maximum: float,
+    treatment: DirectorTreatment | None = None,
+) -> list[float]:
     anchors = sorted(set([0.0, analysis.duration, *analysis.sections, *(line.start for line in lyrics)]))
     output = [0.0]
     for target in anchors[1:]:
         cursor = output[-1]
         while target - cursor > maximum:
-            section = _section_at(analysis, cursor)
+            section, section_index = _section_info(analysis, cursor)
             section_scale = .78 if section == "chorus" else 1.18 if section in {"intro", "outro", "bridge"} else 1.0
+            direction = treatment.section(section_index) if treatment else None
+            if direction:
+                section_scale *= 1.25 - direction.cut_intensity * .65
             ideal = cursor + np.clip((3.8 - analysis.energy_at(cursor) * 1.5) * section_scale, minimum, maximum)
             grid = analysis.downbeats or analysis.beats
             candidates = [beat for beat in grid if minimum <= beat - cursor <= maximum and beat < target - minimum / 2]
@@ -126,10 +144,32 @@ def _tag_score(line: LyricLine | None, asset: MediaAsset) -> float:
 
 
 def _section_at(analysis: AudioAnalysis, time: float) -> str:
+    return _section_info(analysis, time)[0]
+
+
+def _section_info(analysis: AudioAnalysis, time: float) -> tuple[str, int]:
     for index, (start, end) in enumerate(zip(analysis.sections, analysis.sections[1:])):
         if start <= time < end:
-            return analysis.section_labels[index] if index < len(analysis.section_labels) else "unknown"
-    return analysis.section_labels[-1] if analysis.section_labels else "unknown"
+            return (analysis.section_labels[index] if index < len(analysis.section_labels) else "unknown", index)
+    index = max(0, len(analysis.sections) - 2)
+    return (analysis.section_labels[-1] if analysis.section_labels else "unknown", index)
+
+
+def _director_asset_score(
+    asset: MediaAsset,
+    direction: SectionDirection | None,
+    treatment: DirectorTreatment | None,
+) -> float:
+    score = .10 if treatment and asset.id in treatment.motif_asset_ids else 0.0
+    if not direction:
+        return score
+    if asset.id in direction.preferred_asset_ids:
+        score += .22 - direction.preferred_asset_ids.index(asset.id) * .025
+    if direction.preferred_media == asset.kind:
+        score += .08
+    if asset.shot_size in direction.preferred_shot_sizes:
+        score += .06
+    return score
 
 
 def _color_similarity(previous: MediaAsset | None, current: MediaAsset) -> float:

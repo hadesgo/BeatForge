@@ -73,13 +73,22 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         release_gpu()
     print(f"    {len(assets)} 个素材 · {project.ai.vision_backend if similarities is not None else '文件标签'}")
 
-    print("4/5 AI 镜头编排")
+    print("4/5 AI 导演与镜头编排")
+    treatment = None
+    if use_ai and project.ai.director_enabled:
+        try:
+            from beatforge.models.ai_director import direct_mv
+            treatment = direct_mv(analysis, lyrics, assets, similarities, project.ai)
+            print(f"    导演概念：{treatment.concept}")
+        except Exception as exc:
+            print(f"    本地导演不可用，使用规则导演：{type(exc).__name__}: {exc}")
     shots = create_plan(
         analysis, lyrics, assets, similarities,
         min_shot=project.render.min_shot_seconds,
         max_shot=project.render.max_shot_seconds,
+        treatment=treatment,
     )
-    art = create_art_direction(analysis, lyrics, project.render)
+    art = create_art_direction(analysis, lyrics, project.render, treatment)
     plan_file = project.cache_dir / "plan.json"
     plan = {
         "version": 2,
@@ -89,9 +98,11 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
             "audio": project.ai.clap_model if use_ai else None,
             "vision": project.ai.vision_model if similarities is not None else None,
             "vision_reranker": project.ai.vision_reranker_model if similarities is not None else None,
+            "director": project.ai.director_model if treatment is not None else None,
         },
         "render": project.render.model_dump(mode="json"),
         "art_direction": art.as_dict(),
+        "director_treatment": treatment.model_dump(mode="json") if treatment else None,
         "analysis": analysis.as_dict(),
         "lyrics": [line.as_dict() for line in lyrics],
         "media": [asset.as_dict() for asset in assets],

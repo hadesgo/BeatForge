@@ -6,10 +6,9 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 
 ```text
 音乐 ── Qwen3-ASR + ForcedAligner ── 逐字时间轴 ──┐
-  └── librosa + CLAP ── 旋律/节拍/章节/意境 ─────┼── AI 艺术指导 ── FFmpeg
-图片/视频 ── Qwen3-VL-Embedding 视觉向量 ─────────┘
-                         ↑
-                    每句歌词向量
+  └── All-In-One + CLAP ── 旋律/节拍/章节/意境 ──┼── Qwen3.5 AI 导演 ── 确定性规划器 ── FFmpeg
+图片/视频 ── Qwen3-VL Embedding + Reranker ───────┘           │
+                                                      导演方案 JSON
 ```
 
 - `Qwen/Qwen3-ASR-1.7B`：默认歌曲识别模型；
@@ -19,6 +18,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `Qwen/Qwen3-VL-Reranker-2B`：对初选画面进行歌词意境和叙事适配精排；
 - `All-In-One-Infer`：识别 intro、verse、chorus、bridge、solo、outro 和强拍；
 - `Beat This!`：可选的高精度 beat/downbeat 后备；
+- `Qwen/Qwen3.5-4B`：本地 AI 导演，负责全片概念、叙事弧、视觉母题和分段剪辑策略；
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
@@ -68,6 +68,27 @@ uv run beatforge run my-mv/project.toml --no-ai
 ```
 
 输出包括 `output.mp4`、`.beatforge/plan.json`、`.beatforge/lyrics.ass` 和视频分析所用的缓存关键帧。`plan.json` 包含音乐结构、模型配置、素材信息、逐镜头语义得分和剪辑参数。
+
+## 本地 AI 导演
+
+导演模型作为独立的 OpenAI-compatible 本地服务运行，BeatForge 不会自动下载或启动它。支持 llama.cpp、Ollama 和 LM Studio。没有启动服务、返回格式不合法或请求超时时，会打印原因并自动使用原来的规则导演，渲染流程不会中断。
+
+```toml
+[ai]
+director_enabled = true
+director_model = "Qwen/Qwen3.5-4B"
+director_base_url = "http://127.0.0.1:8080/v1"
+director_timeout_seconds = 90
+director_temperature = 0.25
+```
+
+常见服务地址：
+
+- llama.cpp：`http://127.0.0.1:8080/v1`；
+- Ollama：`http://127.0.0.1:11434/v1`，同时把 `director_model` 改为 Ollama 中实际使用的模型名；
+- LM Studio：`http://127.0.0.1:1234/v1`。
+
+如果本地服务要求密钥，设置环境变量 `BEATFORGE_DIRECTOR_API_KEY`。导演接收歌曲统计、逐句歌词、乐段和最多 60 个高价值素材候选，输出经过 JSON Schema 与 Pydantic 校验的结构化方案。它不会生成时间码或直接执行 FFmpeg；具体剪辑点仍由节拍模型和确定性规划器控制。
 
 ## 字幕和画面动效
 
@@ -121,6 +142,9 @@ vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 music_structure_backend = "allin1"
 frame_samples = 3
+director_enabled = true
+director_model = "Qwen/Qwen3.5-4B"
+director_base_url = "http://127.0.0.1:8080/v1"
 ```
 
 RTX 5070 12GB 推荐配置：
@@ -136,6 +160,9 @@ vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 music_structure_backend = "allin1"
 frame_samples = 5
+director_enabled = true
+director_model = "Qwen/Qwen3.5-9B"
+director_base_url = "http://127.0.0.1:8080/v1"
 ```
 
 运行 `uv run beatforge doctor` 检查实际使用 CPU 还是 CUDA。Faster Whisper 和 SigLIP2 仍可通过 `asr_backend`/`vision_backend` 作为兼容后备。
@@ -167,6 +194,7 @@ Qwen3-VL-Embedding 会直接比较歌词、图片和视频关键帧。文件名�
 - 相邻镜头主色差异过大时降低分数，冲击型剪辑除外；
 - 使用带 handle 的真实 xfade，避免每个镜头先黑场再出现；
 - intro/outro 留呼吸，chorus 紧凑，bridge/solo 给旋律性镜头更长时间。
+- AI 导演统一概念、叙事弧、调色倾向和视觉母题，并对各乐段给出剪辑强度、景别、素材偏好、字幕与转场意见；
 
 这些决策会写入 `plan.json` 的 `section`、`edit_intent`、`melody`、`quality_score` 和 `art_direction`，方便人工复核。
 
@@ -196,7 +224,8 @@ uv run beatforge run demo/project.toml --plan-only
 
 ```text
 beatforge/audio.py                    节拍、章节与能量分析
-beatforge/director.py                 AI 字体、字幕与视觉艺术指导
+beatforge/director.py                 导演方案到字幕与视觉艺术指导
+beatforge/models/ai_director.py       本地 Qwen3.5 导演协议与校验
 beatforge/models/transcriber.py       Qwen3-ASR/Whisper 时间轴
 beatforge/models/audio_semantics.py   CLAP 音乐语义
 beatforge/models/music_structure.py   All-In-One/Beat This 结构分析

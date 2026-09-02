@@ -94,13 +94,14 @@ def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
 
 
 def _transition_spec(shot: Shot, following: Shot, art: ArtDirection, cfg: RenderConfig) -> tuple[str, float]:
+    tone = following.transition_tone if following.transition_tone != "neutral" else art.transition_tone
     if shot.edit_intent == "impact" or following.edit_intent == "impact":
-        name, duration = ("fadewhite", .16) if art.transition_tone == "bright" else ("smoothleft", .22)
+        name, duration = ("fadewhite", .16) if tone == "bright" else ("smoothleft", .22)
     elif following.section == "outro":
         name, duration = "fadeblack", .5
-    elif art.mood == "dreamy":
+    elif tone == "soft" or art.mood == "dreamy":
         name, duration = "dissolve", .48
-    elif art.mood in {"melancholic", "cinematic", "dark"}:
+    elif tone == "dark" or art.mood in {"melancholic", "cinematic", "dark"}:
         name, duration = "fadeblack", .34
     else:
         name, duration = "fade", .24
