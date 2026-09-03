@@ -59,3 +59,15 @@ def test_richer_ass_effects(tmp_path: Path) -> None:
         target = tmp_path / f"{effect}.ass"
         write_ass(lines, target, width=1280, height=720, font="Arial", size=40, margin=60, effect=effect)
         assert expected in target.read_text("utf-8-sig")
+
+
+def test_ass_shrinks_long_lines_and_typewriter_escapes_markup(tmp_path: Path) -> None:
+    target = tmp_path / "long.ass"
+    write_ass(
+        [LyricLine(0, 3, "这是一句非常非常长的歌词用于验证字幕不会超出画面安全区域{心声}")],
+        target, width=640, height=360, font="Arial", size=40, margin=40,
+        effect="typewriter",
+    )
+    content = target.read_text("utf-8-sig")
+    assert r"{\fs27}" in content
+    assert r"\{" in content and r"\}" in content

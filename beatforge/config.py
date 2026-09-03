@@ -18,13 +18,13 @@ class RenderConfig(BaseModel):
     subtitle_font: str = "auto"
     subtitle_fonts_dir: Path | None = None
     subtitle_fonts: dict[str, str] = Field(default_factory=lambda: {
-        "energetic": "Arial Black",
-        "uplifting": "Microsoft YaHei",
-        "melancholic": "SimSun",
-        "dreamy": "Microsoft YaHei Light",
-        "romantic": "KaiTi",
-        "dark": "SimHei",
-        "cinematic": "Microsoft YaHei",
+        "energetic": "preset:energetic",
+        "uplifting": "preset:modern",
+        "melancholic": "preset:cinematic",
+        "dreamy": "preset:dreamy",
+        "romantic": "preset:lyrical",
+        "dark": "preset:dark",
+        "cinematic": "preset:cinematic",
     })
     subtitle_size: int = 46
     subtitle_effect: Literal["auto", "karaoke", "cinematic", "bounce", "float", "glow", "typewriter"] = "auto"
@@ -153,11 +153,11 @@ transition_min_seconds = 0.16
 transition_max_seconds = 0.55
 
 [render.subtitle_fonts]
-energetic = "Arial Black"
-uplifting = "Microsoft YaHei"
-melancholic = "SimSun"
-dreamy = "Microsoft YaHei Light"
-romantic = "KaiTi"
-dark = "SimHei"
-cinematic = "Microsoft YaHei"
+energetic = "preset:energetic"
+uplifting = "preset:modern"
+melancholic = "preset:cinematic"
+dreamy = "preset:dreamy"
+romantic = "preset:lyrical"
+dark = "preset:dark"
+cinematic = "preset:cinematic"
 '''

@@ -20,4 +20,5 @@ def test_project_paths_and_cpu_defaults(tmp_path: Path) -> None:
     assert config.ai.director_quantization == "nf4"
     assert config.render.subtitle_effect == "auto"
     assert config.render.subtitle_font == "auto"
+    assert config.render.subtitle_fonts["energetic"] == "preset:energetic"
     assert config.render.visual_effects is True

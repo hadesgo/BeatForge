@@ -138,18 +138,22 @@ film_grain = 1.6
 - `glow`：适合浪漫和梦幻段落的柔光入场；
 - `typewriter`：适合暗黑、叙事感段落的逐字出现。
 
-可以把 `.ttf`/`.otf` 放入项目的 `fonts/`，然后为不同意境配置字体族名：
+BeatForge 内置七组跨平台字体候选：`modern`、`cinematic`、`lyrical`、`energetic`、`dreamy`、`minimal` 和 `dark`。每组会依次尝试思源/Noto、霞鹜文楷、MiSans 等开源字体以及当前系统常见中文字体；未找到时使用系统中文字体回退，避免直接回退 Arial 导致方框字。可以把 `.ttf`、`.otf` 或 `.ttc` 放入项目的 `fonts/`，程序会读取字体内部的真实家族名，而不是猜测文件名。
+
+默认情绪映射如下，也可以把右侧替换成任意字体家族名：
 
 ```toml
 [render.subtitle_fonts]
-energetic = "My Display Font"
-uplifting = "My Sans Font"
-melancholic = "My Serif Font"
-dreamy = "My Light Font"
-romantic = "My Handwriting Font"
-dark = "My Condensed Font"
-cinematic = "My Cinema Font"
+energetic = "preset:energetic"
+uplifting = "preset:modern"
+melancholic = "preset:cinematic"
+dreamy = "preset:dreamy"
+romantic = "preset:lyrical"
+dark = "preset:dark"
+cinematic = "preset:cinematic"
 ```
+
+若希望整首歌固定使用某个预设或自定义字体，可分别设置 `subtitle_font = "preset:minimal"` 或 `subtitle_font = "My MV Font"`。自动字幕还会对异常长的歌词单独缩小字号，普通短句保持原字号；这不会破坏逐字高亮和打字机时序。
 
 图片和视频的推拉幅度同时参考局部能量、旋律变化率和歌曲意境。高能/高节奏密度段落使用锐化与亮色闪切，低能段落使用柔化与长淡入，梦幻和抒情歌曲降低镜头运动，所有镜头可选暗角和动态胶片颗粒。最终选择会写入 `plan.json` 的 `art_direction` 和每个 `shot.melody`。
 

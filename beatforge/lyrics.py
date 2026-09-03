@@ -104,6 +104,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     events = []
     for index, line in enumerate(lines):
         text = _ass_text(line.text)
+        fit = _fit_font_size(line.text, width, size)
         line_effect = line_effects[index] if line_effects and index < len(line_effects) else effect
         if line_effect == "karaoke":
             text = _karaoke_line(line)
@@ -115,12 +116,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         elif line_effect == "glow":
             prefix = r"{\fad(220,300)\blur3\bord3\t(0,320,\blur0.5\bord2.2)}"
         elif line_effect == "typewriter":
-            text = _typewriter_text(text, line.end - line.start)
+            text = _typewriter_text(line.text, line.end - line.start)
             prefix = r"{\fad(80,240)\1c&HFFFFFF&}"
         else:
             prefix = r"{\fad(360,460)\1c&HFFFFFF&\blur1.2\t(0,360,\blur0)}"
         events.append(
-            f"Dialogue: 0,{ass_timestamp(line.start)},{ass_timestamp(line.end)},Lyric,,0,0,0,,{prefix}{text}"
+            f"Dialogue: 0,{ass_timestamp(line.start)},{ass_timestamp(line.end)},Lyric,,0,0,0,,{fit}{prefix}{text}"
         )
     file.write_text(header + "\n".join(events) + "\n", "utf-8-sig")
 
@@ -157,6 +158,17 @@ def _typewriter_text(text: str, duration: float) -> str:
     characters = list(text)
     step = max(30, round(duration * 1000 / max(len(characters), 1)))
     return "".join(
-        f"{{\\alpha&HFF&\\t({index * step},{index * step + 60},\\alpha&H00&)}}{character}"
+        f"{{\\alpha&HFF&\\t({index * step},{index * step + 60},\\alpha&H00&)}}{_ass_text(character)}"
         for index, character in enumerate(characters)
     )
+
+
+def _fit_font_size(text: str, width: int, size: int) -> str:
+    """Shrink unusually long lines while keeping normal lyrics at the chosen size."""
+    visual_units = sum(1.0 if ord(char) > 255 else .58 for char in text if char not in "\r\n")
+    available = width * .84
+    estimated = visual_units * size
+    if estimated <= available or estimated <= 0:
+        return ""
+    fitted = max(round(size * .68), min(size, round(size * available / estimated)))
+    return rf"{{\fs{fitted}}}"

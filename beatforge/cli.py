@@ -24,6 +24,7 @@ def init(directory: Path = typer.Argument(..., help="项目目录")) -> None:
     """创建一个新的 MV 项目。"""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "media").mkdir(exist_ok=True)
+    (directory / "fonts").mkdir(exist_ok=True)
     (directory / "project.toml").write_text(PROJECT_TEMPLATE, "utf-8")
     (directory / "lyrics.lrc").write_text("[00:00.00]在这里填写歌词\n[00:05.00]或删除本文件让 ASR 自动转写\n", "utf-8")
     console.print(f"[green]项目已创建[/green] {directory.resolve() / 'project.toml'}")

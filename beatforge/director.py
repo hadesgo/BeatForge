@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from beatforge.audio import AudioAnalysis
 from beatforge.config import RenderConfig
+from beatforge.fonts import resolve_subtitle_font
 from beatforge.lyrics import LyricLine
 
 if TYPE_CHECKING:
@@ -53,7 +54,11 @@ def create_art_direction(
     mood = analysis.mood if analysis.mood in PROFILES else "cinematic"
     profile = treatment.grade_profile if treatment else mood
     default_effect, grade, camera, tone = PROFILES[profile]
-    font = config.subtitle_font if config.subtitle_font != "auto" else config.subtitle_fonts.get(mood, "Microsoft YaHei")
+    requested_font = (
+        config.subtitle_font if config.subtitle_font != "auto"
+        else config.subtitle_fonts.get(mood, "preset:modern")
+    )
+    font = resolve_subtitle_font(requested_font, config.subtitle_fonts_dir)
     base_effect = config.subtitle_effect if config.subtitle_effect != "auto" else default_effect
     line_effects = []
     for line in lyrics:
