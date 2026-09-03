@@ -30,6 +30,7 @@ def test_sentence_transformer_ranks_images_for_lyrics(tmp_path: Path) -> None:
     scores = index.similarities(["夕阳", "城市"], assets, frame_samples=3)
 
     assert scores.shape == (2, 2)
+    assert index.best_source_starts.shape == (2, 2)
     assert np.argmax(scores[0]) == 0
     assert np.argmax(scores[1]) == 1
 

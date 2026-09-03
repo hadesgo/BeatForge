@@ -21,19 +21,22 @@ def test_end_to_end_renderer_without_models(tmp_path: Path) -> None:
     Image.new("RGB", (640, 360), (30, 80, 140)).save(image)
     image_2 = tmp_path / "frame-2.jpg"
     Image.new("RGB", (640, 360), (180, 90, 40)).save(image_2)
+    image_3 = tmp_path / "frame-3.jpg"
+    Image.new("RGB", (640, 360), (50, 150, 80)).save(image_3)
     music = tmp_path / "music.wav"
     sample_rate = 22_050
-    time = np.arange(sample_rate * 2) / sample_rate
+    time = np.arange(sample_rate * 3) / sample_rate
     sf.write(music, (.1 * np.sin(2 * np.pi * 220 * time)).astype(np.float32), sample_rate)
     shots = [
-        Shot(0, 0, 1, 1, 0, str(image), "image", 0, "测试", .5, "steady", "fade", .8),
-        Shot(1, 1, 2, 1, 1, str(image_2), "image", 0, "字幕", .7, "dynamic", "fade", .7),
+        Shot(0, 0, 1, 1, 0, str(image), "image", 0, "测试", .5, "steady", "cut", .8),
+        Shot(1, 1, 2, 1, 1, str(image_2), "image", 0, "字幕", .7, "dynamic", "dissolve", .7),
+        Shot(2, 2, 3, 1, 2, str(image_3), "image", 0, "成片", .4, "gentle", "none", .6),
     ]
     output = tmp_path / "output.mp4"
     config = RenderConfig(width=320, height=180, fps=12, crf=30, preset="ultrafast", subtitle_size=20)
-    lyrics = [LyricLine(0, 1, "测试"), LyricLine(1, 2, "字幕")]
+    lyrics = [LyricLine(0, 1, "测试"), LyricLine(1, 2, "字幕"), LyricLine(2, 3, "成片")]
     analysis = AudioAnalysis(
-        duration=2, bpm=100, beats=[0, 1, 2], sections=[0, 2],
+        duration=3, bpm=100, beats=[0, 1, 2, 3], sections=[0, 3],
         energy_times=[0], energy_values=[.5], average_energy=.5,
         brightness=.5, mood="uplifting", mood_scores={"uplifting": 1},
     )
@@ -41,4 +44,4 @@ def test_end_to_end_renderer_without_models(tmp_path: Path) -> None:
     render(shots, lyrics, music, output, tmp_path / "cache", config, art)
     assert output.exists()
     assert (tmp_path / "cache" / "lyrics.ass").exists()
-    assert 1.9 <= duration(output) <= 2.1
+    assert 2.9 <= duration(output) <= 3.1

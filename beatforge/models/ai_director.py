@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import json
 import gc
+import math
+import subprocess
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from PIL import Image, ImageDraw, ImageOps
 from pydantic import BaseModel, Field, ValidationError
 
 from beatforge.audio import AudioAnalysis
 from beatforge.config import AIConfig
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
+from beatforge.runtime import command
 
 
 SubtitleEffect = Literal["karaoke", "cinematic", "bounce", "float", "glow", "typewriter"]
@@ -58,9 +62,13 @@ def direct_mv(
     config: AIConfig,
     device: str,
     cache_dir: Path,
+    source_starts: np.ndarray | None = None,
 ) -> DirectorTreatment:
     context = _build_context(analysis, lyrics, assets, similarities)
-    treatment = _generate_treatment(context, config, device, cache_dir)
+    visual_reference = _build_contact_sheet(
+        assets, similarities, cache_dir, config.director_contact_sheet_assets, source_starts,
+    )
+    treatment = _generate_treatment(context, config, device, cache_dir, visual_reference)
     return _sanitize(treatment, len(analysis.sections) - 1, {asset.id for asset in assets})
 
 
@@ -69,6 +77,7 @@ def _generate_treatment(
     config: AIConfig,
     device: str,
     cache_dir: Path,
+    visual_reference: Path | None = None,
 ) -> DirectorTreatment:
     try:
         import torch
@@ -98,12 +107,22 @@ def _generate_treatment(
         model = AutoModelForMultimodalLM.from_pretrained(config.director_model, **load_options)
         model.eval()
         schema = json.dumps(DirectorTreatment.model_json_schema(), ensure_ascii=False)
+        project_text = (
+            f"JSON Schema:\n{schema}\n\n项目数据:\n{json.dumps(context, ensure_ascii=False)}"
+        )
+        user_content: str | list[dict] = project_text
+        if visual_reference is not None:
+            user_content = [
+                {"type": "image", "image": str(visual_reference)},
+                {"type": "text", "text": (
+                    "上图是候选素材联系表，画面左上角编号对应项目数据里的素材 ID。"
+                    "请同时判断构图、主体、景别、色彩、镜头之间的视觉连续性和歌词意境。\n\n"
+                    + project_text
+                )},
+            ]
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": (
-                f"JSON Schema:\n{schema}\n\n项目数据:\n"
-                f"{json.dumps(context, ensure_ascii=False)}"
-            )},
+            {"role": "user", "content": user_content},
         ]
         raw = _generate(model, processor, messages, config, torch)
         try:
@@ -212,11 +231,66 @@ def _candidate_ids(assets: list[MediaAsset], similarities: np.ndarray | None, li
         return {asset.id for asset in assets}
     semantic = np.max(similarities, axis=0) if similarities is not None and similarities.size else np.zeros(len(assets))
     ranked = sorted(
-        assets,
-        key=lambda asset: float(semantic[asset.id]) * .75 + asset.quality_score * .25,
+        enumerate(assets),
+        key=lambda item: float(semantic[item[0]]) * .75 + item[1].quality_score * .25,
         reverse=True,
     )
-    return {asset.id for asset in ranked[:limit]}
+    return {asset.id for _, asset in ranked[:limit]}
+
+
+def _build_contact_sheet(
+    assets: list[MediaAsset], similarities: np.ndarray | None, cache_dir: Path, limit: int,
+    source_starts: np.ndarray | None = None,
+) -> Path | None:
+    """Build one compact visual reference so the director judges actual footage, not filenames."""
+    if limit <= 0 or not assets:
+        return None
+    semantic = (
+        np.max(similarities, axis=0)
+        if similarities is not None and similarities.size else np.zeros(len(assets))
+    )
+    ranked = sorted(
+        enumerate(assets),
+        key=lambda item: float(semantic[item[0]]) * .7 + item[1].quality_score * .3,
+        reverse=True,
+    )[:limit]
+    still_dir = cache_dir / "director-stills"
+    still_dir.mkdir(parents=True, exist_ok=True)
+    tiles: list[tuple[MediaAsset, Image.Image]] = []
+    for asset_column, asset in ranked:
+        try:
+            source = asset.file
+            if asset.kind == "video":
+                source = still_dir / f"asset-{asset.id}.jpg"
+                if not source.exists():
+                    timestamp = max(0.0, asset.duration * .5 - .05)
+                    if source_starts is not None and source_starts.size:
+                        timestamp = float(np.median(source_starts[:, asset_column]))
+                    command([
+                        "ffmpeg", "-y", "-v", "error", "-ss", f"{timestamp:.3f}",
+                        "-i", str(asset.file), "-frames:v", "1", "-vf", "scale=640:-2",
+                        str(source),
+                    ])
+            with Image.open(source) as opened:
+                tiles.append((asset, opened.convert("RGB").copy()))
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            continue
+    if not tiles:
+        return None
+    tile_width, tile_height, label_height, columns = 320, 180, 28, 4
+    rows = math.ceil(len(tiles) / columns)
+    sheet = Image.new("RGB", (tile_width * columns, (tile_height + label_height) * rows), (14, 14, 16))
+    draw = ImageDraw.Draw(sheet)
+    for index, (asset, image) in enumerate(tiles):
+        x = index % columns * tile_width
+        y = index // columns * (tile_height + label_height)
+        fitted = ImageOps.contain(image, (tile_width, tile_height))
+        sheet.paste(fitted, (x + (tile_width - fitted.width) // 2, y + (tile_height - fitted.height) // 2))
+        draw.rectangle((x, y, x + 86, y + 24), fill=(0, 0, 0))
+        draw.text((x + 7, y + 5), f"ID {asset.id}  {asset.kind}", fill=(255, 220, 72))
+    target = cache_dir / "director-contact-sheet.jpg"
+    sheet.save(target, quality=90, optimize=True)
+    return target
 
 
 def _sanitize(treatment: DirectorTreatment, section_count: int, asset_ids: set[int]) -> DirectorTreatment:

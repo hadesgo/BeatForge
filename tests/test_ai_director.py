@@ -9,7 +9,12 @@ from beatforge.audio import AudioAnalysis
 from beatforge.config import AIConfig
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
-from beatforge.models.ai_director import DirectorTreatment, _generate_treatment, direct_mv
+from beatforge.models.ai_director import (
+    DirectorTreatment,
+    _build_contact_sheet,
+    _generate_treatment,
+    direct_mv,
+)
 from beatforge.planner import create_plan
 
 
@@ -137,3 +142,22 @@ def test_director_loads_in_process_with_memory_limit_and_releases_cuda(monkeypat
     assert options["offload_folder"] == str(tmp_path / "director-offload")
     assert calls["empty"] == 1
     assert calls["ipc"] == 1
+
+
+def test_director_contact_sheet_contains_real_candidates(tmp_path: Path) -> None:
+    from PIL import Image
+
+    first = tmp_path / "first.jpg"
+    second = tmp_path / "second.jpg"
+    Image.new("RGB", (640, 360), (220, 60, 40)).save(first)
+    Image.new("RGB", (360, 640), (30, 80, 180)).save(second)
+    assets = [
+        MediaAsset(0, first, "image", float("inf"), 640, 360, quality_score=.8),
+        MediaAsset(1, second, "image", float("inf"), 360, 640, quality_score=.7),
+    ]
+
+    result = _build_contact_sheet(assets, np.array([[.9, .4]]), tmp_path / "cache", 24)
+
+    assert result is not None and result.exists()
+    with Image.open(result) as sheet:
+        assert sheet.size == (1280, 208)

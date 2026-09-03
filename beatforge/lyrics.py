@@ -142,10 +142,14 @@ def _karaoke_line(line: LyricLine) -> str:
     if not line.tokens:
         return _karaoke_text(_ass_text(line.text), line.end - line.start)
     output = []
-    for index, token in enumerate(line.tokens):
-        next_start = line.tokens[index + 1].start if index + 1 < len(line.tokens) else line.end
-        duration = max(.01, next_start - token.start)
+    cursor = line.start
+    for token in line.tokens:
+        gap = max(0.0, token.start - cursor)
+        if gap >= .01:
+            output.append(f"{{\\k{round(gap * 100)}}}")
+        duration = max(.01, token.end - token.start)
         output.append(f"{{\\kf{round(duration * 100)}}}{_ass_text(token.text)}")
+        cursor = token.end
     return "".join(output)
 
 

@@ -49,13 +49,22 @@ class VisionIndex:
                 convert_to_numpy=True,
             ))
             asset_features = []
+            source_columns: list[np.ndarray] = []
             for asset in assets:
                 documents = [str(asset.file)] if asset.kind == "image" else self._video_frames(asset, frame_samples)
                 vectors = np.asarray(self.model.encode(
                     documents, normalize_embeddings=True, convert_to_numpy=True,
                 ))
+                if asset.kind == "video":
+                    frame_scores = text_features @ vectors.T
+                    sample_times = self._video_sample_times(asset, frame_samples)
+                    source_columns.append(sample_times[np.argmax(frame_scores, axis=1)])
+                    self._update_video_color(asset, documents)
+                else:
+                    source_columns.append(np.zeros(len(texts)))
                 vector = vectors.mean(axis=0)
                 asset_features.append(vector / max(np.linalg.norm(vector), 1e-8))
+            self.best_source_starts = np.stack(source_columns, axis=1)
             scores = text_features @ np.stack(asset_features).T
             if self.reranker_model and self.rerank_top_k > 0:
                 scores = self._rerank(texts, assets, scores, frame_samples)
@@ -137,7 +146,7 @@ class VisionIndex:
     def _video_frames(self, asset: MediaAsset, count: int) -> list[Image.Image]:
         digest = hashlib.sha1(f"{asset.file}:{asset.file.stat().st_mtime_ns}".encode()).hexdigest()[:12]
         frames: list[Image.Image] = []
-        for index, time in enumerate(np.linspace(0.1, max(0.1, asset.duration - 0.1), count)):
+        for index, time in enumerate(self._video_sample_times(asset, count)):
             target = self.cache_dir / f"{digest}-{index}.jpg"
             if not target.exists():
                 command([
@@ -146,6 +155,24 @@ class VisionIndex:
                 ])
             frames.append(Image.open(target).convert("RGB"))
         return frames
+
+    @staticmethod
+    def _video_sample_times(asset: MediaAsset, count: int) -> np.ndarray:
+        return np.linspace(0.1, max(0.1, asset.duration - 0.1), count)
+
+    @staticmethod
+    def _update_video_color(asset: MediaAsset, frames: list[Image.Image] | list[str]) -> None:
+        if asset.dominant_color != [128, 128, 128]:
+            return
+        colors = []
+        for frame in frames:
+            if not isinstance(frame, Image.Image):
+                continue
+            thumbnail = frame.copy()
+            thumbnail.thumbnail((96, 96))
+            colors.append(np.median(np.asarray(thumbnail).reshape(-1, 3), axis=0))
+        if colors:
+            asset.dominant_color = np.median(np.stack(colors), axis=0).astype(int).tolist()
 
 
 def blend_rerank_scores(base: np.ndarray, reranked: np.ndarray) -> np.ndarray:

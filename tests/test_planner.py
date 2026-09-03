@@ -39,3 +39,69 @@ def test_ai_similarity_controls_selection() -> None:
     shots = create_plan(analysis, lyrics, assets, np.array([[.1, .9]]), min_shot=1.5, max_shot=5)
     assert shots[0].media_id == 1
     assert shots[0].semantic_score == .9
+
+
+def test_plan_prefers_hard_cuts_and_reserves_transition_for_section_change() -> None:
+    analysis = AudioAnalysis(
+        duration=8, bpm=120, beats=[0, 2, 4, 6, 8], sections=[0, 4, 8],
+        energy_times=[0, 4], energy_values=[.5, .7], average_energy=.6,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+        section_labels=["verse", "chorus"],
+    )
+    lyrics = [LyricLine(0, 2, "一"), LyricLine(2, 4, "二"), LyricLine(4, 6, "三"), LyricLine(6, 8, "四")]
+    assets = [
+        MediaAsset(0, Path("a.mp4"), "video", 20, 1920, 1080),
+        MediaAsset(1, Path("b.mp4"), "video", 20, 1920, 1080),
+    ]
+
+    shots = create_plan(analysis, lyrics, assets, None, min_shot=1.5, max_shot=4)
+
+    assert shots[0].transition in {"dip", "flash"}
+    assert shots[-1].transition == "none"
+
+
+def test_plan_penalizes_video_that_would_need_visible_loop() -> None:
+    analysis = AudioAnalysis(
+        duration=4, bpm=100, beats=[0, 4], sections=[0, 4],
+        energy_times=[0], energy_values=[.5], average_energy=.5,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+    )
+    assets = [
+        MediaAsset(0, Path("short.mp4"), "video", 1, 1920, 1080, quality_score=.8),
+        MediaAsset(1, Path("long.mp4"), "video", 12, 1920, 1080, quality_score=.7),
+    ]
+
+    shots = create_plan(analysis, [], assets, None, min_shot=1.5, max_shot=5)
+
+    assert shots[0].media_id == 1
+
+
+def test_lyrics_choose_content_without_forcing_a_cut_per_line() -> None:
+    analysis = AudioAnalysis(
+        duration=8, bpm=120, beats=[x / 2 for x in range(17)], sections=[0, 8],
+        energy_times=[0], energy_values=[.5], average_energy=.5,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+    )
+    lyrics = [LyricLine(i, i + 1, str(i)) for i in range(8)]
+    assets = [MediaAsset(0, Path("a.jpg"), "image", float("inf"), 1920, 1080)]
+
+    shots = create_plan(analysis, lyrics, assets, None, min_shot=1.5, max_shot=4)
+
+    assert len(shots) < len(lyrics)
+
+
+def test_video_starts_near_the_frame_that_matches_the_lyric() -> None:
+    analysis = AudioAnalysis(
+        duration=4, bpm=120, beats=[0, 2, 4], sections=[0, 4],
+        energy_times=[0], energy_values=[.5], average_energy=.5,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+    )
+    lyrics = [LyricLine(0, 4, "海边日落")]
+    assets = [MediaAsset(0, Path("story.mp4"), "video", 20, 1920, 1080)]
+
+    shots = create_plan(
+        analysis, lyrics, assets, np.array([[.9]]), min_shot=1.5, max_shot=5,
+        source_starts=np.array([[10.0]]),
+    )
+
+    assert shots[0].source_start == 8.0

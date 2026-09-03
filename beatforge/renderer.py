@@ -58,19 +58,23 @@ def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
     if shot.kind == "image":
         melody_boost = 1 + shot.melody * .22
         zoom_amount = {"dynamic": .14, "gentle": .045}.get(shot.motion, .08) * art.camera_intensity * melody_boost
-        pan_x = "iw/2-iw/zoom/2" if shot.index % 2 == 0 else "iw/2-iw/zoom/2+sin(on/28)*iw*0.012"
-        pan_y = "ih/2-ih/zoom/2-cos(on/34)*ih*0.010" if shot.index % 3 == 0 else "ih/2-ih/zoom/2"
+        progress = f"on/{max(1, frames - 1)}"
+        pan_x = (
+            f"(iw-iw/zoom)*{progress}"
+            if shot.index % 2 == 0 else f"(iw-iw/zoom)*(1-{progress})"
+        )
+        pan_y = "ih/2-ih/zoom/2"
         visual = (f"scale={cfg.width * 2}:{cfg.height * 2}:force_original_aspect_ratio=increase,"
                   f"crop={cfg.width * 2}:{cfg.height * 2},"
                   f"zoompan=z='min(1+on/{frames}*{zoom_amount},{1 + zoom_amount})':"
                   f"x='{pan_x}':y='{pan_y}':d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps}")
     else:
-        overscan = 1 + (0.08 if shot.motion == "dynamic" else 0.04) * art.camera_intensity * (1 + shot.melody * .2)
+        # Preserve the source cinematography. Adding a synthetic sinusoidal pan to moving
+        # footage creates the characteristic automated, seasick look.
+        overscan = 1.025
         scaled_width, scaled_height = round(cfg.width * overscan / 2) * 2, round(cfg.height * overscan / 2) * 2
-        drift = max(2, round((scaled_width - cfg.width) * .38))
         visual = (f"scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase,"
-                  f"crop={cfg.width}:{cfg.height}:x='(iw-ow)/2+sin(n/32)*{drift}':"
-                  f"y='(ih-oh)/2+cos(n/41)*{max(2, drift // 2)}'")
+                  f"crop={cfg.width}:{cfg.height}:x='(iw-ow)/2':y='(ih-oh)/2'")
     grade = art.grade_filter
     effects: list[str] = []
     if cfg.visual_effects:
@@ -95,8 +99,14 @@ def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
 
 def _transition_spec(shot: Shot, following: Shot, art: ArtDirection, cfg: RenderConfig) -> tuple[str, float]:
     tone = following.transition_tone if following.transition_tone != "neutral" else art.transition_tone
-    if shot.edit_intent == "impact" or following.edit_intent == "impact":
-        name, duration = ("fadewhite", .16) if tone == "bright" else ("smoothleft", .22)
+    if shot.transition == "cut":
+        return "cut", 0.0
+    if shot.transition == "flash":
+        name, duration = ("fadewhite", .14) if tone == "bright" else ("smoothleft", .18)
+    elif shot.transition == "dip":
+        name, duration = ("fadeblack", .3) if tone in {"dark", "neutral"} else ("dissolve", .32)
+    elif shot.transition == "dissolve":
+        name, duration = "dissolve", .42
     elif following.section == "outro":
         name, duration = "fadeblack", .5
     elif tone == "soft" or art.mood == "dreamy":
@@ -116,14 +126,17 @@ def _compose_transitions(
     args = ["ffmpeg", "-y", "-v", "error"]
     for index in range(len(shots)):
         args += ["-i", str(clips / f"{index:05}.mp4")]
-    filters = []
-    current = "[0:v]"
+    filters = [f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS[v{index}]" for index in range(len(shots))]
+    current = "[v0]"
     timeline = shots[0].duration
     for index, (name, duration) in enumerate(transitions):
         label = f"[x{index + 1}]"
-        filters.append(
-            f"{current}[{index + 1}:v]xfade=transition={name}:duration={duration}:offset={round(timeline, 3)}{label}"
-        )
+        if name == "cut" or duration <= 0:
+            filters.append(f"{current}[v{index + 1}]concat=n=2:v=1:a=0{label}")
+        else:
+            filters.append(
+                f"{current}[v{index + 1}]xfade=transition={name}:duration={duration}:offset={round(timeline, 3)}{label}"
+            )
         current = label
         timeline += shots[index + 1].duration
     end_fade = min(.5, shots[-1].duration / 3)

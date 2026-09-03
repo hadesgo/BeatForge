@@ -27,6 +27,7 @@ director_max_new_tokens = 2048
 director_gpu_memory_gb = 9.0
 director_cpu_memory_gb = 20.0
 director_offload = true
+director_contact_sheet_assets = 24
 
 [render]
 width = 960

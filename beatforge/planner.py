@@ -34,6 +34,8 @@ class Shot:
     section: str = "unknown"
     edit_intent: str = "continuity"
     transition_tone: str = "neutral"
+    camera_motion: str = "unknown"
+    section_index: int = -1
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -48,6 +50,7 @@ def create_plan(
     min_shot: float,
     max_shot: float,
     treatment: DirectorTreatment | None = None,
+    source_starts: np.ndarray | None = None,
 ) -> list[Shot]:
     boundaries = _boundaries(analysis, lyrics, min_shot, max_shot, treatment)
     lyric_rows = {id(line): i for i, line in enumerate(lyrics)}
@@ -55,6 +58,7 @@ def create_plan(
     recent: list[int] = []
     previous: MediaAsset | None = None
     chorus_motifs: list[int] = []
+    video_cursors: dict[int, float] = {}
     shots: list[Shot] = []
     for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
         midpoint = (start + end) / 2
@@ -62,42 +66,56 @@ def create_plan(
         energy = analysis.energy_at(midpoint)
         section, section_index = _section_info(analysis, midpoint)
         direction = treatment.section(section_index) if treatment else None
-        ranked: list[tuple[float, MediaAsset, float]] = []
-        for asset in assets:
-            semantic = float(similarities[lyric_rows[id(line)], asset.id]) if line and similarities is not None else _tag_score(line, asset)
+        shot_duration = end - start
+        ranked: list[tuple[float, MediaAsset, float, int]] = []
+        for asset_column, asset in enumerate(assets):
+            semantic = float(similarities[lyric_rows[id(line)], asset_column]) if line and similarities is not None else _tag_score(line, asset)
             mood = 0.12 if asset.mood == analysis.mood else 0.0
-            movement = energy * 0.10 if asset.kind == "video" else (1 - energy) * 0.06
+            movement = _motion_fit(asset, energy)
             repeat = usage.get(asset.id, 0) * 0.09 + (0.22 if asset.id in recent[-2:] else 0)
             quality = asset.quality_score * .16
             continuity = _color_similarity(previous, asset) * (.08 if section != "chorus" else .03)
-            shot_variety = -.05 if previous and previous.shot_size != "unknown" and previous.shot_size == asset.shot_size else 0
+            shot_variety = -.09 if previous and previous.shot_size != "unknown" and previous.shot_size == asset.shot_size else 0
             section_fit = .10 if section == "chorus" and asset.kind == "video" else .06 if section in {"intro", "outro"} and asset.kind == "image" else 0
             motif = .12 if section == "chorus" and asset.id in chorus_motifs else 0
             director_score = _director_asset_score(asset, direction, treatment)
-            score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif + director_score - repeat
-            ranked.append((score, asset, semantic))
-        _, selected, semantic = max(ranked, key=lambda item: item[0])
+            duration_penalty = .24 if asset.kind == "video" and asset.duration < shot_duration + .25 else 0.0
+            framing_penalty = _framing_penalty(asset)
+            score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif + director_score - repeat - duration_penalty - framing_penalty
+            ranked.append((score, asset, semantic, asset_column))
+        _, selected, semantic, selected_column = max(ranked, key=lambda item: item[0])
+        continues_previous = previous is not None and selected.id == previous.id
         usage[selected.id] = usage.get(selected.id, 0) + 1
         recent.append(selected.id)
-        previous = selected
         if section == "chorus" and selected.id not in chorus_motifs and len(chorus_motifs) < 2:
             chorus_motifs.append(selected.id)
-        shot_duration = end - start
         available = max(0.0, selected.duration - shot_duration - 0.1) if math.isfinite(selected.duration) else 0.0
-        source_start = ((index * 0.61803398875) % 1) * available
+        if selected.kind == "video" and continues_previous and video_cursors.get(selected.id, 0) <= available:
+            source_start = video_cursors[selected.id]
+        elif selected.kind == "video" and line and source_starts is not None:
+            center = float(source_starts[lyric_rows[id(line)], selected_column])
+            source_start = float(np.clip(center - shot_duration / 2, 0, available))
+        else:
+            source_start = ((index * 0.61803398875) % 1) * available
+        if selected.kind == "video":
+            video_cursors[selected.id] = source_start + shot_duration
+        previous = selected
         shots.append(Shot(
             index=index, start=round(start, 3), end=round(end, 3), duration=round(shot_duration, 3),
             media_id=selected.id, file=str(selected.file), kind=selected.kind,
             source_start=round(source_start, 3), lyric=line.text if line else "",
             energy=round(energy, 4),
             motion="dynamic" if energy > 0.68 else "gentle" if energy < 0.3 else "steady",
-            transition="flash" if energy > 0.75 else "dip" if index % 4 == 0 else "fade",
+            transition="cut",
             semantic_score=round(semantic, 4),
             melody=round(analysis.melody_at(midpoint), 4),
             section=section,
             edit_intent=direction.edit_intent if direction else "impact" if section == "chorus" and energy > .65 else "breathe" if section in {"intro", "outro"} else "continuity",
             transition_tone=direction.transition_tone if direction else "neutral",
+            camera_motion=selected.camera_motion,
+            section_index=section_index,
         ))
+    _assign_transitions(shots)
     return shots
 
 
@@ -108,7 +126,9 @@ def _boundaries(
     maximum: float,
     treatment: DirectorTreatment | None = None,
 ) -> list[float]:
-    anchors = sorted(set([0.0, analysis.duration, *analysis.sections, *(line.start for line in lyrics)]))
+    # Lyrics drive semantic shot choice, but must not force a cut on every line.
+    # Structural boundaries and musical beat grids are the editing clock.
+    anchors = sorted(set([0.0, analysis.duration, *analysis.sections]))
     output = [0.0]
     for target in anchors[1:]:
         cursor = output[-1]
@@ -177,3 +197,38 @@ def _color_similarity(previous: MediaAsset | None, current: MediaAsset) -> float
         return 0.0
     distance = np.linalg.norm(np.asarray(previous.dominant_color) - np.asarray(current.dominant_color))
     return float(max(0, 1 - distance / 441.7))
+
+
+def _motion_fit(asset: MediaAsset, energy: float) -> float:
+    if asset.kind == "image":
+        return (1 - energy) * .06
+    motion = asset.camera_motion.lower()
+    active = any(word in motion for word in ("fast", "handheld", "whip", "tracking", "dynamic", "快速", "手持", "跟拍"))
+    calm = any(word in motion for word in ("static", "locked", "slow", "tripod", "固定", "缓慢"))
+    if active:
+        return energy * .13 - (1 - energy) * .04
+    if calm:
+        return (1 - energy) * .10
+    return .04 + energy * .04
+
+
+def _framing_penalty(asset: MediaAsset, target_aspect: float = 16 / 9) -> float:
+    if asset.width <= 0 or asset.height <= 0:
+        return 0.0
+    source_aspect = asset.width / asset.height
+    retained = min(source_aspect / target_aspect, target_aspect / source_aspect)
+    return max(0.0, 1 - retained) * .12
+
+
+def _assign_transitions(shots: list[Shot]) -> None:
+    """Use editorial cuts by default and reserve visible transitions for structural changes."""
+    for shot, following in zip(shots, shots[1:]):
+        section_change = shot.section_index != following.section_index
+        if section_change:
+            shot.transition = "flash" if following.energy > .78 else "dip"
+        elif shot.edit_intent == "breathe" or following.edit_intent == "breathe":
+            shot.transition = "dissolve"
+        else:
+            shot.transition = "cut"
+    if shots:
+        shots[-1].transition = "none"

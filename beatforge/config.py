@@ -61,6 +61,7 @@ class AIConfig(BaseModel):
     director_gpu_memory_gb: float = Field(default=9.0, ge=1, le=80)
     director_cpu_memory_gb: float = Field(default=20.0, ge=4, le=256)
     director_offload: bool = True
+    director_contact_sheet_assets: int = Field(default=24, ge=0, le=48)
 
 
 class ProjectConfig(BaseModel):
@@ -122,6 +123,7 @@ director_max_new_tokens = 2048
 director_gpu_memory_gb = 9.0 # 5070 12GB 为渲染和临时张量预留约 3GB
 director_cpu_memory_gb = 20.0
 director_offload = true
+director_contact_sheet_assets = 24 # 让导演实际看到高价值候选画面；0 表示禁用
 
 [render]
 width = 1920

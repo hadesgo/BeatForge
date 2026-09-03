@@ -60,6 +60,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     print("3/5 素材视觉语义索引")
     assets = discover_media(project.media_dir)
     similarities = None
+    source_starts = None
     if use_ai and lyrics:
         from beatforge.models.vision_index import VisionIndex
         index = VisionIndex(
@@ -69,6 +70,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
             rerank_top_k=project.ai.vision_rerank_top_k,
         )
         similarities = index.similarities([line.text for line in lyrics], assets, project.ai.frame_samples)
+        source_starts = getattr(index, "best_source_starts", None)
         del index
         release_gpu()
     print(f"    {len(assets)} 个素材 · {project.ai.vision_backend if similarities is not None else '文件标签'}")
@@ -80,6 +82,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
             from beatforge.models.ai_director import direct_mv
             treatment = direct_mv(
                 analysis, lyrics, assets, similarities, project.ai, device, project.cache_dir,
+                source_starts,
             )
             print(f"    导演概念：{treatment.concept}")
         except Exception as exc:
@@ -91,6 +94,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         min_shot=project.render.min_shot_seconds,
         max_shot=project.render.max_shot_seconds,
         treatment=treatment,
+        source_starts=source_starts,
     )
     art = create_art_direction(analysis, lyrics, project.render, treatment)
     plan_file = project.cache_dir / "plan.json"

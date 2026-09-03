@@ -82,9 +82,12 @@ director_max_new_tokens = 2048
 director_gpu_memory_gb = 9.0
 director_cpu_memory_gb = 20.0
 director_offload = true
+director_contact_sheet_assets = 24
 ```
 
-`director_gpu_memory_gb` 是 Accelerate 的显存上限；12GB 显卡默认只允许导演使用 9GB。超出部分在 `director_offload = true` 时卸载到内存和 `.beatforge/director-offload/`。导演接收歌曲统计、逐句歌词、乐段和最多 60 个高价值素材候选，输出经 Pydantic 校验的结构化方案；第一次 JSON 不合法会在同一次模型生命周期内自动修正一次。它不会生成时间码或直接执行 FFmpeg，具体剪辑点仍由节拍模型和确定性规划器控制。
+`director_gpu_memory_gb` 是 Accelerate 的显存上限；12GB 显卡默认只允许导演使用 9GB。超出部分在 `director_offload = true` 时卸载到内存和 `.beatforge/director-offload/`。BeatForge 会从检索结果中选出最多 24 个高价值素材，为图片和视频中间帧生成带素材 ID 的联系表。导演因此能实际观察构图、人物、景别、色彩和镜头连续性，而不是只依赖文件名。设 `director_contact_sheet_assets = 0` 可以关闭这项功能。
+
+导演同时接收歌曲统计、逐句歌词和乐段信息，输出经 Pydantic 校验的结构化方案；第一次 JSON 不合法会在同一次模型生命周期内自动修正一次。它不会生成时间码或直接执行 FFmpeg，具体剪辑点仍由节拍模型和确定性规划器控制。
 
 ## 字幕和画面动效
 
@@ -184,11 +187,15 @@ Qwen3-VL-Embedding 会直接比较歌词、图片和视频关键帧。文件名�
 ## 专业剪辑策略
 
 - 优先在 downbeat 和乐段边界切镜，而不是每句歌词机械切换；
+- 歌词决定镜头内容，但不再强制每句换画面，避免歌词幻灯片感；
+- 对视频的采样帧分别计算歌词相似度，从最相关画面附近开始取材；连续使用同一视频时顺接时间轴，避免随机跳段；
 - 主歌保持色彩和主体连续，副歌提高视频镜头比例和切换强度；
 - 副歌复现少量视觉母题，让成片有记忆点；
 - 同景别连续出现会扣分，画质、曝光、清晰度和分辨率参与选镜；
 - 相邻镜头主色差异过大时降低分数，冲击型剪辑除外；
-- 使用带 handle 的真实 xfade，避免每个镜头先黑场再出现；
+- 常规节拍点以硬切为主，只在乐段变化和呼吸段使用带 handle 的溶解、闪白或淡黑；
+- 原视频保留自身摄影运动，不再叠加周期性摇摆；静态图片使用单方向缓慢推拉；
+- 对短于目标镜头的视频和会被严重裁切的极端画幅素材降权，减少可见循环和主体裁掉；
 - intro/outro 留呼吸，chorus 紧凑，bridge/solo 给旋律性镜头更长时间。
 - AI 导演统一概念、叙事弧、调色倾向和视觉母题，并对各乐段给出剪辑强度、景别、素材偏好、字幕与转场意见；
 
