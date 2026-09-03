@@ -5,7 +5,7 @@ import numpy as np
 from beatforge.audio import AudioAnalysis
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
-from beatforge.planner import create_plan
+from beatforge.planner import _upscale_penalty, create_plan
 
 
 def test_plan_is_continuous() -> None:
@@ -106,3 +106,9 @@ def test_video_starts_near_the_frame_that_matches_the_lyric() -> None:
     )
 
     assert shots[0].source_start == 8.0
+
+
+def test_low_resolution_asset_receives_upscale_penalty() -> None:
+    low = MediaAsset(0, Path("low.jpg"), "image", float("inf"), 320, 180)
+    high = MediaAsset(1, Path("high.jpg"), "image", float("inf"), 3840, 2160)
+    assert _upscale_penalty(low, 1920, 1080) > _upscale_penalty(high, 1920, 1080)

@@ -37,6 +37,9 @@ class Shot:
     camera_motion: str = "unknown"
     section_index: int = -1
     source_color: list[int] = field(default_factory=lambda: [128, 128, 128])
+    focus_point: list[float] = field(default_factory=lambda: [.5, .5])
+    source_width: int = 0
+    source_height: int = 0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -52,6 +55,8 @@ def create_plan(
     max_shot: float,
     treatment: DirectorTreatment | None = None,
     source_starts: np.ndarray | None = None,
+    target_width: int = 1920,
+    target_height: int = 1080,
 ) -> list[Shot]:
     boundaries = _boundaries(analysis, lyrics, min_shot, max_shot, treatment)
     lyric_rows = {id(line): i for i, line in enumerate(lyrics)}
@@ -81,8 +86,9 @@ def create_plan(
             motif = .12 if section == "chorus" and asset.id in chorus_motifs else 0
             director_score = _director_asset_score(asset, direction, treatment)
             duration_penalty = .24 if asset.kind == "video" and asset.duration < shot_duration + .25 else 0.0
-            framing_penalty = _framing_penalty(asset)
-            score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif + director_score - repeat - duration_penalty - framing_penalty
+            framing_penalty = _framing_penalty(asset, target_width / max(target_height, 1))
+            upscale_penalty = _upscale_penalty(asset, target_width, target_height)
+            score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif + director_score - repeat - duration_penalty - framing_penalty - upscale_penalty
             ranked.append((score, asset, semantic, asset_column))
         _, selected, semantic, selected_column = max(ranked, key=lambda item: item[0])
         continues_previous = previous is not None and selected.id == previous.id
@@ -116,6 +122,9 @@ def create_plan(
             camera_motion=selected.camera_motion,
             section_index=section_index,
             source_color=selected.dominant_color.copy(),
+            focus_point=selected.focus_point.copy(),
+            source_width=selected.width,
+            source_height=selected.height,
         ))
     _assign_transitions(shots)
     return shots
@@ -220,6 +229,13 @@ def _framing_penalty(asset: MediaAsset, target_aspect: float = 16 / 9) -> float:
     source_aspect = asset.width / asset.height
     retained = min(source_aspect / target_aspect, target_aspect / source_aspect)
     return max(0.0, 1 - retained) * .12
+
+
+def _upscale_penalty(asset: MediaAsset, target_width: int, target_height: int) -> float:
+    if asset.width <= 0 or asset.height <= 0:
+        return .04
+    scale = max(target_width / asset.width, target_height / asset.height)
+    return float(np.clip((scale - 1.15) * .055, 0, .18))
 
 
 def _assign_transitions(shots: list[Shot]) -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from beatforge.media import MediaAsset
+from beatforge.media import MediaAsset, estimate_focus_point
 from beatforge.models.quantization import QuantizationMode, quantized_load_kwargs
 from beatforge.runtime import command
 
@@ -65,21 +65,23 @@ class VisionIndex:
                 normalize_embeddings=True,
                 convert_to_numpy=True,
             ))
-            asset_features = []
+            score_columns: list[np.ndarray] = []
             source_columns: list[np.ndarray] = []
             for asset, (start, end, frames) in zip(assets, spans):
                 vectors = document_features[start:end]
+                frame_scores = text_features @ vectors.T
                 if asset.kind == "video":
-                    frame_scores = text_features @ vectors.T
                     sample_times = self._video_sample_times(asset, frame_samples)
                     source_columns.append(sample_times[np.argmax(frame_scores, axis=1)])
-                    self._update_video_color(asset, frames or [])
+                    self._update_video_visuals(asset, frames or [])
+                    top_count = min(2, frame_scores.shape[1])
+                    strongest = np.partition(frame_scores, -top_count, axis=1)[:, -top_count:]
+                    score_columns.append(strongest.mean(axis=1))
                 else:
                     source_columns.append(np.zeros(len(texts)))
-                vector = vectors.mean(axis=0)
-                asset_features.append(vector / max(np.linalg.norm(vector), 1e-8))
+                    score_columns.append(frame_scores[:, 0])
             self.best_source_starts = np.stack(source_columns, axis=1)
-            scores = text_features @ np.stack(asset_features).T
+            scores = np.stack(score_columns, axis=1)
             if self.reranker_model and self.rerank_top_k > 0:
                 scores = self._rerank(texts, assets, scores, frame_samples)
             return scores
@@ -148,7 +150,9 @@ class VisionIndex:
                     documents.append(str(asset.file))
                 else:
                     frames = self._video_frames(asset, frame_samples)
-                    documents.append(frames[len(frames) // 2])
+                    sample_times = self._video_sample_times(asset, len(frames))
+                    target_time = float(self.best_source_starts[row, int(index)])
+                    documents.append(frames[_nearest_sample_index(sample_times, target_time)])
             values = reranker.predict(
                 [(text, document) for document in documents], batch_size=self.batch_size,
                 prompt=(
@@ -203,18 +207,20 @@ class VisionIndex:
         return np.linspace(0.1, max(0.1, asset.duration - 0.1), count)
 
     @staticmethod
-    def _update_video_color(asset: MediaAsset, frames: list[Image.Image] | list[str]) -> None:
-        if asset.dominant_color != [128, 128, 128]:
-            return
+    def _update_video_visuals(asset: MediaAsset, frames: list[Image.Image] | list[str]) -> None:
         colors = []
+        focus_points = []
         for frame in frames:
             if not isinstance(frame, Image.Image):
                 continue
             thumbnail = frame.copy()
             thumbnail.thumbnail((96, 96))
             colors.append(np.median(np.asarray(thumbnail).reshape(-1, 3), axis=0))
-        if colors:
+            focus_points.append(estimate_focus_point(frame))
+        if colors and asset.dominant_color == [128, 128, 128]:
             asset.dominant_color = np.median(np.stack(colors), axis=0).astype(int).tolist()
+        if focus_points and asset.focus_point == [.5, .5]:
+            asset.focus_point = np.median(np.asarray(focus_points), axis=0).round(4).tolist()
 
 
 def blend_rerank_scores(base: np.ndarray, reranked: np.ndarray) -> np.ndarray:
@@ -224,3 +230,9 @@ def blend_rerank_scores(base: np.ndarray, reranked: np.ndarray) -> np.ndarray:
     low, high = float(reranked.min()), float(reranked.max())
     normalized = (reranked - low) / max(high - low, 1e-8)
     return base * .3 + normalized * .7
+
+
+def _nearest_sample_index(sample_times: np.ndarray, target: float) -> int:
+    if sample_times.size == 0:
+        return 0
+    return int(np.argmin(np.abs(sample_times - target)))

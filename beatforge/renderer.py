@@ -67,22 +67,35 @@ def _render_shot(
         melody_boost = 1 + shot.melody * .22
         zoom_amount = {"dynamic": .14, "gentle": .045}.get(shot.motion, .08) * art.camera_intensity * melody_boost
         progress = f"on/{max(1, frames - 1)}"
+        direction = 1 if (shot.media_id + max(0, shot.section_index)) % 2 == 0 else -1
         pan_x = (
-            f"(iw-iw/zoom)*{progress}"
-            if shot.index % 2 == 0 else f"(iw-iw/zoom)*(1-{progress})"
+            f"clip((iw-iw/zoom)/2+{direction}*(iw-iw/zoom)*0.10*({progress}-.5),"
+            "0,iw-iw/zoom)"
         )
-        pan_y = "ih/2-ih/zoom/2"
+        vertical_drift = .04 if shot.edit_intent == "breathe" else .015
+        pan_y = (
+            f"clip((ih-ih/zoom)/2-(ih-ih/zoom)*{vertical_drift}*{progress},"
+            "0,ih-ih/zoom)"
+        )
+        if shot.edit_intent == "breathe" or shot.section == "outro":
+            zoom = f"max(1+{zoom_amount}-on/{frames}*{zoom_amount},1)"
+        else:
+            zoom = f"min(1+on/{frames}*{zoom_amount},{1 + zoom_amount})"
+        focus_x, focus_y = _safe_focus(shot.focus_point)
         visual = (f"scale={cfg.width * 2}:{cfg.height * 2}:force_original_aspect_ratio=increase:flags=lanczos,"
-                  f"crop={cfg.width * 2}:{cfg.height * 2},"
-                  f"zoompan=z='min(1+on/{frames}*{zoom_amount},{1 + zoom_amount})':"
+                  f"crop={cfg.width * 2}:{cfg.height * 2}:"
+                  f"x='clip(iw*{focus_x}-ow/2,0,iw-ow)':y='clip(ih*{focus_y}-oh/2,0,ih-oh)',"
+                  f"zoompan=z='{zoom}':"
                   f"x='{pan_x}':y='{pan_y}':d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps},setsar=1")
     else:
         # Preserve the source cinematography. Adding a synthetic sinusoidal pan to moving
         # footage creates the characteristic automated, seasick look.
         overscan = 1.025
         scaled_width, scaled_height = round(cfg.width * overscan / 2) * 2, round(cfg.height * overscan / 2) * 2
+        focus_x, focus_y = _safe_focus(shot.focus_point)
         visual = (f"scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase:flags=lanczos,"
-                  f"crop={cfg.width}:{cfg.height}:x='(iw-ow)/2':y='(ih-oh)/2',setsar=1")
+                  f"crop={cfg.width}:{cfg.height}:"
+                  f"x='clip(iw*{focus_x}-ow/2,0,iw-ow)':y='clip(ih*{focus_y}-oh/2,0,ih-oh)',setsar=1")
     grade = art.grade_filter
     effects = [
         _shot_match_filter(shot, cfg.shot_match_strength),
@@ -90,7 +103,11 @@ def _render_shot(
         _section_color_filter(shot, art, section_count, cfg.look_strength),
     ]
     if cfg.visual_effects:
-        if shot.motion == "dynamic":
+        upscale = (
+            max(cfg.width / shot.source_width, cfg.height / shot.source_height)
+            if shot.source_width > 0 and shot.source_height > 0 else 1.0
+        )
+        if shot.motion == "dynamic" and upscale <= 1.35:
             effects.append("unsharp=5:5:0.55:5:5:0")
         elif shot.motion == "gentle":
             effects.append("gblur=sigma=0.18")
@@ -107,6 +124,18 @@ def _render_shot(
         [visual, *(item for item in effects if item)]
     ), "-r", str(cfg.fps), *_video_encode_args(cfg, intermediate=True), str(output)]
     command(args)
+
+
+def _safe_focus(value: list[float]) -> tuple[float, float]:
+    if len(value) != 2:
+        return .5, .5
+    try:
+        return (
+            round(float(np.clip(float(value[0]), .08, .92)), 4),
+            round(float(np.clip(float(value[1]), .08, .92)), 4),
+        )
+    except (TypeError, ValueError):
+        return .5, .5
 
 
 def _shot_match_filter(shot: Shot, strength: float) -> str:

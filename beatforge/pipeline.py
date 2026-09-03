@@ -108,6 +108,8 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         max_shot=project.render.max_shot_seconds,
         treatment=treatment,
         source_starts=source_starts,
+        target_width=project.render.width,
+        target_height=project.render.height,
     )
     art = create_art_direction(analysis, lyrics, project.render, treatment)
     plan_file = project.cache_dir / "plan.json"

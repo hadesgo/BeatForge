@@ -11,6 +11,7 @@ from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
 from beatforge.models.ai_director import (
     DirectorTreatment,
+    _build_context,
     _build_contact_sheet,
     _generate_treatment,
     direct_mv,
@@ -62,6 +63,20 @@ def test_director_preferences_influence_shot_selection() -> None:
     )
     assert shots[0].media_id == 1
     assert shots[0].transition_tone == "soft"
+
+
+def test_director_receives_per_lyric_candidates_and_video_timestamps() -> None:
+    assets = [
+        MediaAsset(4, Path("portrait.jpg"), "image", float("inf"), 1920, 1080),
+        MediaAsset(8, Path("walk.mp4"), "video", 20, 1920, 1080),
+    ]
+    lyrics = [LyricLine(0, 4, "穿过夜色")]
+    context = _build_context(
+        _analysis(), lyrics, assets, np.array([[.3, .91]]), np.array([[0, 12.4]]),
+    )
+
+    first = context["lyric_candidates"][0]["candidates"][0]
+    assert first == {"asset_id": 8, "score": .91, "source_time": 12.4}
 
 
 def test_director_response_is_validated_and_sanitized(monkeypatch, tmp_path: Path) -> None:

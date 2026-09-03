@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 
 from beatforge.media import MediaAsset
-from beatforge.models.vision_index import VisionIndex, blend_rerank_scores
+from beatforge.models.vision_index import VisionIndex, _nearest_sample_index, blend_rerank_scores
 
 
 class FakeSentenceTransformer:
@@ -41,6 +41,10 @@ def test_reranker_blend_preserves_shape_and_uses_pairwise_scores() -> None:
     result = blend_rerank_scores(base, np.array([.1, .9, .4]))
     assert result.shape == base.shape
     assert np.argmax(result) == 1
+
+
+def test_reranker_uses_frame_nearest_to_lyric_match() -> None:
+    assert _nearest_sample_index(np.array([.1, 5.0, 9.9]), 8.7) == 2
 
 
 def test_visual_encoding_reduces_batch_after_cuda_oom() -> None:

@@ -65,7 +65,7 @@ def direct_mv(
     cache_dir: Path,
     source_starts: np.ndarray | None = None,
 ) -> DirectorTreatment:
-    context = _build_context(analysis, lyrics, assets, similarities)
+    context = _build_context(analysis, lyrics, assets, similarities, source_starts)
     visual_reference = _build_contact_sheet(
         assets, similarities, cache_dir, config.director_contact_sheet_assets, source_starts,
     )
@@ -184,6 +184,7 @@ def _build_context(
     lyrics: list[LyricLine],
     assets: list[MediaAsset],
     similarities: np.ndarray | None,
+    source_starts: np.ndarray | None = None,
 ) -> dict:
     candidate_ids = _candidate_ids(assets, similarities)
     return {
@@ -221,11 +222,48 @@ def _build_context(
                 "shot_size": asset.shot_size,
                 "camera_motion": asset.camera_motion,
                 "dominant_color": asset.dominant_color,
+                "focus_point": asset.focus_point,
             }
             for asset in assets if asset.id in candidate_ids
         ],
-        "instruction": "为每个 section index 提供一项导演策略；素材选择只能使用 assets 中出现的 id。",
+        "lyric_candidates": _lyric_candidates(
+            lyrics, assets, similarities, source_starts, candidate_ids,
+        ),
+        "instruction": (
+            "为每个 section index 提供一项导演策略；素材选择只能使用 assets 中出现的 id。"
+            "lyric_candidates 是检索系统按逐句歌词给出的候选，不要求逐句换镜；应优先用它建立连续的段落叙事和重复母题。"
+        ),
     }
+
+
+def _lyric_candidates(
+    lyrics: list[LyricLine], assets: list[MediaAsset], similarities: np.ndarray | None,
+    source_starts: np.ndarray | None, candidate_ids: set[int], limit: int = 4,
+) -> list[dict]:
+    if similarities is None or similarities.ndim != 2:
+        return []
+    row_count = min(len(lyrics), similarities.shape[0])
+    column_count = min(len(assets), similarities.shape[1])
+    output = []
+    for row in range(row_count):
+        columns = [
+            int(column) for column in np.argsort(similarities[row, :column_count])[::-1]
+            if assets[int(column)].id in candidate_ids
+        ][:limit]
+        candidates = []
+        for column in columns:
+            item = {
+                "asset_id": assets[column].id,
+                "score": round(float(similarities[row, column]), 4),
+            }
+            if (
+                assets[column].kind == "video" and source_starts is not None
+                and row < source_starts.shape[0] and column < source_starts.shape[1]
+            ):
+                item["source_time"] = round(float(source_starts[row, column]), 3)
+            candidates.append(item)
+        output.append({"lyric_index": row, "text": lyrics[row].text, "candidates": candidates})
+    return output
 
 
 def _candidate_ids(assets: list[MediaAsset], similarities: np.ndarray | None, limit: int = 60) -> set[int]:
