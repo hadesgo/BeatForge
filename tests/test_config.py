@@ -13,7 +13,11 @@ def test_project_paths_and_cpu_defaults(tmp_path: Path) -> None:
     assert config.ai.qwen_asr_model == "Qwen/Qwen3-ASR-1.7B-hf"
     assert config.ai.vision_backend == "qwen3-vl-embedding"
     assert config.ai.director_enabled is True
-    assert config.ai.director_model == "Qwen/Qwen3.5-4B"
+    assert config.ai.vision_model == "Qwen/Qwen3-VL-Embedding-8B"
+    assert config.ai.vision_quantization == "nf4"
+    assert config.ai.vision_batch_size == 4
+    assert config.ai.director_model == "Qwen/Qwen3.5-9B"
+    assert config.ai.director_quantization == "nf4"
     assert config.render.subtitle_effect == "auto"
     assert config.render.subtitle_font == "auto"
     assert config.render.visual_effects is True

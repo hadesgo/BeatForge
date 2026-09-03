@@ -15,6 +15,7 @@ from beatforge.audio import AudioAnalysis
 from beatforge.config import AIConfig
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
+from beatforge.models.quantization import quantized_load_kwargs
 from beatforge.runtime import command
 
 
@@ -92,6 +93,7 @@ def _generate_treatment(
         "local_files_only": config.offline,
         "low_cpu_mem_usage": True,
     }
+    load_options.update(quantized_load_kwargs(config.director_quantization, torch, device))
     if device == "cuda":
         total_gb = torch.cuda.get_device_properties(0).total_memory / 2**30
         gpu_limit = min(config.director_gpu_memory_gb, max(1.0, total_gb - 1.5))

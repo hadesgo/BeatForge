@@ -20,6 +20,7 @@ def test_sentence_transformer_ranks_images_for_lyrics(tmp_path: Path) -> None:
     index = VisionIndex.__new__(VisionIndex)
     index.backend = "qwen3-vl-embedding"
     index.model = FakeSentenceTransformer()
+    index.batch_size = 4
     index.reranker_model = None
     index.rerank_top_k = 0
     assets = [
@@ -40,3 +41,32 @@ def test_reranker_blend_preserves_shape_and_uses_pairwise_scores() -> None:
     result = blend_rerank_scores(base, np.array([.1, .9, .4]))
     assert result.shape == base.shape
     assert np.argmax(result) == 1
+
+
+def test_visual_encoding_reduces_batch_after_cuda_oom() -> None:
+    class OutOfMemoryError(Exception):
+        pass
+
+    class Model:
+        def __init__(self):
+            self.batches = []
+
+        def encode(self, inputs, *, batch_size, **_kwargs):
+            self.batches.append(batch_size)
+            if batch_size > 2:
+                raise OutOfMemoryError
+            return np.ones((len(inputs), 2))
+
+    index = VisionIndex.__new__(VisionIndex)
+    index.model = Model()
+    index.batch_size = 4
+    index.device = "cuda"
+    index.torch = type("Torch", (), {
+        "OutOfMemoryError": OutOfMemoryError,
+        "cuda": type("Cuda", (), {"empty_cache": staticmethod(lambda: None)})(),
+    })()
+
+    result = index._encode_qwen(["a", "b", "c", "d"])
+
+    assert result.shape == (4, 2)
+    assert index.model.batches == [4, 2]

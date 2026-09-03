@@ -52,10 +52,15 @@ def doctor() -> None:
         import torch
         cuda = torch.cuda.is_available()
         info = torch.cuda.get_device_name(0) if cuda else "CPU 模式"
+        enough_vram = False
         if cuda:
-            info += f" · {torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} GB · CUDA {torch.version.cuda}"
+            vram = torch.cuda.get_device_properties(0).total_memory / 2**30
+            enough_vram = vram >= 11.5
+            info += f" · {vram:.1f} GB · CUDA {torch.version.cuda}"
         table.add_row("PyTorch", "OK", torch.__version__)
         table.add_row("GPU", "OK" if cuda else "未启用", info)
+        if cuda:
+            table.add_row("12GB 显存", "OK" if enough_vram else "不足", f"检测到 {vram:.1f} GB")
     except ImportError:
         table.add_row("AI 依赖", "缺失", "uv sync --extra ai --extra ai-cpu")
     try:
@@ -72,6 +77,8 @@ def doctor() -> None:
     table.add_row("Qwen3-ASR Native", "OK" if native_asr else "未就绪", f"Transformers {transformers_version}")
     sentence_transformers = importlib.util.find_spec("sentence_transformers")
     table.add_row("Qwen3-VL / Reranker", "OK" if sentence_transformers else "未安装", "sentence-transformers")
+    bitsandbytes = importlib.util.find_spec("bitsandbytes")
+    table.add_row("NF4 量化", "OK" if bitsandbytes else "未安装", "bitsandbytes>=0.50.2")
     table.add_row(
         "Music Structure", "OK" if importlib.util.find_spec("allin1_infer") else "未安装",
         "music-ai extra（All-In-One）",

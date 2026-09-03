@@ -48,6 +48,20 @@ def resolve_device(requested: str) -> str:
         return "cpu"
 
 
+def optimize_torch_runtime(device: str) -> None:
+    """Enable safe inference-oriented CUDA fast paths without changing model outputs materially."""
+    if device != "cuda":
+        return
+    try:
+        import torch
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+    except (ImportError, AttributeError):
+        pass
+
+
 def release_gpu(*objects: object) -> None:
     del objects
     gc.collect()
@@ -58,4 +72,3 @@ def release_gpu(*objects: object) -> None:
             torch.cuda.ipc_collect()
     except ImportError:
         pass
-

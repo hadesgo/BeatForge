@@ -50,18 +50,21 @@ class AIConfig(BaseModel):
     clap_model: str = "laion/clap-htsat-fused"
     music_structure_backend: Literal["librosa", "beat-this", "allin1"] = "allin1"
     vision_backend: Literal["qwen3-vl-embedding", "siglip2"] = "qwen3-vl-embedding"
-    vision_model: str = "Qwen/Qwen3-VL-Embedding-2B"
-    vision_reranker_model: str | None = "Qwen/Qwen3-VL-Reranker-2B"
-    vision_rerank_top_k: int = Field(default=5, ge=0, le=20)
-    frame_samples: int = Field(default=3, ge=1, le=12)
+    vision_model: str = "Qwen/Qwen3-VL-Embedding-8B"
+    vision_reranker_model: str | None = "Qwen/Qwen3-VL-Reranker-8B"
+    vision_quantization: Literal["none", "int8", "nf4"] = "nf4"
+    vision_batch_size: int = Field(default=4, ge=1, le=32)
+    vision_rerank_top_k: int = Field(default=8, ge=0, le=20)
+    frame_samples: int = Field(default=5, ge=1, le=12)
     director_enabled: bool = True
-    director_model: str = "Qwen/Qwen3.5-4B"
-    director_temperature: float = Field(default=.25, ge=0, le=1.5)
-    director_max_new_tokens: int = Field(default=2048, ge=256, le=8192)
+    director_model: str = "Qwen/Qwen3.5-9B"
+    director_quantization: Literal["none", "int8", "nf4"] = "nf4"
+    director_temperature: float = Field(default=.18, ge=0, le=1.5)
+    director_max_new_tokens: int = Field(default=3072, ge=256, le=8192)
     director_gpu_memory_gb: float = Field(default=9.0, ge=1, le=80)
     director_cpu_memory_gb: float = Field(default=20.0, ge=4, le=256)
     director_offload: bool = True
-    director_contact_sheet_assets: int = Field(default=24, ge=0, le=48)
+    director_contact_sheet_assets: int = Field(default=32, ge=0, le=48)
 
 
 class ProjectConfig(BaseModel):
@@ -112,18 +115,21 @@ whisper_compute_type = "int8" # NVIDIA 显卡可改为 int8_float16
 clap_model = "laion/clap-htsat-fused"
 music_structure_backend = "allin1" # 需要 music-ai extra；也可用 beat-this 或 librosa
 vision_backend = "qwen3-vl-embedding"
-vision_model = "Qwen/Qwen3-VL-Embedding-2B"
-vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
-vision_rerank_top_k = 5
-frame_samples = 3
+vision_model = "Qwen/Qwen3-VL-Embedding-8B"
+vision_reranker_model = "Qwen/Qwen3-VL-Reranker-8B"
+vision_quantization = "nf4" # 8B 模型在 12GB 显存上的推荐模式
+vision_batch_size = 4 # 更大显存可提高到 8
+vision_rerank_top_k = 8
+frame_samples = 5
 director_enabled = true # BeatForge 分阶段加载并释放模型；失败会回退规则导演
-director_model = "Qwen/Qwen3.5-4B"
-director_temperature = 0.25
-director_max_new_tokens = 2048
+director_model = "Qwen/Qwen3.5-9B"
+director_quantization = "nf4"
+director_temperature = 0.18
+director_max_new_tokens = 3072
 director_gpu_memory_gb = 9.0 # 12GB 显卡为渲染和临时张量预留约 3GB
 director_cpu_memory_gb = 20.0
 director_offload = true
-director_contact_sheet_assets = 24 # 让导演实际看到高价值候选画面；0 表示禁用
+director_contact_sheet_assets = 32 # 让导演实际看到高价值候选画面；0 表示禁用
 
 [render]
 width = 1920

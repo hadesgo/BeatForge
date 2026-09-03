@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 
 from beatforge.media import MediaAsset
+from beatforge.models.quantization import QuantizationMode, quantized_load_kwargs
 from beatforge.runtime import command
 
 
@@ -17,6 +18,8 @@ class VisionIndex:
     def __init__(
         self, model_name: str, device: str, offline: bool, cache_dir: Path, *, backend: str,
         reranker_model: str | None = None, rerank_top_k: int = 0,
+        quantization: QuantizationMode = "none",
+        batch_size: int = 4,
     ) -> None:
         try:
             import torch
@@ -29,10 +32,12 @@ class VisionIndex:
         self.offline = offline
         self.reranker_model = reranker_model
         self.rerank_top_k = rerank_top_k
+        self.quantization = quantization
+        self.batch_size = batch_size
         self.cache_dir = cache_dir / "frames"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         if backend == "qwen3-vl-embedding":
-            self._init_qwen(model_name, device, offline)
+            self._init_qwen(model_name, device, offline, quantization)
             return
         dtype = torch.float16 if device == "cuda" else torch.float32
         self.processor = AutoProcessor.from_pretrained(model_name, local_files_only=offline)
@@ -42,24 +47,33 @@ class VisionIndex:
 
     def similarities(self, texts: list[str], assets: list[MediaAsset], frame_samples: int) -> np.ndarray:
         if self.backend == "qwen3-vl-embedding":
-            text_features = np.asarray(self.model.encode(
+            text_features = np.asarray(self._encode_qwen(
                 texts,
-                prompt="检索与歌词意境、人物、场景和情绪最匹配的音乐视频画面。",
+                prompt="Retrieve the music-video shot that best matches the lyrics, narrative action, scene, and emotional atmosphere.",
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+            ))
+            documents: list[str | Image.Image] = []
+            spans: list[tuple[int, int, list[Image.Image] | None]] = []
+            for asset in assets:
+                start = len(documents)
+                frames = None if asset.kind == "image" else self._video_frames(asset, frame_samples)
+                documents.extend([str(asset.file)] if frames is None else frames)
+                spans.append((start, len(documents), frames))
+            document_features = np.asarray(self._encode_qwen(
+                documents,
                 normalize_embeddings=True,
                 convert_to_numpy=True,
             ))
             asset_features = []
             source_columns: list[np.ndarray] = []
-            for asset in assets:
-                documents = [str(asset.file)] if asset.kind == "image" else self._video_frames(asset, frame_samples)
-                vectors = np.asarray(self.model.encode(
-                    documents, normalize_embeddings=True, convert_to_numpy=True,
-                ))
+            for asset, (start, end, frames) in zip(assets, spans):
+                vectors = document_features[start:end]
                 if asset.kind == "video":
                     frame_scores = text_features @ vectors.T
                     sample_times = self._video_sample_times(asset, frame_samples)
                     source_columns.append(sample_times[np.argmax(frame_scores, axis=1)])
-                    self._update_video_color(asset, documents)
+                    self._update_video_color(asset, frames or [])
                 else:
                     source_columns.append(np.zeros(len(texts)))
                 vector = vectors.mean(axis=0)
@@ -73,16 +87,33 @@ class VisionIndex:
         text_features = self._text_embeddings(texts)
         return text_features @ image_features.T
 
-    def _init_qwen(self, model_name: str, device: str, offline: bool) -> None:
+    def _encode_qwen(self, inputs, **kwargs):
+        batch_size = min(self.batch_size, max(1, len(inputs)))
+        while True:
+            try:
+                return self.model.encode(inputs, batch_size=batch_size, **kwargs)
+            except self.torch.OutOfMemoryError:
+                if self.device != "cuda" or batch_size == 1:
+                    raise
+                batch_size = max(1, batch_size // 2)
+                self.torch.cuda.empty_cache()
+
+    def _init_qwen(
+        self, model_name: str, device: str, offline: bool, quantization: QuantizationMode,
+    ) -> None:
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
             raise RuntimeError("Qwen3-VL-Embedding 需要 sentence-transformers>=5.4") from exc
         dtype = self.torch.bfloat16 if device == "cuda" else self.torch.float32
+        model_kwargs = {"dtype": dtype, "attn_implementation": "sdpa"}
+        model_kwargs.update(quantized_load_kwargs(quantization, self.torch, device))
+        if quantization != "none" and device == "cuda":
+            model_kwargs["device_map"] = "auto"
         self.model = SentenceTransformer(
             model_name,
             device=device,
-            model_kwargs={"dtype": dtype, "attn_implementation": "sdpa"},
+            model_kwargs=model_kwargs,
             local_files_only=offline,
         )
         self.processor = None
@@ -97,10 +128,14 @@ class VisionIndex:
         except ImportError as exc:
             raise RuntimeError("Qwen3-VL-Reranker 需要 sentence-transformers>=5.4") from exc
         dtype = self.torch.bfloat16 if self.device == "cuda" else self.torch.float32
+        model_kwargs = {"dtype": dtype, "attn_implementation": "sdpa"}
+        model_kwargs.update(quantized_load_kwargs(self.quantization, self.torch, self.device))
+        if self.quantization != "none" and self.device == "cuda":
+            model_kwargs["device_map"] = "auto"
         reranker = CrossEncoder(
             self.reranker_model,
             device=self.device,
-            model_kwargs={"dtype": dtype, "attn_implementation": "sdpa"},
+            model_kwargs=model_kwargs,
             local_files_only=self.offline,
         )
         output = base.copy()
@@ -114,7 +149,14 @@ class VisionIndex:
                 else:
                     frames = self._video_frames(asset, frame_samples)
                     documents.append(frames[len(frames) // 2])
-            values = reranker.predict([(text, document) for document in documents])
+            values = reranker.predict(
+                [(text, document) for document in documents], batch_size=self.batch_size,
+                prompt=(
+                    "Judge whether the candidate shot is suitable for a polished music video. "
+                    "Prioritize lyrical meaning, emotional atmosphere, composition, subject action, "
+                    "shot scale, and narrative continuity."
+                ),
+            )
             output[row, candidates] = blend_rerank_scores(base[row, candidates], np.asarray(values).reshape(-1))
         self.model = reranker
         return output

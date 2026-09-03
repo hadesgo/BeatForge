@@ -133,7 +133,9 @@ def test_director_loads_in_process_with_memory_limit_and_releases_cuda(monkeypat
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 
-    result = _generate_treatment({}, AIConfig(offline=True), "cuda", tmp_path)
+    result = _generate_treatment(
+        {}, AIConfig(offline=True, director_quantization="none"), "cuda", tmp_path,
+    )
 
     assert result.concept == _treatment().concept
     options = calls["model"][1]

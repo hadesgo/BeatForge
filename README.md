@@ -14,15 +14,17 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `Qwen/Qwen3-ASR-1.7B-hf`：Transformers 原生歌曲识别模型；
 - `Qwen/Qwen3-ForcedAligner-0.6B-hf`：Transformers 原生字符/单词级演唱时间对齐；
 - `laion/clap-htsat-fused`：音乐情绪、质感和强度的零样本分类；
-- `Qwen/Qwen3-VL-Embedding-2B`：中文歌词与图片/视频的跨模态检索；
-- `Qwen/Qwen3-VL-Reranker-2B`：对初选画面进行歌词意境和叙事适配精排；
+- `Qwen/Qwen3-VL-Embedding-8B`：中文歌词与图片/视频的高质量跨模态检索；
+- `Qwen/Qwen3-VL-Reranker-8B`：对初选画面进行歌词意境、构图和叙事适配精排；
 - `All-In-One-Infer`：识别 intro、verse、chorus、bridge、solo、outro 和强拍；
 - `Beat This!`：可选的高精度 beat/downbeat 后备；
-- `Qwen/Qwen3.5-4B`：本地 AI 导演，负责全片概念、叙事弧、视觉母题和分段剪辑策略；
+- `Qwen/Qwen3.5-9B`：本地多模态 AI 导演，负责全片概念、叙事弧、视觉母题和分段剪辑策略；
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
 模型分阶段加载并释放，不会同时占用显存。运行完整 AI 流程的最低硬件需求是 **12GB 显存的 NVIDIA 显卡**，并且驱动需要满足 PyTorch 2.14.0 + CUDA 13.2 运行要求；不限定具体显卡型号。无 NVIDIA 显卡的电脑仍可使用 CPU 完成开发和离线测试，但完整推理速度不作为支持目标。Qwen3-ASR 走 Transformers 5.13+ 原生接口，Qwen3-VL Embedding/Reranker 走 Sentence Transformers。
+
+默认质量优先组合经过12GB显存约束：Qwen3-ASR 1.7B保持BF16，视觉召回和精排使用Qwen3-VL 8B，导演使用Qwen3.5-9B；后面三者按阶段加载，其中视觉和导演使用bitsandbytes NF4双重量化、BF16计算。Qwen3.8当前适合本任务的公开型号从27B起步，无法在12GB显存内可靠完成带图片输入的本地推理，因此没有为了“版本号更新”而牺牲稳定性。CUDA运行时还会启用TF32、高精度矩阵乘策略和cuDNN形状调优。
 
 ## 安装
 
@@ -60,6 +62,8 @@ uv run beatforge download-models my-mv/project.toml --cache-dir D:\hf-models --w
 
 下载支持断点续传和 Hugging Face 已有缓存复用。完成后会在项目 `.beatforge/models.json` 写入统一模型清单，随后可以在配置中设置 `offline = true`。All-In-One 和 Beat This! 的结构分析权重由各自安装包管理，不属于 Hugging Face 模型清单。
 
+运行时量化不会缩小下载到磁盘的官方BF16模型文件。默认完整模型缓存需要预留约65GB磁盘空间。若显存更大，可把 `vision_quantization` 或 `director_quantization` 改为 `int8`；24GB以上显存可尝试 `none` 获得最高保真度。12GB配置应保持 `nf4`。`vision_batch_size` 默认是4，发生CUDA显存不足时会自动降到2或1重试；16GB以上显存可尝试手动提高到8。
+
 ## 使用
 
 ```powershell
@@ -90,16 +94,17 @@ uv run beatforge run my-mv/project.toml --no-ai
 ```toml
 [ai]
 director_enabled = true
-director_model = "Qwen/Qwen3.5-4B"
-director_temperature = 0.25
-director_max_new_tokens = 2048
+director_model = "Qwen/Qwen3.5-9B"
+director_quantization = "nf4"
+director_temperature = 0.18
+director_max_new_tokens = 3072
 director_gpu_memory_gb = 9.0
 director_cpu_memory_gb = 20.0
 director_offload = true
-director_contact_sheet_assets = 24
+director_contact_sheet_assets = 32
 ```
 
-`director_gpu_memory_gb` 是 Accelerate 的显存上限；12GB 显卡默认只允许导演使用 9GB。超出部分在 `director_offload = true` 时卸载到内存和 `.beatforge/director-offload/`。BeatForge 会从检索结果中选出最多 24 个高价值素材，为图片和视频中间帧生成带素材 ID 的联系表。导演因此能实际观察构图、人物、景别、色彩和镜头连续性，而不是只依赖文件名。设 `director_contact_sheet_assets = 0` 可以关闭这项功能。
+`director_gpu_memory_gb` 是 Accelerate 的显存上限；12GB 显卡默认只允许导演使用 9GB。9B导演和8B视觉模型采用运行时NF4双重量化，计算类型保持BF16；各模型严格分阶段加载，不会同时驻留显存。超出部分在 `director_offload = true` 时卸载到内存和 `.beatforge/director-offload/`。BeatForge 会从检索结果中选出最多32个高价值素材，为图片和视频相关帧生成带素材ID的联系表。设 `director_contact_sheet_assets = 0` 可以关闭这项功能。
 
 导演同时接收歌曲统计、逐句歌词和乐段信息，输出经 Pydantic 校验的结构化方案；第一次 JSON 不合法会在同一次模型生命周期内自动修正一次。它不会生成时间码或直接执行 FFmpeg，具体剪辑点仍由节拍模型和确定性规划器控制。
 
@@ -142,7 +147,7 @@ cinematic = "My Cinema Font"
 
 ## CPU 与 NVIDIA GPU 配置
 
-CPU 默认配置：
+CPU兼容配置（用于功能验证，完整推理会很慢）：
 
 ```toml
 [ai]
@@ -153,10 +158,13 @@ qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 vision_backend = "qwen3-vl-embedding"
 vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
+vision_quantization = "none"
+vision_batch_size = 2
 music_structure_backend = "allin1"
 frame_samples = 3
 director_enabled = true
 director_model = "Qwen/Qwen3.5-4B"
+director_quantization = "none"
 director_gpu_memory_gb = 9.0
 ```
 
@@ -169,12 +177,15 @@ asr_backend = "qwen3"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 vision_backend = "qwen3-vl-embedding"
-vision_model = "Qwen/Qwen3-VL-Embedding-2B"
-vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
+vision_model = "Qwen/Qwen3-VL-Embedding-8B"
+vision_reranker_model = "Qwen/Qwen3-VL-Reranker-8B"
+vision_quantization = "nf4"
+vision_batch_size = 4
 music_structure_backend = "allin1"
 frame_samples = 5
 director_enabled = true
-director_model = "Qwen/Qwen3.5-4B"
+director_model = "Qwen/Qwen3.5-9B"
+director_quantization = "nf4"
 director_gpu_memory_gb = 9.0
 ```
 
@@ -196,7 +207,7 @@ Qwen3-VL-Embedding 会直接比较歌词、图片和视频关键帧。文件名�
 }
 ```
 
-视频默认均匀抽取 3 个关键帧并平均视觉向量。提高 `frame_samples` 会提升长视频覆盖率，也会增加分析时间。
+视频默认均匀抽取5个关键帧并分别匹配歌词，再从语义最相关的时刻附近取材。提高 `frame_samples` 会提升长视频覆盖率，也会增加分析时间。
 
 ## 专业剪辑策略
 
