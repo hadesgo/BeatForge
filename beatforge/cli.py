@@ -89,10 +89,12 @@ def doctor() -> None:
 @app.command("download-models")
 def download_models(
     project: Path = typer.Argument(Path("project.toml"), help="用于确定模型名称的项目配置"),
-    cache_dir: Path | None = typer.Option(None, "--cache-dir", help="可选的 Hugging Face 缓存目录"),
+    cache_dir: Path | None = typer.Option(None, "--cache-dir", help="可选的统一模型缓存目录"),
     workers: int = typer.Option(4, "--workers", min=1, max=16, help="单个模型的并行下载数"),
+    source: str = typer.Option("auto", "--source", help="auto（魔搭优先）、modelscope 或 huggingface"),
+    no_fallback: bool = typer.Option(False, "--no-fallback", help="魔搭失败时不回退 Hugging Face"),
 ) -> None:
-    """统一下载项目启用的全部 Hugging Face 模型。"""
+    """统一下载项目启用的全部模型，默认优先使用 ModelScope。"""
     try:
         from beatforge.models.downloader import (
             ModelDownloadError,
@@ -100,6 +102,8 @@ def download_models(
             write_download_manifest,
         )
         loaded = load_project(project)
+        if source not in {"auto", "modelscope", "huggingface"}:
+            raise typer.BadParameter("--source 必须是 auto、modelscope 或 huggingface")
 
         def report(state, item, detail):
             if state == "start":
@@ -110,7 +114,9 @@ def download_models(
                 console.print(f"[red]失败[/red] {item.repo_id} · {detail}")
 
         models = download_required_models(
-            loaded.ai, cache_dir=cache_dir, max_workers=workers, progress=report,
+            loaded.ai, cache_dir=cache_dir or loaded.cache_dir / "models",
+            max_workers=workers, source=source,
+            fallback_to_huggingface=not no_fallback, progress=report,
         )
         manifest = write_download_manifest(models, loaded.cache_dir / "models.json")
     except ModelDownloadError as exc:

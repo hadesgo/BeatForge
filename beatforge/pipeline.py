@@ -21,6 +21,11 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     device = resolve_device(project.ai.device)
     optimize_torch_runtime(device)
     use_ai = project.ai.enabled and not no_ai
+    from beatforge.models.downloader import WHISPER_REPOS, load_download_manifest
+    downloaded = load_download_manifest(project.cache_dir / "models.json")
+
+    def model_path(repo_id: str) -> str:
+        return downloaded.get(repo_id, repo_id)
     total_duration = duration(project.music)
 
     print(f"1/5 歌词时间轴 · {'本地 AI / ' + device if use_ai else 'LRC'}")
@@ -30,9 +35,11 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         from beatforge.models.transcriber import transcribe
         lyrics = transcribe(
             project.music, backend=project.ai.asr_backend,
-            qwen_model=project.ai.qwen_asr_model,
-            qwen_aligner=project.ai.qwen_aligner_model,
-            whisper_model=project.ai.whisper_model, device=device,
+            qwen_model=model_path(project.ai.qwen_asr_model),
+            qwen_aligner=model_path(project.ai.qwen_aligner_model),
+            whisper_model=model_path(WHISPER_REPOS.get(
+                project.ai.whisper_model, project.ai.whisper_model,
+            )), device=device,
             compute_type=project.ai.whisper_compute_type, offline=project.ai.offline,
         )
         write_srt(lyrics, project.cache_dir / "whisper.srt")
@@ -47,7 +54,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     if use_ai:
         from beatforge.models.audio_semantics import classify_music
         mood_scores = classify_music(
-            project.music, model_name=project.ai.clap_model,
+            project.music, model_name=model_path(project.ai.clap_model),
             device=device, offline=project.ai.offline,
         )
         release_gpu()
@@ -65,9 +72,9 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     if use_ai and lyrics:
         from beatforge.models.vision_index import VisionIndex
         index = VisionIndex(
-            project.ai.vision_model, device, project.ai.offline, project.cache_dir,
+            model_path(project.ai.vision_model), device, project.ai.offline, project.cache_dir,
             backend=project.ai.vision_backend,
-            reranker_model=project.ai.vision_reranker_model,
+            reranker_model=model_path(project.ai.vision_reranker_model) if project.ai.vision_reranker_model else None,
             rerank_top_k=project.ai.vision_rerank_top_k,
             quantization=project.ai.vision_quantization,
             batch_size=project.ai.vision_batch_size,
@@ -83,8 +90,11 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     if use_ai and project.ai.director_enabled:
         try:
             from beatforge.models.ai_director import direct_mv
+            director_config = project.ai.model_copy(update={
+                "director_model": model_path(project.ai.director_model),
+            })
             treatment = direct_mv(
-                analysis, lyrics, assets, similarities, project.ai, device, project.cache_dir,
+                analysis, lyrics, assets, similarities, director_config, device, project.cache_dir,
                 source_starts,
             )
             print(f"    导演概念：{treatment.concept}")

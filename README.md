@@ -46,7 +46,7 @@ uv sync --extra ai --extra ai-cpu --extra qwen --extra music-ai
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 ```
 
-CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。模型权重不会在 `uv sync` 时下载；第一次运行相应模型时才会进入 Hugging Face 本地缓存。若先手工准备权重并设置 `offline = true`，运行时只读取本地缓存。
+CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。模型权重不会在 `uv sync` 时下载。建议先用下面的统一下载命令准备权重；完成后，运行时会直接使用下载清单中的本地目录。
 
 统一下载项目配置中启用的 ASR、强制对齐、音乐情绪、视觉检索、视觉精排和 AI 导演模型：
 
@@ -54,13 +54,21 @@ CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。模型权重不�
 uv run beatforge download-models my-mv/project.toml
 ```
 
+默认 `auto` 模式优先从 ModelScope（魔搭社区）下载，适合中国大陆网络；某个仓库在魔搭不存在时才回退到 Hugging Face。Qwen3-ASR、ForcedAligner、Qwen3-VL Embedding/Reranker 和 Qwen3.5 均使用魔搭的同名官方仓库。
+
 指定独立缓存目录和单模型下载并发数：
 
 ```powershell
-uv run beatforge download-models my-mv/project.toml --cache-dir D:\hf-models --workers 4
+uv run beatforge download-models my-mv/project.toml --cache-dir D:\ai-models --workers 4
 ```
 
-下载支持断点续传和 Hugging Face 已有缓存复用。完成后会在项目 `.beatforge/models.json` 写入统一模型清单，随后可以在配置中设置 `offline = true`。All-In-One 和 Beat This! 的结构分析权重由各自安装包管理，不属于 Hugging Face 模型清单。
+只允许魔搭下载、完全禁止回退：
+
+```powershell
+uv run beatforge download-models my-mv/project.toml --source modelscope --no-fallback
+```
+
+需要恢复 Hugging Face 下载时使用 `--source huggingface`。完成后会在项目 `.beatforge/models.json` 写入包含来源和本地路径的统一模型清单，随后可以在配置中设置 `offline = true`。如果清单中的目录被移动或删除，运行时会自动退回配置里的仓库 ID。All-In-One 和 Beat This! 的结构分析权重由各自安装包管理，不属于统一模型清单。
 
 运行时量化不会缩小下载到磁盘的官方BF16模型文件。默认完整模型缓存需要预留约65GB磁盘空间。若显存更大，可把 `vision_quantization` 或 `director_quantization` 改为 `int8`；24GB以上显存可尝试 `none` 获得最高保真度。12GB配置应保持 `nf4`。`vision_batch_size` 默认是4，发生CUDA显存不足时会自动降到2或1重试；16GB以上显存可尝试手动提高到8。
 
