@@ -11,7 +11,7 @@ from beatforge.audio import AudioAnalysis
 from beatforge.director import create_art_direction
 from beatforge.lyrics import LyricLine
 from beatforge.planner import Shot
-from beatforge.renderer import render
+from beatforge.renderer import _section_color_filter, _shot_match_filter, _video_encode_args, render
 from beatforge.runtime import duration
 
 
@@ -45,3 +45,27 @@ def test_end_to_end_renderer_without_models(tmp_path: Path) -> None:
     assert output.exists()
     assert (tmp_path / "cache" / "lyrics.ass").exists()
     assert 2.9 <= duration(output) <= 3.1
+
+
+def test_director_color_arc_and_shot_matching_become_filters() -> None:
+    shot = Shot(
+        0, 0, 2, 2, 0, "frame.jpg", "image", 0, "", .5, "steady", "cut", .5,
+        section_index=1, source_color=[210, 130, 70],
+    )
+    analysis = AudioAnalysis(
+        duration=2, bpm=90, beats=[], sections=[0, 2], energy_times=[0],
+        energy_values=[.4], average_energy=.4, brightness=.5,
+        mood="cinematic", mood_scores={"cinematic": 1},
+    )
+    art = create_art_direction(analysis, [], RenderConfig())
+    art.color_arc = ["cold blue", "warm amber"]
+
+    assert "eq=brightness=" in _shot_match_filter(shot, .3)
+    assert "colorbalance=" in _section_color_filter(shot, art, 2, .72)
+
+
+def test_intermediate_encoding_uses_higher_quality_crf() -> None:
+    cfg = RenderConfig(crf=19, intermediate_crf=13, encoder_tune="film")
+    args = _video_encode_args(cfg, intermediate=True)
+    assert args[args.index("-crf") + 1] == "13"
+    assert args[args.index("-tune") + 1] == "film"

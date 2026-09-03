@@ -11,8 +11,10 @@ class RenderConfig(BaseModel):
     width: int = 1920
     height: int = 1080
     fps: int = 30
-    crf: int = 19
+    crf: int = Field(default=19, ge=0, le=51)
+    intermediate_crf: int = Field(default=14, ge=0, le=35)
     preset: str = "medium"
+    encoder_tune: Literal["none", "film", "grain", "animation"] = "film"
     min_shot_seconds: float = 1.8
     max_shot_seconds: float = 5.5
     subtitle_font: str = "auto"
@@ -33,9 +35,18 @@ class RenderConfig(BaseModel):
     visual_effects: bool = True
     vignette: bool = True
     film_grain: float = Field(default=1.6, ge=0, le=8)
+    look_strength: float = Field(default=.72, ge=0, le=1)
+    shot_match_strength: float = Field(default=.3, ge=0, le=1)
     professional_transitions: bool = True
     transition_min_seconds: float = Field(default=.16, ge=.05, le=1.0)
     transition_max_seconds: float = Field(default=.55, ge=.1, le=1.5)
+
+    @model_validator(mode="after")
+    def keep_intermediates_high_quality(self) -> "RenderConfig":
+        # In x264 a lower CRF means higher quality. Intermediate generations must
+        # never be more compressed than the delivery encode.
+        self.intermediate_crf = min(self.intermediate_crf, self.crf)
+        return self
 
 
 class AIConfig(BaseModel):
@@ -136,7 +147,9 @@ width = 1920
 height = 1080
 fps = 30
 crf = 19
+intermediate_crf = 14 # 中间文件使用更高质量，减少多次编码造成的细节损失
 preset = "medium"
+encoder_tune = "film" # 也可用 grain/animation/none
 min_shot_seconds = 1.8
 max_shot_seconds = 5.5
 subtitle_font = "auto"
@@ -148,6 +161,8 @@ subtitle_highlight_color = "&H0000D7FF" # ASS 的金黄色（BGR）
 visual_effects = true
 vignette = true
 film_grain = 1.6
+look_strength = 0.72 # AI 导演色彩弧的应用强度
+shot_match_strength = 0.3 # 不同来源素材的轻量曝光/饱和度匹配
 professional_transitions = true
 transition_min_seconds = 0.16
 transition_max_seconds = 0.55

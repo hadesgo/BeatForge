@@ -22,3 +22,10 @@ def test_project_paths_and_cpu_defaults(tmp_path: Path) -> None:
     assert config.render.subtitle_font == "auto"
     assert config.render.subtitle_fonts["energetic"] == "preset:energetic"
     assert config.render.visual_effects is True
+    assert config.render.intermediate_crf < config.render.crf
+
+
+def test_intermediate_crf_cannot_be_worse_than_delivery() -> None:
+    from beatforge.config import RenderConfig
+
+    assert RenderConfig(crf=16, intermediate_crf=24).intermediate_crf == 16

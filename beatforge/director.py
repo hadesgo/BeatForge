@@ -92,7 +92,7 @@ def create_art_direction(
         concept=treatment.concept if treatment else f"{mood} music video",
         narrative_arc=treatment.narrative_arc if treatment else "Follow the energy and lyrical progression of the song.",
         visual_style=treatment.visual_style if treatment else profile,
-        color_arc=treatment.color_arc if treatment else [profile],
+        color_arc=(treatment.color_arc or [profile]) if treatment else [profile],
         motifs=treatment.motif_asset_ids if treatment else [],
         mood=mood, font=font, highlight_color=config.subtitle_highlight_color,
         base_subtitle_effect=base_effect, line_effects=line_effects,

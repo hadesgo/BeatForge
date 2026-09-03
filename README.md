@@ -129,6 +129,8 @@ subtitle_highlight_color = "&H0000D7FF"
 visual_effects = true
 vignette = true
 film_grain = 1.6
+look_strength = 0.72
+shot_match_strength = 0.3
 ```
 
 - `karaoke`：逐字高亮，并带轻微缩放入场；
@@ -155,7 +157,11 @@ cinematic = "preset:cinematic"
 
 若希望整首歌固定使用某个预设或自定义字体，可分别设置 `subtitle_font = "preset:minimal"` 或 `subtitle_font = "My MV Font"`。自动字幕还会对异常长的歌词单独缩小字号，普通短句保持原字号；这不会破坏逐字高亮和打字机时序。
 
-图片和视频的推拉幅度同时参考局部能量、旋律变化率和歌曲意境。高能/高节奏密度段落使用锐化与亮色闪切，低能段落使用柔化与长淡入，梦幻和抒情歌曲降低镜头运动，所有镜头可选暗角和动态胶片颗粒。最终选择会写入 `plan.json` 的 `art_direction` 和每个 `shot.melody`。
+图片和视频的推拉幅度同时参考局部能量、旋律变化率和歌曲意境。高能/高节奏密度段落使用锐化与亮色闪切，低能段落使用柔化与长淡入，梦幻和抒情歌曲降低镜头运动，所有镜头可选暗角和动态胶片颗粒。
+
+为提高成片统一性，渲染器会把 AI 导演的 `color_arc` 真正转换成按章节推进的轻量色彩风格，而不是只写入 JSON；同时依据素材代表色做受限的曝光和饱和度匹配，最大修正量受到 `shot_match_strength` 控制，不会把夜景强行拉成白天。`look_strength` 控制导演色彩弧强度，设为 `0` 可完全关闭。缩放统一使用 Lanczos，并校正像素宽高比。
+
+中间片段默认使用 `intermediate_crf = 14`，最终交付使用 `crf = 19`，减少转场合成和字幕压制中的多代有损损失；程序会自动保证中间 CRF 不高于最终 CRF。`encoder_tune = "film"` 用于保留肤质、自然纹理和细颗粒，也可根据动画素材改为 `animation`，明显颗粒化素材可用 `grain`。最终选择与每个镜头的代表色都会写入 `plan.json`。
 
 ## CPU 与 NVIDIA GPU 配置
 

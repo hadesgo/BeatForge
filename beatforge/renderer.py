@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection
 from beatforge.lyrics import LyricLine, write_ass
@@ -20,10 +22,14 @@ def render(
         _transition_spec(shot, shots[index + 1], art, config)
         for index, shot in enumerate(shots[:-1])
     ] if config.professional_transitions else []
+    section_count = max((shot.section_index for shot in shots), default=0) + 1
     for index, shot in enumerate(shots):
         print(f"\r渲染镜头 {index + 1}/{len(shots)}", end="", flush=True)
         handle = transitions[index][1] if index < len(transitions) else 0.0
-        _render_shot(shot, clips / f"{index:05}.mp4", config, art, shot.duration + handle)
+        _render_shot(
+            shot, clips / f"{index:05}.mp4", config, art,
+            shot.duration + handle, section_count,
+        )
     print()
     picture = cache / "picture.mp4"
     if transitions:
@@ -47,13 +53,15 @@ def render(
             fonts = config.subtitle_fonts_dir.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
             subtitle_filter += f":fontsdir='{fonts}'"
         args += ["-vf", subtitle_filter]
-    args += ["-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", config.preset,
-             "-crf", str(config.crf), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k",
-             "-shortest", "-movflags", "+faststart", str(output)]
+    args += ["-map", "0:v:0", "-map", "1:a:0", *_video_encode_args(config, intermediate=False),
+             "-c:a", "aac", "-b:a", "320k", "-shortest", "-movflags", "+faststart", str(output)]
     command(args)
 
 
-def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection, render_duration: float) -> None:
+def _render_shot(
+    shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
+    render_duration: float, section_count: int,
+) -> None:
     frames = max(1, round(render_duration * cfg.fps))
     if shot.kind == "image":
         melody_boost = 1 + shot.melody * .22
@@ -64,19 +72,23 @@ def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
             if shot.index % 2 == 0 else f"(iw-iw/zoom)*(1-{progress})"
         )
         pan_y = "ih/2-ih/zoom/2"
-        visual = (f"scale={cfg.width * 2}:{cfg.height * 2}:force_original_aspect_ratio=increase,"
+        visual = (f"scale={cfg.width * 2}:{cfg.height * 2}:force_original_aspect_ratio=increase:flags=lanczos,"
                   f"crop={cfg.width * 2}:{cfg.height * 2},"
                   f"zoompan=z='min(1+on/{frames}*{zoom_amount},{1 + zoom_amount})':"
-                  f"x='{pan_x}':y='{pan_y}':d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps}")
+                  f"x='{pan_x}':y='{pan_y}':d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps},setsar=1")
     else:
         # Preserve the source cinematography. Adding a synthetic sinusoidal pan to moving
         # footage creates the characteristic automated, seasick look.
         overscan = 1.025
         scaled_width, scaled_height = round(cfg.width * overscan / 2) * 2, round(cfg.height * overscan / 2) * 2
-        visual = (f"scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase,"
-                  f"crop={cfg.width}:{cfg.height}:x='(iw-ow)/2':y='(ih-oh)/2'")
+        visual = (f"scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase:flags=lanczos,"
+                  f"crop={cfg.width}:{cfg.height}:x='(iw-ow)/2':y='(ih-oh)/2',setsar=1")
     grade = art.grade_filter
-    effects: list[str] = []
+    effects = [
+        _shot_match_filter(shot, cfg.shot_match_strength),
+        grade,
+        _section_color_filter(shot, art, section_count, cfg.look_strength),
+    ]
     if cfg.visual_effects:
         if shot.motion == "dynamic":
             effects.append("unsharp=5:5:0.55:5:5:0")
@@ -91,10 +103,59 @@ def _render_shot(shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
         args += ["-loop", "1", "-framerate", str(cfg.fps)]
     else:
         args += ["-stream_loop", "-1", "-ss", str(shot.source_start)]
-    args += ["-i", shot.file, "-t", str(render_duration), "-an", "-vf", ",".join([visual, grade, *effects]),
-             "-r", str(cfg.fps), "-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf),
-             "-pix_fmt", "yuv420p", str(output)]
+    args += ["-i", shot.file, "-t", str(render_duration), "-an", "-vf", ",".join(
+        [visual, *(item for item in effects if item)]
+    ), "-r", str(cfg.fps), *_video_encode_args(cfg, intermediate=True), str(output)]
     command(args)
+
+
+def _shot_match_filter(shot: Shot, strength: float) -> str:
+    """Apply restrained normalization so mixed cameras do not visibly jump."""
+    if strength <= 0 or len(shot.source_color) != 3 or shot.source_color == [128, 128, 128]:
+        return ""
+    red, green, blue = (float(value) / 255 for value in shot.source_color)
+    luminance = red * .2126 + green * .7152 + blue * .0722
+    chroma = max(red, green, blue) - min(red, green, blue)
+    brightness = float(np.clip((.48 - luminance) * .12 * strength, -.035, .035))
+    saturation = float(np.clip(1 + (.32 - chroma) * .16 * strength, .94, 1.06))
+    return f"eq=brightness={brightness:.4f}:saturation={saturation:.4f}"
+
+
+def _section_color_filter(shot: Shot, art: ArtDirection, section_count: int, strength: float) -> str:
+    """Turn the director's color arc into a subtle, section-consistent tint."""
+    if strength <= 0 or not art.color_arc:
+        return ""
+    progress = max(0, shot.section_index) / max(1, section_count - 1)
+    palette_index = min(len(art.color_arc) - 1, round(progress * (len(art.color_arc) - 1)))
+    look = art.color_arc[palette_index].casefold()
+    warm = ("warm", "amber", "gold", "orange", "sunset", "romantic", "暖", "琥珀", "金", "夕阳")
+    cool = ("cool", "cold", "blue", "teal", "cyan", "melancholic", "cinematic", "冷", "蓝", "青")
+    purple = ("purple", "violet", "magenta", "dreamy", "紫", "梦幻")
+    green = ("green", "emerald", "forest", "绿", "森林")
+    mono = ("mono", "desatur", "black and white", "dark", "黑白", "低饱和")
+    amount = .032 * strength
+    if any(key in look for key in warm):
+        return f"colorbalance=rs={amount:.4f}:gs={amount * .25:.4f}:bs={-amount * .75:.4f}"
+    if any(key in look for key in cool):
+        return f"colorbalance=rs={-amount * .55:.4f}:gs={amount * .18:.4f}:bs={amount:.4f}"
+    if any(key in look for key in purple):
+        return f"colorbalance=rs={amount * .65:.4f}:gs={-amount * .35:.4f}:bs={amount:.4f}"
+    if any(key in look for key in green):
+        return f"colorbalance=rs={-amount * .35:.4f}:gs={amount * .65:.4f}:bs={-amount * .15:.4f}"
+    if any(key in look for key in mono):
+        return f"eq=saturation={1 - .18 * strength:.4f}"
+    return ""
+
+
+def _video_encode_args(cfg: RenderConfig, *, intermediate: bool) -> list[str]:
+    args = [
+        "-c:v", "libx264", "-preset", cfg.preset,
+        "-crf", str(cfg.intermediate_crf if intermediate else cfg.crf),
+        "-pix_fmt", "yuv420p",
+    ]
+    if cfg.encoder_tune != "none":
+        args.extend(["-tune", cfg.encoder_tune])
+    return args
 
 
 def _transition_spec(shot: Shot, following: Shot, art: ArtDirection, cfg: RenderConfig) -> tuple[str, float]:
@@ -143,7 +204,6 @@ def _compose_transitions(
     filters.append(f"{current}fade=t=in:st=0:d=0.25,fade=t=out:st={max(0, timeline - end_fade):.3f}:d={end_fade:.3f}[vout]")
     args += [
         "-filter_complex", ";".join(filters), "-map", "[vout]", "-an",
-        "-r", str(cfg.fps), "-c:v", "libx264", "-preset", cfg.preset,
-        "-crf", str(cfg.crf), "-pix_fmt", "yuv420p", str(output),
+        "-r", str(cfg.fps), *_video_encode_args(cfg, intermediate=True), str(output),
     ]
     command(args)

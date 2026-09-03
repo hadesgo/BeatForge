@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -36,6 +36,7 @@ class Shot:
     transition_tone: str = "neutral"
     camera_motion: str = "unknown"
     section_index: int = -1
+    source_color: list[int] = field(default_factory=lambda: [128, 128, 128])
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -114,6 +115,7 @@ def create_plan(
             transition_tone=direction.transition_tone if direction else "neutral",
             camera_motion=selected.camera_motion,
             section_index=section_index,
+            source_color=selected.dominant_color.copy(),
         ))
     _assign_transitions(shots)
     return shots

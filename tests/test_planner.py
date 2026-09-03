@@ -34,11 +34,12 @@ def test_ai_similarity_controls_selection() -> None:
     lyrics = [LyricLine(0, 4, "歌词")]
     assets = [
         MediaAsset(0, Path("a.jpg"), "image", float("inf"), 100, 100),
-        MediaAsset(1, Path("b.jpg"), "image", float("inf"), 100, 100),
+        MediaAsset(1, Path("b.jpg"), "image", float("inf"), 100, 100, dominant_color=[20, 40, 80]),
     ]
     shots = create_plan(analysis, lyrics, assets, np.array([[.1, .9]]), min_shot=1.5, max_shot=5)
     assert shots[0].media_id == 1
     assert shots[0].semantic_score == .9
+    assert shots[0].source_color == [20, 40, 80]
 
 
 def test_plan_prefers_hard_cuts_and_reserves_transition_for_section_change() -> None:
