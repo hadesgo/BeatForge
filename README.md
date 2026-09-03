@@ -22,7 +22,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
-模型分阶段加载并释放，不会同时占用显存。当前无 NVIDIA 显卡的电脑可以用 CPU 完成开发和验证；目标 5070 机器使用 PyTorch 2.14.0 + CUDA 13.2 官方轮子。Qwen3-ASR 走 Transformers 5.13+ 原生接口，Qwen3-VL Embedding/Reranker 走 Sentence Transformers，不再安装会锁死旧版 PyTorch/Transformers 的专用包。
+模型分阶段加载并释放，不会同时占用显存。运行完整 AI 流程的最低硬件需求是 **12GB 显存的 NVIDIA 显卡**，并且驱动需要满足 PyTorch 2.14.0 + CUDA 13.2 运行要求；不限定具体显卡型号。无 NVIDIA 显卡的电脑仍可使用 CPU 完成开发和离线测试，但完整推理速度不作为支持目标。Qwen3-ASR 走 Transformers 5.13+ 原生接口，Qwen3-VL Embedding/Reranker 走 Sentence Transformers。
 
 ## 安装
 
@@ -38,13 +38,27 @@ uv sync
 uv sync --extra ai --extra ai-cpu --extra qwen --extra music-ai
 ```
 
-RTX 5070 电脑的 AI 环境：
+12GB 显存及以上 NVIDIA 显卡的 AI 环境：
 
 ```powershell
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 ```
 
 CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。模型权重不会在 `uv sync` 时下载；第一次运行相应模型时才会进入 Hugging Face 本地缓存。若先手工准备权重并设置 `offline = true`，运行时只读取本地缓存。
+
+统一下载项目配置中启用的 ASR、强制对齐、音乐情绪、视觉检索、视觉精排和 AI 导演模型：
+
+```powershell
+uv run beatforge download-models my-mv/project.toml
+```
+
+指定独立缓存目录和单模型下载并发数：
+
+```powershell
+uv run beatforge download-models my-mv/project.toml --cache-dir D:\hf-models --workers 4
+```
+
+下载支持断点续传和 Hugging Face 已有缓存复用。完成后会在项目 `.beatforge/models.json` 写入统一模型清单，随后可以在配置中设置 `offline = true`。All-In-One 和 Beat This! 的结构分析权重由各自安装包管理，不属于 Hugging Face 模型清单。
 
 ## 使用
 
@@ -126,7 +140,7 @@ cinematic = "My Cinema Font"
 
 图片和视频的推拉幅度同时参考局部能量、旋律变化率和歌曲意境。高能/高节奏密度段落使用锐化与亮色闪切，低能段落使用柔化与长淡入，梦幻和抒情歌曲降低镜头运动，所有镜头可选暗角和动态胶片颗粒。最终选择会写入 `plan.json` 的 `art_direction` 和每个 `shot.melody`。
 
-## CPU 与 RTX 5070 配置
+## CPU 与 NVIDIA GPU 配置
 
 CPU 默认配置：
 
@@ -146,7 +160,7 @@ director_model = "Qwen/Qwen3.5-4B"
 director_gpu_memory_gb = 9.0
 ```
 
-RTX 5070 12GB 推荐配置：
+12GB 显存及以上 NVIDIA 显卡推荐配置：
 
 ```toml
 [ai]

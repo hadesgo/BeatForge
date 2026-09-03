@@ -82,36 +82,36 @@ def doctor() -> None:
 @app.command("download-models")
 def download_models(
     project: Path = typer.Argument(Path("project.toml"), help="用于确定模型名称的项目配置"),
+    cache_dir: Path | None = typer.Option(None, "--cache-dir", help="可选的 Hugging Face 缓存目录"),
+    workers: int = typer.Option(4, "--workers", min=1, max=16, help="单个模型的并行下载数"),
 ) -> None:
-    """预下载默认模型，之后可完全离线运行。"""
+    """统一下载项目启用的全部 Hugging Face 模型。"""
     try:
-        from huggingface_hub import snapshot_download
-    except ImportError as exc:
-        raise typer.BadParameter("请先安装 AI 环境；当前电脑使用 uv sync --extra ai --extra ai-cpu") from exc
-    config = load_project(project).ai
-    whisper_repos = {
-        "tiny": "Systran/faster-whisper-tiny",
-        "base": "Systran/faster-whisper-base",
-        "small": "Systran/faster-whisper-small",
-        "medium": "Systran/faster-whisper-medium",
-        "large-v3": "Systran/faster-whisper-large-v3",
-        "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-        "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-    }
-    asr_models = (
-        [config.qwen_asr_model, config.qwen_aligner_model]
-        if config.asr_backend == "qwen3"
-        else [whisper_repos.get(config.whisper_model, config.whisper_model)]
-    )
-    models = [*asr_models, config.clap_model, config.vision_model]
-    if config.vision_reranker_model:
-        models.append(config.vision_reranker_model)
-    if config.director_enabled:
-        models.append(config.director_model)
-    for model in models:
-        console.print(f"下载 {model}")
-        snapshot_download(model)
-    console.print("[green]模型已全部缓存，可在 project.toml 中设置 offline = true[/green]")
+        from beatforge.models.downloader import (
+            ModelDownloadError,
+            download_required_models,
+            write_download_manifest,
+        )
+        loaded = load_project(project)
+
+        def report(state, item, detail):
+            if state == "start":
+                console.print(f"[cyan]下载[/cyan] {item.component} · {item.repo_id}")
+            elif state == "complete":
+                console.print(f"[green]完成[/green] {item.repo_id}")
+            else:
+                console.print(f"[red]失败[/red] {item.repo_id} · {detail}")
+
+        models = download_required_models(
+            loaded.ai, cache_dir=cache_dir, max_workers=workers, progress=report,
+        )
+        manifest = write_download_manifest(models, loaded.cache_dir / "models.json")
+    except ModelDownloadError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"[bold green]全部模型已缓存[/bold green] · 清单 {manifest}")
+    console.print("可在 project.toml 中设置 offline = true")
 
 
 if __name__ == "__main__":
