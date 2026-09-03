@@ -20,13 +20,12 @@ ai = [
   "faster-whisper>=1.1",
   "huggingface-hub>=0.29",
   "sentencepiece>=0.2",
-  "transformers>=4.57.6",
+  "transformers>=5.16.1",
 ]
-ai-cpu = ["torch>=2.7", "torchvision>=0.22"]
-ai-cuda = ["torch>=2.7", "torchvision>=0.22"]
+ai-cpu = ["torch==2.14.0", "torchvision==0.29.0"]
+ai-cuda = ["torch==2.14.0", "torchvision==0.29.0"]
 qwen = [
-  "qwen-asr>=0.0.6",
-  "qwen3-vl-embedding @ git+https://github.com/QwenLM/Qwen3-VL-Embedding.git",
+  "sentence-transformers[image]>=5.4",
 ]
 music-ai = ["all-in-one-infer>=3.0", "beat-this"]
 
@@ -40,16 +39,13 @@ beatforge = "beatforge.cli:app"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [tool.uv]
 default-groups = ["dev"]
 conflicts = [[{ extra = "ai-cpu" }, { extra = "ai-cuda" }]]
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [[tool.uv.index]]
@@ -60,11 +56,11 @@ explicit = true
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
-  { index = "pytorch-cu128", extra = "ai-cuda" },
+  { index = "pytorch-cu132", extra = "ai-cuda" },
 ]
 torchvision = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
-  { index = "pytorch-cu128", extra = "ai-cuda" },
+  { index = "pytorch-cu132", extra = "ai-cuda" },
 ]
 
 [tool.pytest.ini_options]

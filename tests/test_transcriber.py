@@ -17,3 +17,12 @@ def test_qwen_alignment_is_grouped_into_lines() -> None:
     ])
     assert [line.text for line in lines] == ["你好。", "远方"]
     assert lines[0].tokens[1].start == .3
+
+
+def test_qwen_alignment_accepts_transformers_dict_output() -> None:
+    lines = group_aligned_tokens([
+        {"text": "星", "start_time": 0.0, "end_time": 0.4},
+        {"text": "光", "start_time": 0.4, "end_time": 0.8},
+    ])
+    assert lines[0].text == "星光"
+    assert lines[0].tokens[-1].end == .8

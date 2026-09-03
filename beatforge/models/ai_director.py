@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
-import urllib.error
-import urllib.request
+import gc
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from beatforge.audio import AudioAnalysis
 from beatforge.config import AIConfig
@@ -57,55 +56,100 @@ def direct_mv(
     assets: list[MediaAsset],
     similarities: np.ndarray | None,
     config: AIConfig,
+    device: str,
+    cache_dir: Path,
 ) -> DirectorTreatment:
     context = _build_context(analysis, lyrics, assets, similarities)
-    payload = {
-        "model": config.director_model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
-        ],
-        "temperature": config.director_temperature,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "mv_director_treatment",
-                "strict": True,
-                "schema": DirectorTreatment.model_json_schema(),
-            },
-        },
-    }
-    try:
-        response = _post(config.director_base_url, payload, config.director_timeout_seconds)
-    except urllib.error.HTTPError as exc:
-        if exc.code not in {400, 404, 422}:
-            raise
-        payload["response_format"] = {"type": "json_object"}
-        response = _post(config.director_base_url, payload, config.director_timeout_seconds)
-    treatment = DirectorTreatment.model_validate_json(_extract_content(response))
+    treatment = _generate_treatment(context, config, device, cache_dir)
     return _sanitize(treatment, len(analysis.sections) - 1, {asset.id for asset in assets})
 
 
-def _post(base_url: str, payload: dict, timeout: float) -> dict:
-    endpoint = f"{base_url.rstrip('/')}/chat/completions"
-    headers = {"Content-Type": "application/json"}
-    api_key = os.getenv("BEATFORGE_DIRECTOR_API_KEY")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as result:
-        return json.loads(result.read().decode("utf-8"))
+def _generate_treatment(
+    context: dict,
+    config: AIConfig,
+    device: str,
+    cache_dir: Path,
+) -> DirectorTreatment:
+    try:
+        import torch
+        from transformers import AutoModelForMultimodalLM, AutoProcessor
+    except ImportError as exc:
+        raise RuntimeError("AI 导演需要 ai 与 ai-cpu/ai-cuda extra") from exc
+
+    offload_dir = cache_dir / "director-offload"
+    load_options: dict = {
+        "device_map": "auto" if device == "cuda" else {"": "cpu"},
+        "dtype": "auto",
+        "local_files_only": config.offline,
+        "low_cpu_mem_usage": True,
+    }
+    if device == "cuda":
+        total_gb = torch.cuda.get_device_properties(0).total_memory / 2**30
+        gpu_limit = min(config.director_gpu_memory_gb, max(1.0, total_gb - 1.5))
+        load_options["max_memory"] = {0: f"{gpu_limit:.1f}GiB", "cpu": f"{config.director_cpu_memory_gb:.1f}GiB"}
+        if config.director_offload:
+            offload_dir.mkdir(parents=True, exist_ok=True)
+            load_options.update({"offload_folder": str(offload_dir), "offload_state_dict": True})
+
+    processor = None
+    model = None
+    try:
+        processor = AutoProcessor.from_pretrained(config.director_model, local_files_only=config.offline)
+        model = AutoModelForMultimodalLM.from_pretrained(config.director_model, **load_options)
+        model.eval()
+        schema = json.dumps(DirectorTreatment.model_json_schema(), ensure_ascii=False)
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": (
+                f"JSON Schema:\n{schema}\n\n项目数据:\n"
+                f"{json.dumps(context, ensure_ascii=False)}"
+            )},
+        ]
+        raw = _generate(model, processor, messages, config, torch)
+        try:
+            return DirectorTreatment.model_validate_json(_extract_json(raw))
+        except ValidationError as exc:
+            messages.extend([
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": (
+                    "上一个结果未通过校验。修正后只返回完整 JSON，不要解释。"
+                    f"\n校验错误：{exc}"
+                )},
+            ])
+            corrected = _generate(model, processor, messages, config, torch)
+            return DirectorTreatment.model_validate_json(_extract_json(corrected))
+    finally:
+        if model is not None:
+            del model
+        if processor is not None:
+            del processor
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
 
 
-def _extract_content(response: dict) -> str:
-    content = response["choices"][0]["message"]["content"]
-    if isinstance(content, list):
-        content = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+def _generate(model, processor, messages: list[dict], config: AIConfig, torch) -> str:
+    inputs = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(model.device)
+    generation = {
+        "max_new_tokens": config.director_max_new_tokens,
+        "do_sample": config.director_temperature > 0,
+    }
+    if config.director_temperature > 0:
+        generation.update({"temperature": config.director_temperature, "top_p": .85})
+    with torch.inference_mode():
+        output = model.generate(**inputs, **generation)
+    generated = output[:, inputs["input_ids"].shape[1]:]
+    return processor.batch_decode(generated, skip_special_tokens=True)[0]
+
+
+def _extract_json(content: str) -> str:
     text = str(content).strip()
     if text.startswith("```"):
         lines = text.splitlines()

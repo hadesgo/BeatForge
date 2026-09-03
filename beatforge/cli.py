@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import importlib.metadata
 import platform
 import shutil
 from pathlib import Path
@@ -63,14 +64,14 @@ def doctor() -> None:
         table.add_row("CTranslate2", "OK", types)
     except (ImportError, RuntimeError) as exc:
         table.add_row("CTranslate2", "未就绪", str(exc))
-    table.add_row("Qwen3-ASR", "OK" if importlib.util.find_spec("qwen_asr") else "未安装", "qwen extra")
-    qwen_vl = importlib.util.find_spec("qwen3_vl_embedding")
-    if qwen_vl is None:
-        try:
-            qwen_vl = importlib.util.find_spec("src.models.qwen3_vl_embedding")
-        except ModuleNotFoundError:
-            qwen_vl = None
-    table.add_row("Qwen3-VL Embedding", "OK" if qwen_vl else "未安装", "qwen extra")
+    try:
+        transformers_version = importlib.metadata.version("transformers")
+        native_asr = tuple(map(int, transformers_version.split(".")[:2])) >= (5, 13)
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        transformers_version, native_asr = "未安装", False
+    table.add_row("Qwen3-ASR Native", "OK" if native_asr else "未就绪", f"Transformers {transformers_version}")
+    sentence_transformers = importlib.util.find_spec("sentence_transformers")
+    table.add_row("Qwen3-VL / Reranker", "OK" if sentence_transformers else "未安装", "sentence-transformers")
     table.add_row(
         "Music Structure", "OK" if importlib.util.find_spec("allin1_infer") else "未安装",
         "music-ai extra（All-In-One）",
@@ -105,6 +106,8 @@ def download_models(
     models = [*asr_models, config.clap_model, config.vision_model]
     if config.vision_reranker_model:
         models.append(config.vision_reranker_model)
+    if config.director_enabled:
+        models.append(config.director_model)
     for model in models:
         console.print(f"下载 {model}")
         snapshot_download(model)

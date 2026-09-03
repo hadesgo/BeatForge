@@ -11,8 +11,8 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
                                                       导演方案 JSON
 ```
 
-- `Qwen/Qwen3-ASR-1.7B`：默认歌曲识别模型；
-- `Qwen/Qwen3-ForcedAligner-0.6B`：生成字符/单词级真实演唱时间；
+- `Qwen/Qwen3-ASR-1.7B-hf`：Transformers 原生歌曲识别模型；
+- `Qwen/Qwen3-ForcedAligner-0.6B-hf`：Transformers 原生字符/单词级演唱时间对齐；
 - `laion/clap-htsat-fused`：音乐情绪、质感和强度的零样本分类；
 - `Qwen/Qwen3-VL-Embedding-2B`：中文歌词与图片/视频的跨模态检索；
 - `Qwen/Qwen3-VL-Reranker-2B`：对初选画面进行歌词意境和叙事适配精排；
@@ -22,7 +22,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
-模型分阶段加载并释放，不会同时占用显存。当前无 NVIDIA 显卡的电脑可以用 CPU 完成开发和验证；目标 5070 机器可切换 CUDA 12.8 环境。
+模型分阶段加载并释放，不会同时占用显存。当前无 NVIDIA 显卡的电脑可以用 CPU 完成开发和验证；目标 5070 机器使用 PyTorch 2.14.0 + CUDA 13.2 官方轮子。Qwen3-ASR 走 Transformers 5.13+ 原生接口，Qwen3-VL Embedding/Reranker 走 Sentence Transformers，不再安装会锁死旧版 PyTorch/Transformers 的专用包。
 
 ## 安装
 
@@ -44,7 +44,7 @@ RTX 5070 电脑的 AI 环境：
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 ```
 
-CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。模型权重不会在 `uv sync` 时下载；第一次运行相应模型时才会进入 Hugging Face 本地缓存。
+CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。模型权重不会在 `uv sync` 时下载；第一次运行相应模型时才会进入 Hugging Face 本地缓存。若先手工准备权重并设置 `offline = true`，运行时只读取本地缓存。
 
 ## 使用
 
@@ -71,24 +71,20 @@ uv run beatforge run my-mv/project.toml --no-ai
 
 ## 本地 AI 导演
 
-导演模型作为独立的 OpenAI-compatible 本地服务运行，BeatForge 不会自动下载或启动它。支持 llama.cpp、Ollama 和 LM Studio。没有启动服务、返回格式不合法或请求超时时，会打印原因并自动使用原来的规则导演，渲染流程不会中断。
+导演模型由 BeatForge 直接通过 Transformers 加载，不需要 llama.cpp、Ollama、LM Studio 或额外服务。视觉检索结束并释放显存后才加载导演；导演方案完成后立即删除模型、执行垃圾回收并清空 CUDA allocator，再进入 FFmpeg 渲染。加载或输出校验失败时自动使用规则导演，流程不会中断。
 
 ```toml
 [ai]
 director_enabled = true
 director_model = "Qwen/Qwen3.5-4B"
-director_base_url = "http://127.0.0.1:8080/v1"
-director_timeout_seconds = 90
 director_temperature = 0.25
+director_max_new_tokens = 2048
+director_gpu_memory_gb = 9.0
+director_cpu_memory_gb = 20.0
+director_offload = true
 ```
 
-常见服务地址：
-
-- llama.cpp：`http://127.0.0.1:8080/v1`；
-- Ollama：`http://127.0.0.1:11434/v1`，同时把 `director_model` 改为 Ollama 中实际使用的模型名；
-- LM Studio：`http://127.0.0.1:1234/v1`。
-
-如果本地服务要求密钥，设置环境变量 `BEATFORGE_DIRECTOR_API_KEY`。导演接收歌曲统计、逐句歌词、乐段和最多 60 个高价值素材候选，输出经过 JSON Schema 与 Pydantic 校验的结构化方案。它不会生成时间码或直接执行 FFmpeg；具体剪辑点仍由节拍模型和确定性规划器控制。
+`director_gpu_memory_gb` 是 Accelerate 的显存上限；12GB 显卡默认只允许导演使用 9GB。超出部分在 `director_offload = true` 时卸载到内存和 `.beatforge/director-offload/`。导演接收歌曲统计、逐句歌词、乐段和最多 60 个高价值素材候选，输出经 Pydantic 校验的结构化方案；第一次 JSON 不合法会在同一次模型生命周期内自动修正一次。它不会生成时间码或直接执行 FFmpeg，具体剪辑点仍由节拍模型和确定性规划器控制。
 
 ## 字幕和画面动效
 
@@ -135,8 +131,8 @@ CPU 默认配置：
 [ai]
 device = "auto"
 asr_backend = "qwen3"
-qwen_asr_model = "Qwen/Qwen3-ASR-1.7B"
-qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
+qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
+qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 vision_backend = "qwen3-vl-embedding"
 vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
@@ -144,7 +140,7 @@ music_structure_backend = "allin1"
 frame_samples = 3
 director_enabled = true
 director_model = "Qwen/Qwen3.5-4B"
-director_base_url = "http://127.0.0.1:8080/v1"
+director_gpu_memory_gb = 9.0
 ```
 
 RTX 5070 12GB 推荐配置：
@@ -153,16 +149,16 @@ RTX 5070 12GB 推荐配置：
 [ai]
 device = "cuda"
 asr_backend = "qwen3"
-qwen_asr_model = "Qwen/Qwen3-ASR-1.7B"
-qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
+qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
+qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 vision_backend = "qwen3-vl-embedding"
 vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 music_structure_backend = "allin1"
 frame_samples = 5
 director_enabled = true
-director_model = "Qwen/Qwen3.5-9B"
-director_base_url = "http://127.0.0.1:8080/v1"
+director_model = "Qwen/Qwen3.5-4B"
+director_gpu_memory_gb = 9.0
 ```
 
 运行 `uv run beatforge doctor` 检查实际使用 CPU 还是 CUDA。Faster Whisper 和 SigLIP2 仍可通过 `asr_backend`/`vision_backend` 作为兼容后备。

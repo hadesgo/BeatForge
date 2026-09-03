@@ -9,8 +9,8 @@ enabled = true
 device = "auto"
 offline = false
 asr_backend = "qwen3"
-qwen_asr_model = "Qwen/Qwen3-ASR-1.7B"
-qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
+qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
+qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 whisper_model = "small"
 whisper_compute_type = "int8"
 clap_model = "laion/clap-htsat-fused"
@@ -22,9 +22,11 @@ vision_rerank_top_k = 5
 frame_samples = 3
 director_enabled = true
 director_model = "Qwen/Qwen3.5-4B"
-director_base_url = "http://127.0.0.1:8080/v1"
-director_timeout_seconds = 90
 director_temperature = 0.25
+director_max_new_tokens = 2048
+director_gpu_memory_gb = 9.0
+director_cpu_memory_gb = 20.0
+director_offload = true
 
 [render]
 width = 960

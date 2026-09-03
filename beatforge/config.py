@@ -43,8 +43,8 @@ class AIConfig(BaseModel):
     device: Literal["auto", "cuda", "cpu"] = "auto"
     offline: bool = False
     asr_backend: Literal["qwen3", "faster-whisper"] = "qwen3"
-    qwen_asr_model: str = "Qwen/Qwen3-ASR-1.7B"
-    qwen_aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B"
+    qwen_asr_model: str = "Qwen/Qwen3-ASR-1.7B-hf"
+    qwen_aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
     whisper_model: str = "small"
     whisper_compute_type: str = "int8"
     clap_model: str = "laion/clap-htsat-fused"
@@ -56,9 +56,11 @@ class AIConfig(BaseModel):
     frame_samples: int = Field(default=3, ge=1, le=12)
     director_enabled: bool = True
     director_model: str = "Qwen/Qwen3.5-4B"
-    director_base_url: str = "http://127.0.0.1:8080/v1"
-    director_timeout_seconds: float = Field(default=90, ge=2, le=600)
     director_temperature: float = Field(default=.25, ge=0, le=1.5)
+    director_max_new_tokens: int = Field(default=2048, ge=256, le=8192)
+    director_gpu_memory_gb: float = Field(default=9.0, ge=1, le=80)
+    director_cpu_memory_gb: float = Field(default=20.0, ge=4, le=256)
+    director_offload: bool = True
 
 
 class ProjectConfig(BaseModel):
@@ -102,8 +104,8 @@ enabled = true
 device = "auto"
 offline = false
 asr_backend = "qwen3"
-qwen_asr_model = "Qwen/Qwen3-ASR-1.7B"
-qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
+qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
+qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 whisper_model = "small" # RTX 5070 可改为 large-v3-turbo
 whisper_compute_type = "int8" # RTX 5070 可改为 int8_float16
 clap_model = "laion/clap-htsat-fused"
@@ -113,11 +115,13 @@ vision_model = "Qwen/Qwen3-VL-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 vision_rerank_top_k = 5
 frame_samples = 3
-director_enabled = true # 需要自行启动 llama.cpp/Ollama/LM Studio；连接失败会回退规则导演
+director_enabled = true # BeatForge 分阶段加载并释放模型；失败会回退规则导演
 director_model = "Qwen/Qwen3.5-4B"
-director_base_url = "http://127.0.0.1:8080/v1"
-director_timeout_seconds = 90
 director_temperature = 0.25
+director_max_new_tokens = 2048
+director_gpu_memory_gb = 9.0 # 5070 12GB 为渲染和临时张量预留约 3GB
+director_cpu_memory_gb = 20.0
+director_offload = true
 
 [render]
 width = 1920

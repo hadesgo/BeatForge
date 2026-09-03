@@ -1,5 +1,7 @@
-import json
 from pathlib import Path
+from contextlib import nullcontext
+from types import SimpleNamespace
+import sys
 
 import numpy as np
 
@@ -7,7 +9,7 @@ from beatforge.audio import AudioAnalysis
 from beatforge.config import AIConfig
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
-from beatforge.models.ai_director import DirectorTreatment, direct_mv
+from beatforge.models.ai_director import DirectorTreatment, _generate_treatment, direct_mv
 from beatforge.planner import create_plan
 
 
@@ -57,19 +59,81 @@ def test_director_preferences_influence_shot_selection() -> None:
     assert shots[0].transition_tone == "soft"
 
 
-def test_director_response_is_validated_and_sanitized(monkeypatch) -> None:
-    payload = _treatment().model_dump()
-    payload["motif_asset_ids"] = [1, 999, 1]
-    payload["sections"][0]["preferred_asset_ids"] = [1, 999]
-    payload["sections"].append({**payload["sections"][0], "section_index": 8})
-    response = {"choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]}
+def test_director_response_is_validated_and_sanitized(monkeypatch, tmp_path: Path) -> None:
+    treatment_result = _treatment()
+    treatment_result.motif_asset_ids = [1, 999, 1]
+    treatment_result.sections[0].preferred_asset_ids = [1, 999]
+    invalid_section = treatment_result.sections[0].model_copy(update={"section_index": 8})
+    treatment_result.sections.append(invalid_section)
 
-    monkeypatch.setattr("beatforge.models.ai_director._post", lambda *_: response)
+    monkeypatch.setattr("beatforge.models.ai_director._generate_treatment", lambda *_: treatment_result)
     assets = [MediaAsset(1, Path("b.jpg"), "image", float("inf"), 100, 100)]
     treatment = direct_mv(
         _analysis(), [LyricLine(0, 4, "独自醒来")], assets, None,
-        AIConfig(director_base_url="http://127.0.0.1:9999/v1"),
+        AIConfig(), "cpu", tmp_path,
     )
     assert treatment.motif_asset_ids == [1]
     assert treatment.sections[0].preferred_asset_ids == [1]
     assert len(treatment.sections) == 1
+
+
+def test_director_loads_in_process_with_memory_limit_and_releases_cuda(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {"empty": 0, "ipc": 0}
+    response = _treatment().model_dump_json()
+
+    class Batch(dict):
+        def __init__(self):
+            super().__init__(input_ids=np.zeros((1, 3), dtype=int))
+
+        def to(self, _device):
+            return self
+
+    class Processor:
+        @classmethod
+        def from_pretrained(cls, model_name, **options):
+            calls["processor"] = (model_name, options)
+            return cls()
+
+        def apply_chat_template(self, *_args, **_kwargs):
+            return Batch()
+
+        def batch_decode(self, *_args, **_kwargs):
+            return [response]
+
+    class Model:
+        device = "cuda:0"
+
+        @classmethod
+        def from_pretrained(cls, model_name, **options):
+            calls["model"] = (model_name, options)
+            return cls()
+
+        def eval(self):
+            return self
+
+        def generate(self, **_kwargs):
+            return np.zeros((1, 4), dtype=int)
+
+    fake_cuda = SimpleNamespace(
+        is_available=lambda: True,
+        get_device_properties=lambda _index: SimpleNamespace(total_memory=12 * 2**30),
+        empty_cache=lambda: calls.__setitem__("empty", int(calls["empty"]) + 1),
+        ipc_collect=lambda: calls.__setitem__("ipc", int(calls["ipc"]) + 1),
+    )
+    fake_torch = SimpleNamespace(cuda=fake_cuda, inference_mode=nullcontext)
+    fake_transformers = SimpleNamespace(
+        AutoModelForMultimodalLM=Model,
+        AutoProcessor=Processor,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    result = _generate_treatment({}, AIConfig(offline=True), "cuda", tmp_path)
+
+    assert result.concept == _treatment().concept
+    options = calls["model"][1]
+    assert options["device_map"] == "auto"
+    assert options["max_memory"][0] == "9.0GiB"
+    assert options["offload_folder"] == str(tmp_path / "director-offload")
+    assert calls["empty"] == 1
+    assert calls["ipc"] == 1

@@ -78,10 +78,14 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     if use_ai and project.ai.director_enabled:
         try:
             from beatforge.models.ai_director import direct_mv
-            treatment = direct_mv(analysis, lyrics, assets, similarities, project.ai)
+            treatment = direct_mv(
+                analysis, lyrics, assets, similarities, project.ai, device, project.cache_dir,
+            )
             print(f"    导演概念：{treatment.concept}")
         except Exception as exc:
             print(f"    本地导演不可用，使用规则导演：{type(exc).__name__}: {exc}")
+        finally:
+            release_gpu()
     shots = create_plan(
         analysis, lyrics, assets, similarities,
         min_shot=project.render.min_shot_seconds,
