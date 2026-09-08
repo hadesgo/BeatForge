@@ -19,7 +19,7 @@ def test_default_manifest_contains_every_configured_huggingface_model_once() -> 
         "Qwen/Qwen3-ASR-1.7B-hf",
         "Qwen/Qwen3-ForcedAligner-0.6B-hf",
         "laion/clap-htsat-fused",
-        "Qwen/Qwen3-VL-Embedding-8B",
+        "tencent/WeMM-Embedding-9B",
         "Qwen/Qwen3-VL-Reranker-8B",
         "Qwen/Qwen3.5-9B",
     ]

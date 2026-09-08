@@ -7,14 +7,14 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 ```text
 音乐 ── Qwen3-ASR + ForcedAligner ── 逐字时间轴 ──┐
   └── All-In-One + CLAP ── 旋律/节拍/章节/意境 ──┼── Qwen3.5 AI 导演 ── 确定性规划器 ── FFmpeg
-图片/视频 ── Qwen3-VL Embedding + Reranker ───────┘           │
+图片/视频 ── WeMM-Embedding + Qwen3-VL Reranker ─────┘        │
                                                       导演方案 JSON
 ```
 
 - `Qwen/Qwen3-ASR-1.7B-hf`：Transformers 原生歌曲识别模型；
 - `Qwen/Qwen3-ForcedAligner-0.6B-hf`：Transformers 原生字符/单词级演唱时间对齐；
 - `laion/clap-htsat-fused`：音乐情绪、质感和强度的零样本分类；
-- `Qwen/Qwen3-VL-Embedding-8B`：中文歌词与图片/视频的高质量跨模态检索；
+- `tencent/WeMM-Embedding-9B`：基于 Qwen3.5 的高质量文本、图片和视频统一向量检索；
 - `Qwen/Qwen3-VL-Reranker-8B`：对初选画面进行歌词意境、构图和叙事适配精排；
 - `All-In-One-Infer`：识别 intro、verse、chorus、bridge、solo、outro 和强拍；
 - `Beat This!`：可选的高精度 beat/downbeat 后备；
@@ -22,9 +22,9 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
-模型分阶段加载并释放，不会同时占用显存。运行完整 AI 流程的最低硬件需求是 **12GB 显存的 NVIDIA 显卡**，并且驱动需要满足 PyTorch 2.14.0 + CUDA 13.2 运行要求；不限定具体显卡型号。无 NVIDIA 显卡的电脑仍可使用 CPU 完成开发和离线测试，但完整推理速度不作为支持目标。Qwen3-ASR 走 Transformers 5.13+ 原生接口，Qwen3-VL Embedding/Reranker 走 Sentence Transformers。
+模型分阶段加载并释放，不会同时占用显存。运行完整 AI 流程的最低硬件需求是 **12GB 显存的 NVIDIA 显卡**，并且驱动需要满足 PyTorch 2.14.0 + CUDA 13.2 运行要求；不限定具体显卡型号。无 NVIDIA 显卡的电脑仍可使用 CPU 完成开发和离线测试，但完整推理速度不作为支持目标。Qwen3-ASR 走 Transformers 5.13+ 原生接口，WeMM-Embedding 与 Qwen3-VL Reranker 走 Sentence Transformers 5.7+。
 
-默认质量优先组合经过12GB显存约束：Qwen3-ASR 1.7B保持BF16，视觉召回和精排使用Qwen3-VL 8B，导演使用Qwen3.5-9B；后面三者按阶段加载，其中视觉和导演使用bitsandbytes NF4双重量化、BF16计算。Qwen3.8当前适合本任务的公开型号从27B起步，无法在12GB显存内可靠完成带图片输入的本地推理，因此没有为了“版本号更新”而牺牲稳定性。CUDA运行时还会启用TF32、高精度矩阵乘策略和cuDNN形状调优。
+默认质量优先组合经过12GB显存约束：Qwen3-ASR 1.7B保持BF16，视觉召回使用 WeMM-Embedding-9B，精排使用 Qwen3-VL-Reranker-8B，导演使用Qwen3.5-9B；后三者按阶段加载，其中视觉召回、精排和导演使用 bitsandbytes NF4 双重量化、BF16计算。WeMM 使用完整4096维归一化向量，不为节省少量内存而截断检索维度。CUDA运行时还会启用TF32、高精度矩阵乘策略和cuDNN形状调优。
 
 ## 安装
 
@@ -56,6 +56,8 @@ uv run beatforge download-models my-mv/project.toml
 
 默认 `auto` 模式优先从 ModelScope（魔搭社区）下载，适合中国大陆网络；某个仓库在魔搭不存在时才回退到 Hugging Face。Qwen3-ASR、ForcedAligner、Qwen3-VL Embedding/Reranker 和 Qwen3.5 均使用魔搭的同名官方仓库。
 
+WeMM-Embedding 若尚未被 ModelScope 收录，会由 `auto` 模式自动转到 Hugging Face；已经下载后，BeatForge 始终从清单记录的本地目录加载。使用 `--source modelscope --no-fallback` 时，这类未收录模型会按预期报告失败，而不会静默换源。
+
 指定独立缓存目录和单模型下载并发数：
 
 ```powershell
@@ -70,7 +72,7 @@ uv run beatforge download-models my-mv/project.toml --source modelscope --no-fal
 
 需要恢复 Hugging Face 下载时使用 `--source huggingface`。完成后会在项目 `.beatforge/models.json` 写入包含来源和本地路径的统一模型清单，随后可以在配置中设置 `offline = true`。如果清单中的目录被移动或删除，运行时会自动退回配置里的仓库 ID。All-In-One 和 Beat This! 的结构分析权重由各自安装包管理，不属于统一模型清单。
 
-运行时量化不会缩小下载到磁盘的官方BF16模型文件。默认完整模型缓存需要预留约65GB磁盘空间。若显存更大，可把 `vision_quantization` 或 `director_quantization` 改为 `int8`；24GB以上显存可尝试 `none` 获得最高保真度。12GB配置应保持 `nf4`。`vision_batch_size` 默认是4，发生CUDA显存不足时会自动降到2或1重试；16GB以上显存可尝试手动提高到8。
+运行时量化不会缩小下载到磁盘的官方BF16模型文件。WeMM-Embedding-9B 权重约18.8GB，默认完整模型缓存建议预留约70GB磁盘空间。若显存更大，可把 `vision_quantization` 或 `director_quantization` 改为 `int8`；24GB以上显存可尝试 `none` 获得最高保真度。12GB配置应保持 `nf4`。`vision_batch_size` 默认是4，发生CUDA显存不足时会自动降到2或1重试；16GB以上显存可尝试手动提高到8。
 
 ## 使用
 
@@ -173,8 +175,8 @@ device = "auto"
 asr_backend = "qwen3"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
-vision_backend = "qwen3-vl-embedding"
-vision_model = "Qwen/Qwen3-VL-Embedding-2B"
+vision_backend = "wemm-embedding"
+vision_model = "tencent/WeMM-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 vision_quantization = "none"
 vision_batch_size = 2
@@ -194,24 +196,24 @@ device = "cuda"
 asr_backend = "qwen3"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
-vision_backend = "qwen3-vl-embedding"
-vision_model = "Qwen/Qwen3-VL-Embedding-8B"
+vision_backend = "wemm-embedding"
+vision_model = "tencent/WeMM-Embedding-9B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-8B"
 vision_quantization = "nf4"
 vision_batch_size = 4
 music_structure_backend = "allin1"
-frame_samples = 5
+frame_samples = 8
 director_enabled = true
 director_model = "Qwen/Qwen3.5-9B"
 director_quantization = "nf4"
 director_gpu_memory_gb = 9.0
 ```
 
-运行 `uv run beatforge doctor` 检查实际使用 CPU 还是 CUDA。Faster Whisper 和 SigLIP2 仍可通过 `asr_backend`/`vision_backend` 作为兼容后备。
+运行 `uv run beatforge doctor` 检查实际使用 CPU 还是 CUDA。Faster Whisper、原 Qwen3-VL-Embedding 和 SigLIP2 仍可通过 `asr_backend`/`vision_backend` 作为兼容后备。
 
 ## 素材语义
 
-Qwen3-VL-Embedding 会直接比较歌词、图片和视频关键帧。文件名和 sidecar 标签作为模型关闭时的后备。例如 `海边_日落_回忆.jpg`，或创建 `portrait.jpg.json`：
+WeMM-Embedding 会分别通过 `encode_query` 和 `encode_document` 比较歌词、图片和视频关键帧。文件名和 sidecar 标签作为模型关闭时的后备。例如 `海边_日落_回忆.jpg`，或创建 `portrait.jpg.json`：
 
 ```json
 {
@@ -228,7 +230,7 @@ Qwen3-VL-Embedding 会直接比较歌词、图片和视频关键帧。文件名�
 
 `focus_point` 是归一化的主体中心坐标，左上角为 `[0, 0]`、右下角为 `[1, 1]`。不填写时，图片会通过局部细节、对比度、色彩边缘和保守的中心先验自动估计；视频使用多个采样帧的中位焦点，减少单帧误判。
 
-视频默认均匀抽取5个关键帧并分别匹配歌词，以最相关的两帧计算稳健召回分数，再从语义最相关的时刻附近取材。视觉精排会继续使用这个歌词对应帧，不再退回视频中间帧。提高 `frame_samples` 会提升长视频覆盖率，也会增加分析时间。
+视频默认均匀抽取8个关键帧并分别匹配歌词，以最相关的两帧计算稳健召回分数，再从语义最相关的时刻附近取材。视觉精排会继续使用这个歌词对应帧，不再退回视频中间帧。提高 `frame_samples` 会提升长视频覆盖率，也会增加分析时间。
 
 ## 专业剪辑策略
 
@@ -278,7 +280,7 @@ beatforge/models/ai_director.py       本地 Qwen3.5 导演协议与校验
 beatforge/models/transcriber.py       Qwen3-ASR/Whisper 时间轴
 beatforge/models/audio_semantics.py   CLAP 音乐语义
 beatforge/models/music_structure.py   All-In-One/Beat This 结构分析
-beatforge/models/vision_index.py      Qwen3-VL-Embedding/SigLIP2 检索
+beatforge/models/vision_index.py      WeMM/Qwen3-VL-Embedding/SigLIP2 检索
 beatforge/planner.py                  多目标镜头编排
 beatforge/renderer.py                 FFmpeg 成片渲染
 beatforge/pipeline.py                 分阶段模型生命周期

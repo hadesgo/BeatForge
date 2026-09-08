@@ -26,7 +26,8 @@ ai = [
 ai-cpu = ["torch==2.14.0", "torchvision==0.29.0"]
 ai-cuda = ["torch==2.14.0", "torchvision==0.29.0", "bitsandbytes>=0.50.2"]
 qwen = [
-  "sentence-transformers[image]>=5.4",
+  "qwen-vl-utils>=0.0.14",
+  "sentence-transformers[image]>=5.7",
 ]
 music-ai = ["all-in-one-infer>=3.0", "beat-this"]
 

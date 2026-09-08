@@ -13,7 +13,7 @@ from beatforge.runtime import command
 
 
 class VisionIndex:
-    """Qwen3-VL-Embedding index with a SigLIP2 compatibility backend."""
+    """WeMM/Qwen multimodal embedding index with a SigLIP2 fallback."""
 
     def __init__(
         self, model_name: str, device: str, offline: bool, cache_dir: Path, *, backend: str,
@@ -36,8 +36,8 @@ class VisionIndex:
         self.batch_size = batch_size
         self.cache_dir = cache_dir / "frames"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        if backend == "qwen3-vl-embedding":
-            self._init_qwen(model_name, device, offline, quantization)
+        if backend in {"wemm-embedding", "qwen3-vl-embedding"}:
+            self._init_multimodal_embedding(model_name, device, offline, quantization)
             return
         dtype = torch.float16 if device == "cuda" else torch.float32
         self.processor = AutoProcessor.from_pretrained(model_name, local_files_only=offline)
@@ -46,22 +46,36 @@ class VisionIndex:
         ).to(device).eval()
 
     def similarities(self, texts: list[str], assets: list[MediaAsset], frame_samples: int) -> np.ndarray:
-        if self.backend == "qwen3-vl-embedding":
-            text_features = np.asarray(self._encode_qwen(
-                texts,
-                prompt="Retrieve the music-video shot that best matches the lyrics, narrative action, scene, and emotional atmosphere.",
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-            ))
-            documents: list[str | Image.Image] = []
+        if self.backend in {"wemm-embedding", "qwen3-vl-embedding"}:
+            query_options = {
+                "normalize_embeddings": True,
+                "convert_to_numpy": True,
+            }
+            if self.backend == "qwen3-vl-embedding":
+                query_options["prompt"] = (
+                    "Retrieve the music-video shot that best matches the lyrics, narrative action, "
+                    "scene, and emotional atmosphere."
+                )
+            text_features = np.asarray(self._encode_multimodal(texts, query=True, **query_options))
+            documents: list[str | Image.Image | dict[str, object]] = []
             spans: list[tuple[int, int, list[Image.Image] | None]] = []
             for asset in assets:
                 start = len(documents)
                 frames = None if asset.kind == "image" else self._video_frames(asset, frame_samples)
-                documents.extend([str(asset.file)] if frames is None else frames)
+                if frames is None:
+                    image_document: str | dict[str, object] = str(asset.file)
+                    if self.backend == "wemm-embedding":
+                        image_document = {"image": str(asset.file)}
+                    documents.append(image_document)
+                else:
+                    if self.backend == "wemm-embedding":
+                        documents.extend({"image": frame} for frame in frames)
+                    else:
+                        documents.extend(frames)
                 spans.append((start, len(documents), frames))
-            document_features = np.asarray(self._encode_qwen(
+            document_features = np.asarray(self._encode_multimodal(
                 documents,
+                query=False,
                 normalize_embeddings=True,
                 convert_to_numpy=True,
             ))
@@ -89,35 +103,45 @@ class VisionIndex:
         text_features = self._text_embeddings(texts)
         return text_features @ image_features.T
 
-    def _encode_qwen(self, inputs, **kwargs):
+    def _encode_multimodal(self, inputs, *, query: bool, **kwargs):
         batch_size = min(self.batch_size, max(1, len(inputs)))
+        method = self.model.encode
+        if getattr(self, "backend", "qwen3-vl-embedding") == "wemm-embedding":
+            preferred = "encode_query" if query else "encode_document"
+            method = getattr(self.model, preferred, method)
         while True:
             try:
-                return self.model.encode(inputs, batch_size=batch_size, **kwargs)
+                return method(inputs, batch_size=batch_size, **kwargs)
             except self.torch.OutOfMemoryError:
                 if self.device != "cuda" or batch_size == 1:
                     raise
                 batch_size = max(1, batch_size // 2)
                 self.torch.cuda.empty_cache()
 
-    def _init_qwen(
+    def _encode_qwen(self, inputs, **kwargs):
+        """Backward-compatible helper for integrations using the old private method."""
+        return self._encode_multimodal(inputs, query=False, **kwargs)
+
+    def _init_multimodal_embedding(
         self, model_name: str, device: str, offline: bool, quantization: QuantizationMode,
     ) -> None:
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
-            raise RuntimeError("Qwen3-VL-Embedding 需要 sentence-transformers>=5.4") from exc
+            raise RuntimeError("WeMM/Qwen 多模态检索需要 sentence-transformers>=5.7") from exc
         dtype = self.torch.bfloat16 if device == "cuda" else self.torch.float32
         model_kwargs = {"dtype": dtype, "attn_implementation": "sdpa"}
         model_kwargs.update(quantized_load_kwargs(quantization, self.torch, device))
         if quantization != "none" and device == "cuda":
             model_kwargs["device_map"] = "auto"
-        self.model = SentenceTransformer(
-            model_name,
-            device=device,
-            model_kwargs=model_kwargs,
-            local_files_only=offline,
-        )
+        load_options = {
+            "device": device,
+            "model_kwargs": model_kwargs,
+            "local_files_only": offline,
+        }
+        if self.backend == "wemm-embedding":
+            load_options["trust_remote_code"] = True
+        self.model = SentenceTransformer(model_name, **load_options)
         self.processor = None
 
     def _rerank(self, texts: list[str], assets: list[MediaAsset], base: np.ndarray, frame_samples: int) -> np.ndarray:

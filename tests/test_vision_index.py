@@ -36,6 +36,41 @@ def test_sentence_transformer_ranks_images_for_lyrics(tmp_path: Path) -> None:
     assert np.argmax(scores[1]) == 1
 
 
+def test_wemm_uses_query_document_interfaces_and_explicit_image_inputs(tmp_path: Path) -> None:
+    class FakeWeMM:
+        def __init__(self):
+            self.documents = None
+
+        def encode_query(self, inputs, **kwargs):
+            assert kwargs["normalize_embeddings"] is True
+            return np.array([[1.0, 0.0]])
+
+        def encode_document(self, inputs, **_kwargs):
+            self.documents = inputs
+            return np.array([[1.0, 0.0], [0.0, 1.0]])
+
+        def encode(self, *_args, **_kwargs):
+            raise AssertionError("WeMM should use encode_query/encode_document")
+
+    index = VisionIndex.__new__(VisionIndex)
+    index.backend = "wemm-embedding"
+    index.model = FakeWeMM()
+    index.batch_size = 2
+    index.reranker_model = None
+    index.rerank_top_k = 0
+    assets = [
+        MediaAsset(0, tmp_path / "match.jpg", "image", float("inf"), 100, 100),
+        MediaAsset(1, tmp_path / "other.jpg", "image", float("inf"), 100, 100),
+    ]
+
+    scores = index.similarities(["歌词"], assets, frame_samples=3)
+
+    assert np.argmax(scores[0]) == 0
+    assert index.model.documents == [
+        {"image": str(assets[0].file)}, {"image": str(assets[1].file)},
+    ]
+
+
 def test_reranker_blend_preserves_shape_and_uses_pairwise_scores() -> None:
     base = np.array([.8, .7, .6])
     result = blend_rerank_scores(base, np.array([.1, .9, .4]))
