@@ -3,7 +3,7 @@ name = "beatforge"
 version = "0.2.0"
 description = "Local-AI music video editor for consumer NVIDIA GPUs"
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
   "librosa>=0.11.0",
   "numpy>=2.0",
@@ -46,8 +46,8 @@ default-groups = ["dev"]
 conflicts = [[{ extra = "ai-cpu" }, { extra = "ai-cuda" }]]
 
 [[tool.uv.index]]
-name = "pytorch-cu132"
-url = "https://download.pytorch.org/whl/cu132"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [[tool.uv.index]]
@@ -58,17 +58,15 @@ explicit = true
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
-  { index = "pytorch-cu132", extra = "ai-cuda" },
+  { index = "pytorch-cu130", extra = "ai-cuda" },
 ]
 torchvision = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
-  { index = "pytorch-cu132", extra = "ai-cuda" },
+  { index = "pytorch-cu130", extra = "ai-cuda" },
 ]
 torchaudio = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
-  # cu132 根索引列出了 torchaudio，但目前没有 2.11.0+cu132 轮子；
-  # 2.11.0+cu130 会在导入时拒绝与 torch 2.14.0+cu132 一起加载。
-  { index = "pytorch-cpu", extra = "ai-cuda" },
+  { index = "pytorch-cu130", extra = "ai-cuda" },
 ]
 
 [tool.pytest.ini_options]

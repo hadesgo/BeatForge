@@ -22,7 +22,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
-模型分阶段加载并释放，不会同时占用显存。完整 AI 流程以 **12GB 显存的 NVIDIA 显卡**作为最低目标规格，不限定具体型号；驱动必须能够运行项目使用的 PyTorch 2.14.0 + CUDA 13.2 构建。无 NVIDIA 显卡的电脑仍可完成开发、单元测试和 `--no-ai` 渲染验证，但完整模型推理速度不作为支持目标。
+模型分阶段加载并释放，不会同时占用显存。完整 AI 流程以 **12GB 显存的 NVIDIA 显卡**作为最低目标规格，不限定具体型号；基准环境为 Python 3.13、PyTorch 2.14.0 + CUDA 13.0，驱动至少需要支持 CUDA 13.x。无 NVIDIA 显卡的电脑仍可完成开发、单元测试和 `--no-ai` 渲染验证，但完整模型推理速度不作为支持目标。
 
 默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B保持BF16，视觉召回使用 WeMM-Embedding-9B，精排使用 Qwen3-VL-Reranker-8B，导演使用Qwen3.5-9B；后三者按阶段加载，其中视觉召回、精排和导演使用 bitsandbytes NF4 双重量化、BF16计算。WeMM 使用完整4096维归一化向量，不为节省少量内存而截断检索维度。CUDA运行时还会启用TF32、高精度矩阵乘策略和cuDNN形状调优。
 
@@ -33,6 +33,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 基础开发环境，不包含任何模型框架：
 
 ```powershell
+uv python install 3.13
 uv sync
 ```
 
@@ -48,7 +49,7 @@ uv sync --extra ai --extra ai-cpu --extra qwen --extra music-ai
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 ```
 
-CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。CUDA profile 的 `torch` 和 `torchvision` 来自 PyTorch CUDA 13.2 软件源。该软件源根目录虽然列出了 `torchaudio` 包入口，但目前没有 Python 3.12/Linux x86_64 可用的 `torchaudio 2.11.0+cu132` 轮子；已有的 `+cu130` 轮子会在导入时拒绝与 `torch 2.14.0+cu132` 一起加载。TorchAudio 2.11 官方支持后续 PyTorch，因此项目明确使用 PyTorch 官方CPU构建处理音频解码和重采样。不要再单独覆盖这三个包。模型权重不会在 `uv sync` 时下载。建议先用下面的统一下载命令准备权重；完成后，运行时会直接使用下载清单中的本地目录。
+CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。CUDA profile 会从 PyTorch CUDA 13.0 软件源成套安装 `torch 2.14.0+cu130`、`torchvision 0.29.0+cu130` 和 `torchaudio 2.11.0+cu130`；三者均有 Python 3.13 的 Linux x86_64 与 Windows x86_64 轮子。不要再单独覆盖其中任何一个包。模型权重不会在 `uv sync` 时下载。建议先用下面的统一下载命令准备权重；完成后，运行时会直接使用下载清单中的本地目录。
 
 ### 模型兼容性与安全
 
@@ -312,9 +313,9 @@ WeMM-Embedding 会分别通过 `encode_query` 和 `encode_document` 比较歌词
 
 ### `doctor` 显示 CUDA 未启用
 
-先确认安装的是 `ai-cuda` 而不是 `ai-cpu`，再检查 NVIDIA 驱动是否能够运行 PyTorch 2.14.0 + CUDA 13.2 构建。CUDA 13.x 至少需要 R580 系列驱动；CUDA 13.2 工具包在 Linux 上的对应驱动要求更高，因此建议安装 NVIDIA 当前最新的生产分支驱动。`nvidia-smi` 能显示显卡不代表当前 Python 环境中的 PyTorch 一定启用了CUDA；以 `uv run beatforge doctor` 的结果为准。修改依赖组合后重新执行对应的 `uv sync`，不要在同一环境混装 CPU 和 CUDA profile。
+先确认安装的是 `ai-cuda` 而不是 `ai-cpu`，再检查 NVIDIA 驱动是否能够运行 PyTorch 2.14.0 + CUDA 13.0 构建。CUDA 13.x 至少需要 R580 系列驱动；建议安装 NVIDIA 当前最新的生产分支驱动。`nvidia-smi` 能显示显卡不代表当前 Python 环境中的 PyTorch 一定启用了CUDA；以 `uv run beatforge doctor` 的结果为准。修改依赖组合后重新执行对应的 `uv sync`，不要在同一环境混装 CPU 和 CUDA profile。
 
-如果警告中显示 `found version 12080`，说明当前驱动最多提供 CUDA 12.8 能力，无法运行本项目的 CUDA 13.2 PyTorch。升级驱动后重启，再运行：
+如果警告中显示 `found version 12080`，说明当前驱动最多提供 CUDA 12.8 能力，仍无法运行本项目的 CUDA 13.0 PyTorch。升级到 R580 或更新驱动并重启，再运行：
 
 ```bash
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai --refresh-package torch --refresh-package torchvision --refresh-package torchaudio
@@ -323,7 +324,7 @@ uv run beatforge doctor
 
 ### PyTorch 与 TorchAudio 的 CUDA 版本不同
 
-例如 `PyTorch has CUDA version 13.2 whereas TorchAudio has CUDA version 13.0`，表示 TorchAudio 被其他依赖从 PyPI 或另一个CUDA软件源覆盖。新版锁文件已把 TorchAudio 固定到 PyTorch 官方CPU软件源；TorchAudio 只负责音频I/O，模型仍由 CUDA 13.2 PyTorch 在GPU运行。更新代码后执行上面的强制刷新命令；不要单独运行 `pip install torchaudio`。修复后，下面三个导入必须同时成功：
+例如旧环境中的 `PyTorch has CUDA version 13.2 whereas TorchAudio has CUDA version 13.0`，表示三个 PyTorch 包来自不同CUDA软件源。当前锁文件已统一为 CUDA 13.0 构建。更新代码后执行上面的强制刷新命令；不要单独运行 `pip install torchaudio`。修复后，下面三个导入必须同时成功，并且版本后缀都应为 `+cu130`：
 
 ```bash
 uv run python -c "import torch, torchvision, torchaudio; print(torch.__version__, torchvision.__version__, torchaudio.__version__, torch.version.cuda)"
