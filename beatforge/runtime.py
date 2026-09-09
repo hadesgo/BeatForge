@@ -48,6 +48,27 @@ def resolve_device(requested: str) -> str:
         return "cpu"
 
 
+def require_usable_ai_device(requested: str, resolved: str) -> None:
+    """Fail early when a CUDA environment is present but its driver is unusable."""
+    if requested == "cpu":
+        return
+    try:
+        import torch
+    except ImportError:
+        if requested == "cuda":
+            raise RuntimeError("配置要求 CUDA，但当前环境没有安装 PyTorch") from None
+        return
+    if torch.cuda.is_available():
+        return
+    cuda_build = getattr(torch.version, "cuda", None)
+    if requested == "cuda" or cuda_build:
+        build = f"CUDA {cuda_build}" if cuda_build else "CUDA"
+        raise RuntimeError(
+            f"已安装 {build} 版 PyTorch，但 CUDA 当前不可用。请升级 NVIDIA 驱动并重启后运行 "
+            "`uv run beatforge doctor`；若确实要使用CPU，请安装 ai-cpu profile 并设置 device = \"cpu\"。"
+        )
+
+
 def optimize_torch_runtime(device: str) -> None:
     """Enable safe inference-oriented CUDA fast paths without changing model outputs materially."""
     if device != "cuda":

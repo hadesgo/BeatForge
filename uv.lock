@@ -4,11 +4,13 @@ requires-python = ">=3.11, <3.13"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
@@ -159,7 +161,9 @@ dependencies = [
     { name = "torch", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')" },
     { name = "torch", version = "2.14.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
     { name = "torch", version = "2.14.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "extra == 'extra-9-beatforge-ai-cuda'" },
-    { name = "torchaudio" },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')" },
+    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d1/c4/7ce01e047c1e8d99490e95172d710e08901c24fb24e19a5dd4f885177c99/beat_this-1.1.0.tar.gz", hash = "sha256:3017c741f972972a650edcaccfe5760687fe4f5587feaa98896d90f866c2435c", size = 40635, upload-time = "2026-04-14T10:16:39.5Z" }
 wheels = [
@@ -194,12 +198,16 @@ ai = [
 ai-cpu = [
     { name = "torch", version = "2.14.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
     { name = "torch", version = "2.14.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
     { name = "torchvision", version = "0.29.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
     { name = "torchvision", version = "0.29.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 ai-cuda = [
     { name = "bitsandbytes" },
     { name = "torch", version = "2.14.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" } },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
     { name = "torchvision", version = "0.29.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" } },
 ]
 music-ai = [
@@ -236,6 +244,8 @@ requires-dist = [
     { name = "soundfile", specifier = ">=0.13" },
     { name = "torch", marker = "extra == 'ai-cpu'", specifier = "==2.14.0", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "beatforge", extra = "ai-cpu" } },
     { name = "torch", marker = "extra == 'ai-cuda'", specifier = "==2.14.0", index = "https://download.pytorch.org/whl/cu132", conflict = { package = "beatforge", extra = "ai-cuda" } },
+    { name = "torchaudio", marker = "extra == 'ai-cpu'", specifier = "==2.11.0", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "beatforge", extra = "ai-cpu" } },
+    { name = "torchaudio", marker = "extra == 'ai-cuda'", specifier = "==2.11.0", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "beatforge", extra = "ai-cuda" } },
     { name = "torchvision", marker = "extra == 'ai-cpu'", specifier = "==0.29.0", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "beatforge", extra = "ai-cpu" } },
     { name = "torchvision", marker = "extra == 'ai-cuda'", specifier = "==0.29.0", index = "https://download.pytorch.org/whl/cu132", conflict = { package = "beatforge", extra = "ai-cuda" } },
     { name = "transformers", marker = "extra == 'ai'", specifier = ">=5.16.1" },
@@ -579,9 +589,9 @@ name = "cuda-toolkit"
 version = "13.2.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bd/6a/f79c134fa8e6d5fe028584933be063ce7961b1a85ce217f261cdda176e48/cuda_toolkit-13.2.1-py2.py3-none-any.whl", hash = "sha256:646d0e3668ce6f78f2312bb9cc0f668b9cbfcbef187eaa6a39eb2ea6dbec2a31", size = 2612, upload-time = "2026-04-14T01:10:36.163Z" },
@@ -661,7 +671,9 @@ dependencies = [
     { name = "torch", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')" },
     { name = "torch", version = "2.14.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
     { name = "torch", version = "2.14.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "extra == 'extra-9-beatforge-ai-cuda'" },
-    { name = "torchaudio" },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (extra != 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')" },
+    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cpu') or (sys_platform != 'darwin' and extra == 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
     { name = "tqdm" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/67/14/627a789ae0414469cd33dab1f99a41c84428533d9e1a66d33097476f0c90/demucs_infer-4.2.2.tar.gz", hash = "sha256:7a2a2fb1c0db57192fed6485f106986f4cd04c475c989e84a8f4022ce19e26b2", size = 69104, upload-time = "2026-07-12T01:00:24.146Z" }
@@ -954,7 +966,8 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (python_full_version < '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')",
@@ -991,7 +1004,8 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
@@ -1259,7 +1273,8 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (python_full_version < '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')",
@@ -1309,7 +1324,8 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
@@ -1358,9 +1374,9 @@ name = "nvidia-cublas"
 version = "13.4.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
     { name = "nvidia-cuda-nvrtc", version = "13.2.78", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
@@ -1390,9 +1406,9 @@ name = "nvidia-cuda-cupti"
 version = "13.2.75"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4e/e2/b7bbe4e39781024fcc698fa3d0a788cd9559d9cba5e23fdbcff0a27783e4/nvidia_cuda_cupti-13.2.75-py3-none-manylinux_2_25_aarch64.whl", hash = "sha256:003157a0ca04d34a1f83a764dcbe36eabceda5a771e9a2cc85a461b2765888b6", size = 11759634, upload-time = "2026-04-13T09:40:35.162Z" },
@@ -1419,9 +1435,9 @@ name = "nvidia-cuda-nvrtc"
 version = "13.2.78"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/96/237b40b171e06eb65905375c4ad5c96f78c2f861ac6e8ae7f650d95e1dfd/nvidia_cuda_nvrtc-13.2.78-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:a9049031da08cbedd0c20e3470e5a978dc330af0e0326b3b05774718c665dc3e", size = 47019062, upload-time = "2026-04-13T09:45:33.875Z" },
@@ -1448,9 +1464,9 @@ name = "nvidia-cuda-runtime"
 version = "13.2.75"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/40/56a70b5a4e0a2881a1b7c172fea8025ab6b3cfb2de61c743fb7974d1ded4/nvidia_cuda_runtime-13.2.75-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:36e539e8deb01568025830c1454216c26ef4b4529507220b1d8ef739bf5c6439", size = 2339755, upload-time = "2026-04-13T09:37:53.791Z" },
@@ -1494,12 +1510,12 @@ name = "nvidia-cufft"
 version = "12.2.0.46"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/be/b1/6e36381739b51e692d91646298ad5685c562929b899331c2bb6e9722a176/nvidia_cufft-12.2.0.46-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2e8f3a22c2745f95327b7639ba2868ea2cbd5d3131ebe6313394e24164054f41", size = 218244743, upload-time = "2026-04-13T09:51:24.75Z" },
@@ -1525,9 +1541,9 @@ name = "nvidia-cufile"
 version = "1.17.1.22"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/fd/4b4157512a131a51e1514d40d0199b1c5b7b10c6856db274ff22e5fe15be/nvidia_cufile-1.17.1.22-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:bec33d7f1f12691dce330275246587569c2ed90b1ce43b0f94b3e1ce9268744b", size = 1226736, upload-time = "2026-04-13T09:52:40.142Z" },
@@ -1553,9 +1569,9 @@ name = "nvidia-curand"
 version = "10.4.2.55"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ee/7c/7c2042b5badc251236bc1f23627d5554cf2ecff37e92ea0a9d39dfc20a61/nvidia_curand-10.4.2.55-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:342e40ddcaedc92aedc72839e0c10064096fceea2f1d0eb57951f86d2901f8c0", size = 62372157, upload-time = "2026-04-13T09:53:32.34Z" },
@@ -1587,14 +1603,14 @@ name = "nvidia-cusolver"
 version = "12.2.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "nvidia-cublas", version = "13.4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
-    { name = "nvidia-cusparse", version = "12.7.10.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
-    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "nvidia-cublas", version = "13.4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "nvidia-cusparse", version = "12.7.10.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/94/21/21e5c491a8285a6ed039cbb8c60ec13ff3aff60c669e1caa4adaeb71f997/nvidia_cusolver-12.2.0.1-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:c9def09fcf300b9465cdf800142abf10149df28c4290bdf9e7b4a700480d31d7", size = 249744985, upload-time = "2026-04-13T09:54:33.757Z" },
@@ -1624,12 +1640,12 @@ name = "nvidia-cusparse"
 version = "12.7.10.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b5/09/9f1fa88dd305e838b71f2ca4e50064e7cbdf2e15cd6410d9e1b74066cc41/nvidia_cusparse-12.7.10.1-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:80cc98b38fdcf054a80bd9782fe2e63c66f90e202cac269f641357ccac5fe7e3", size = 168860233, upload-time = "2026-04-13T09:55:48.891Z" },
@@ -1694,9 +1710,9 @@ name = "nvidia-nvtx"
 version = "13.2.75"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b0/cc/314eac684677dced22b913b5d1b3d03adcbe59d6c7332c5d04f864cdb079/nvidia_nvtx-13.2.75-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:2d7c24fc582d841493c6dc2cf017c25e4428cf583a3bd9e9325a65f0ecc65f73", size = 153460, upload-time = "2026-04-13T09:46:23.256Z" },
@@ -2157,7 +2173,8 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "python_full_version < '3.12' and sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (python_full_version < '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')",
@@ -2201,7 +2218,8 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
@@ -2506,11 +2524,13 @@ source = { registry = "https://download.pytorch.org/whl/cu132" }
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'win32'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.12' and sys_platform == 'darwin'",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'darwin'",
 ]
 dependencies = [
     { name = "cuda-bindings", marker = "(sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },
@@ -2540,7 +2560,28 @@ wheels = [
 [[package]]
 name = "torchaudio"
 version = "2.11.0"
+source = { registry = "https://download.pytorch.org/whl/cpu" }
+resolution-markers = [
+    "python_full_version >= '3.12' and sys_platform == 'darwin'",
+    "python_full_version < '3.12' and sys_platform == 'darwin'",
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:492dd64645e9d0bb843e94f1d9a4d1e31426262ffc594fafecc1697df9df5eb9", upload-time = "2026-03-23T15:50:10Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:a1cf1acc883bee9cb906a933572fed6a8a933f86ef34e9ea7d803f72317e8c1b", upload-time = "2026-03-23T15:50:10Z" },
+]
+
+[[package]]
+name = "torchaudio"
+version = "2.11.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.12' and sys_platform == 'win32'",
+    "python_full_version >= '3.12' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
+    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/94/77/0eec7f175d88f312296bd5b11c23bd58da37c1021f53da3db4df449ce3ee/torchaudio-2.11.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:492dd64645e9d0bb843e94f1d9a4d1e31426262ffc594fafecc1697df9df5eb9", size = 684142, upload-time = "2026-03-23T18:13:36.805Z" },
     { url = "https://files.pythonhosted.org/packages/b3/f9/6f7ebe071b44592c85269762b55b63ab0a091b5f479f73544738f7564a1e/torchaudio-2.11.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:73dab4841f94d888bc7c2aed7b5547c643edc974306919fe1adfb65d57cccf4b", size = 1626527, upload-time = "2026-03-23T18:13:39.011Z" },
@@ -2550,6 +2591,37 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/78/28/c7adc053039f286c2aca0038b766cbe3294e66fec6b29a820e95128f9ede/torchaudio-2.11.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:bc653defca1c16154398517a1adc98d0fb7f1dd08e58ced217558d213c2c6e29", size = 1626670, upload-time = "2026-03-23T18:13:42.162Z" },
     { url = "https://files.pythonhosted.org/packages/88/d8/d6d0f896e064aa67377484efef4911cdcc07bce2929474e1417cc0af18c2/torchaudio-2.11.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:6503c0bdb29daf2e6281bb70ea2dfe2c3553b782b619eb5d73bdadd8a3f7cecf", size = 1771992, upload-time = "2026-03-23T18:13:33.188Z" },
     { url = "https://files.pythonhosted.org/packages/23/a8/941277ecc39f7a0a169d554302a1f1afd87c1d94a8aec828891916cea59a/torchaudio-2.11.0-cp312-cp312-win_amd64.whl", hash = "sha256:478110f981e5d40a8d82221732c57a56c85a1d5895fb8fe646e86ee15eded3bd", size = 328663, upload-time = "2026-03-23T18:13:19.218Z" },
+]
+
+[[package]]
+name = "torchaudio"
+version = "2.11.0+cpu"
+source = { registry = "https://download.pytorch.org/whl/cpu" }
+resolution-markers = [
+    "python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')",
+    "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda'",
+    "python_full_version >= '3.12' and sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
+    "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')",
+    "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
+    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (python_full_version < '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda')",
+    "python_full_version < '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra == 'extra-9-beatforge-ai-cpu' and extra != 'extra-9-beatforge-ai-cuda'",
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:7a5ecdd20fb26d8eb1d62135ddc6db0f806b17667c10e82df913fd509d1f5cfe", upload-time = "2026-03-23T15:50:10Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:2ddcb49458aa9783121222c535c0eb9cd54445ec44bb8dd22c9e52cdb730dbc2", upload-time = "2026-03-23T15:50:10Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp311-cp311-win_amd64.whl", hash = "sha256:abbff04127caf6e16e3a7c3e1ca2739b68899e14926d7cbec4bd8b40f72375d5", upload-time = "2026-03-23T15:50:10Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:b9dd2c6ac144001dc6dac38b564c1de73ac26ef0c195d5037c4a94990b0e2b5a", upload-time = "2026-03-23T15:50:10Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:2354248848d06a9ae1e7a12165f800f0dda7df60ecac9fca892322b722b922c0", upload-time = "2026-03-23T15:50:10Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp312-cp312-win_amd64.whl", hash = "sha256:95d517bd1a0a28dacd1c37550ced95cab64f3a7a4ef9b8219b41049388a71163", upload-time = "2026-03-23T15:50:10Z" },
 ]
 
 [[package]]
@@ -2637,11 +2709,13 @@ source = { registry = "https://download.pytorch.org/whl/cu132" }
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'win32'",
     "python_full_version >= '3.12' and sys_platform == 'emscripten'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.12' and sys_platform == 'darwin'",
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'darwin'",
 ]
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-9-beatforge-ai-cuda') or (extra == 'extra-9-beatforge-ai-cpu' and extra == 'extra-9-beatforge-ai-cuda')" },

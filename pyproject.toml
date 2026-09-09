@@ -23,8 +23,8 @@ ai = [
   "sentencepiece>=0.2",
   "transformers>=5.16.1",
 ]
-ai-cpu = ["torch==2.14.0", "torchvision==0.29.0"]
-ai-cuda = ["torch==2.14.0", "torchvision==0.29.0", "bitsandbytes>=0.50.2"]
+ai-cpu = ["torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0"]
+ai-cuda = ["torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0", "bitsandbytes>=0.50.2"]
 qwen = [
   "qwen-vl-utils>=0.0.14",
   "sentence-transformers[image]>=5.7",
@@ -63,6 +63,12 @@ torch = [
 torchvision = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
   { index = "pytorch-cu132", extra = "ai-cuda" },
+]
+torchaudio = [
+  { index = "pytorch-cpu", extra = "ai-cpu" },
+  # cu132 根索引列出了 torchaudio，但目前没有 2.11.0+cu132 轮子；
+  # 2.11.0+cu130 会在导入时拒绝与 torch 2.14.0+cu132 一起加载。
+  { index = "pytorch-cpu", extra = "ai-cuda" },
 ]
 
 [tool.pytest.ini_options]

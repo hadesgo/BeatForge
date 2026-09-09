@@ -10,7 +10,14 @@ from beatforge.lyrics import read_lrc, write_srt
 from beatforge.media import discover_media
 from beatforge.planner import create_plan
 from beatforge.renderer import render
-from beatforge.runtime import duration, optimize_torch_runtime, release_gpu, require_binaries, resolve_device
+from beatforge.runtime import (
+    duration,
+    optimize_torch_runtime,
+    release_gpu,
+    require_binaries,
+    require_usable_ai_device,
+    resolve_device,
+)
 
 
 def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool = False) -> Path:
@@ -18,9 +25,11 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     project.cache_dir.mkdir(parents=True, exist_ok=True)
     if not project.music.exists():
         raise FileNotFoundError(f"音乐文件不存在: {project.music}")
-    device = resolve_device(project.ai.device)
-    optimize_torch_runtime(device)
     use_ai = project.ai.enabled and not no_ai
+    device = resolve_device(project.ai.device)
+    if use_ai:
+        require_usable_ai_device(project.ai.device, device)
+    optimize_torch_runtime(device)
     from beatforge.models.downloader import WHISPER_REPOS, load_download_manifest
     downloaded = load_download_manifest(project.cache_dir / "models.json")
 

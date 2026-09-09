@@ -65,6 +65,14 @@ def doctor() -> None:
     except ImportError:
         table.add_row("AI 依赖", "缺失", "uv sync --extra ai --extra ai-cpu")
     try:
+        import torchaudio
+        table.add_row("TorchAudio", "OK", torchaudio.__version__)
+    except (ImportError, OSError, RuntimeError) as exc:
+        table.add_row(
+            "TorchAudio", "不兼容",
+            f"{exc} · 请用同一个 uv profile 重新同步 torch/vision/audio",
+        )
+    try:
         import ctranslate2
         types = ", ".join(sorted(ctranslate2.get_supported_compute_types(resolve_device("auto"))))
         table.add_row("CTranslate2", "OK", types)

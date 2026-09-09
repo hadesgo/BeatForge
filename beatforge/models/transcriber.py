@@ -20,8 +20,11 @@ def _transcribe_qwen(audio: Path, model_name: str, aligner_name: str, device: st
     try:
         import torch
         from transformers import AutoModelForMultimodalLM, AutoModelForTokenClassification, AutoProcessor
-    except ImportError as exc:
-        raise RuntimeError("原生 Qwen3-ASR 需要 transformers>=5.13 与 PyTorch") from exc
+    except (ImportError, RuntimeError) as exc:
+        raise RuntimeError(
+            "无法加载原生 Qwen3-ASR：需要 transformers>=5.13，且 torch、torchvision、"
+            f"torchaudio 必须使用兼容构建；CUDA 13.2 环境应使用项目锁定的 CPU TorchAudio。原始错误：{exc}"
+        ) from exc
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
     device_map = "auto" if device == "cuda" else {"": "cpu"}
     common = {"dtype": dtype, "device_map": device_map, "local_files_only": offline}
