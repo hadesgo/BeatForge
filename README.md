@@ -22,9 +22,11 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
-模型分阶段加载并释放，不会同时占用显存。运行完整 AI 流程的最低硬件需求是 **12GB 显存的 NVIDIA 显卡**，并且驱动需要满足 PyTorch 2.14.0 + CUDA 13.2 运行要求；不限定具体显卡型号。无 NVIDIA 显卡的电脑仍可使用 CPU 完成开发和离线测试，但完整推理速度不作为支持目标。Qwen3-ASR 走 Transformers 5.13+ 原生接口，WeMM-Embedding 与 Qwen3-VL Reranker 走 Sentence Transformers 5.7+。
+模型分阶段加载并释放，不会同时占用显存。完整 AI 流程以 **12GB 显存的 NVIDIA 显卡**作为最低目标规格，不限定具体型号；驱动必须能够运行项目使用的 PyTorch 2.14.0 + CUDA 13.2 构建。无 NVIDIA 显卡的电脑仍可完成开发、单元测试和 `--no-ai` 渲染验证，但完整模型推理速度不作为支持目标。
 
-默认质量优先组合经过12GB显存约束：Qwen3-ASR 1.7B保持BF16，视觉召回使用 WeMM-Embedding-9B，精排使用 Qwen3-VL-Reranker-8B，导演使用Qwen3.5-9B；后三者按阶段加载，其中视觉召回、精排和导演使用 bitsandbytes NF4 双重量化、BF16计算。WeMM 使用完整4096维归一化向量，不为节省少量内存而截断检索维度。CUDA运行时还会启用TF32、高精度矩阵乘策略和cuDNN形状调优。
+默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B保持BF16，视觉召回使用 WeMM-Embedding-9B，精排使用 Qwen3-VL-Reranker-8B，导演使用Qwen3.5-9B；后三者按阶段加载，其中视觉召回、精排和导演使用 bitsandbytes NF4 双重量化、BF16计算。WeMM 使用完整4096维归一化向量，不为节省少量内存而截断检索维度。CUDA运行时还会启用TF32、高精度矩阵乘策略和cuDNN形状调优。
+
+> 当前开发电脑没有 NVIDIA 显卡，也没有下载真实模型权重，因此12GB方案是项目的目标下限，并非已经在所有12GB显卡上实测通过的保证。代码、单元测试和无模型渲染链路可以在当前电脑验证；首次部署到GPU电脑时，请先执行 `doctor` 和 `--plan-only` 烟雾测试。若模型加载阶段就显存不足，应改用示例CPU配置中的 WeMM-Embedding-2B 和2B精排模型；只降低批量大小无法减少模型权重本身的占用。
 
 ## 安装
 
@@ -48,13 +50,22 @@ uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 
 CPU 和 CUDA profile 互斥，uv 会阻止二者同时安装。模型权重不会在 `uv sync` 时下载。建议先用下面的统一下载命令准备权重；完成后，运行时会直接使用下载清单中的本地目录。
 
+### 模型兼容性与安全
+
+- Qwen3-ASR 从 Transformers 5.13.0 起提供原生支持；BeatForge 当前统一要求 `transformers>=5.16.1`，以同时满足 ASR 和视觉模型集成，不建议只为复现某个模型示例而单独降级。
+- WeMM 官方示例曾推荐 `transformers==5.2.0`，BeatForge 使用更新版本与 `sentence-transformers[image]>=5.7`。这个组合已通过接口级测试，但尚未在本机用真实 WeMM 权重完成GPU烟雾测试；部署时以 `uv.lock` 创建环境后先运行本文的烟雾测试。
+- WeMM 通过 `trust_remote_code=True` 加载腾讯官方模型仓库中的自定义 Python 代码。只应下载可信的官方仓库；把 `vision_model` 改成其他仓库时，也等于信任并执行该仓库的模型代码。权重准备完成后建议设置 `offline = true`，避免运行过程中访问网络或获取变化后的代码。
+- `doctor` 检查运行库、FFmpeg、CUDA和显存是否就绪，不会真正加载数十GB模型；完整兼容性以一次真实的 `--plan-only` 运行为准。
+
+### 统一下载模型
+
 统一下载项目配置中启用的 ASR、强制对齐、音乐情绪、视觉检索、视觉精排和 AI 导演模型：
 
 ```powershell
 uv run beatforge download-models my-mv/project.toml
 ```
 
-默认 `auto` 模式优先从 ModelScope（魔搭社区）下载，适合中国大陆网络；某个仓库在魔搭不存在时才回退到 Hugging Face。Qwen3-ASR、ForcedAligner、Qwen3-VL Embedding/Reranker 和 Qwen3.5 均使用魔搭的同名官方仓库。
+默认 `auto` 模式优先从 ModelScope（魔搭社区）下载，适合中国大陆网络；某个仓库在魔搭不存在时才回退到 Hugging Face。Qwen3-ASR、ForcedAligner、Qwen3-VL Reranker 和 Qwen3.5 可使用魔搭的同名官方仓库。
 
 WeMM-Embedding 若尚未被 ModelScope 收录，会由 `auto` 模式自动转到 Hugging Face；已经下载后，BeatForge 始终从清单记录的本地目录加载。使用 `--source modelscope --no-fallback` 时，这类未收录模型会按预期报告失败，而不会静默换源。
 
@@ -76,12 +87,38 @@ uv run beatforge download-models my-mv/project.toml --source modelscope --no-fal
 
 ## 使用
 
+### 推荐的完整流程
+
+在目标 NVIDIA GPU 电脑上，建议按下面的顺序完成首次部署：
+
 ```powershell
+uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 uv run beatforge init my-mv
-uv run beatforge run my-mv/project.toml
 ```
 
 将音乐放到 `my-mv/music.mp3`，图片和视频放到 `my-mv/media/`。如果已有 LRC，保存为 `my-mv/lyrics.lrc`；如果要使用 Qwen3-ASR，删除该文件并删除或注释 `project.toml` 的 `lyrics` 配置。
+
+先统一下载配置中用到的权重，再检查环境：
+
+```powershell
+uv run beatforge download-models my-mv/project.toml
+uv run beatforge doctor
+```
+
+下载成功后可把 `project.toml` 中的 `offline = false` 改为 `offline = true`。第一次不要直接渲染全片，先用真实模型生成剪辑决策，确认 ASR、WeMM、精排和导演都能加载：
+
+```powershell
+uv run beatforge run my-mv/project.toml --plan-only
+uv run beatforge run my-mv/project.toml
+```
+
+仓库中的 `demo/project.toml` 是12GB显存质量目标的示例配置。当前没有 NVIDIA 显卡的开发电脑使用下面的流程即可验证基础分析、字幕、动效、调色和 FFmpeg 渲染，不会下载或加载模型：
+
+```powershell
+uv sync
+uv run python scripts/create_demo.py
+uv run beatforge run demo/project.toml --no-ai
+```
 
 只生成剪辑决策，不渲染：
 
@@ -96,6 +133,28 @@ uv run beatforge run my-mv/project.toml --no-ai
 ```
 
 输出包括 `output.mp4`、`.beatforge/plan.json`、`.beatforge/lyrics.ass` 和视频分析所用的缓存关键帧。`plan.json` 包含音乐结构、模型配置、素材信息、逐镜头语义得分和剪辑参数。
+
+### 关键配置速查
+
+| 配置项 | 默认值 | 对成片或资源的影响 | 12GB建议 |
+| --- | --- | --- | --- |
+| `device` | `auto` | 自动选择CUDA或CPU；正式GPU运行可设为 `cuda` 以尽早暴露环境问题 | `cuda` |
+| `offline` | `false` | 为 `true` 时仅使用模型清单和本地缓存 | 下载完成后设为 `true` |
+| `vision_model` | `tencent/WeMM-Embedding-9B` | 决定歌词与画面的语义召回质量，也是视觉阶段主要显存占用 | 首次加载OOM时换2B |
+| `vision_quantization` | `nf4` | `nf4` 最省显存，`int8`/`none` 需要更多显存 | 保持 `nf4` |
+| `vision_batch_size` | `4` | 影响视觉编码吞吐和激活显存；OOM会自动按4→2→1重试 | `4`，仍OOM时设 `1` |
+| `vision_rerank_top_k` | `8` | 每句歌词进入精排的候选数；更高可能改善选镜，但更慢 | `8` |
+| `frame_samples` | `8` | 长视频关键帧覆盖率；更高更容易找到对应画面，但分析更慢 | `8`，长素材可到 `12` |
+| `director_model` | `Qwen/Qwen3.5-9B` | 统一叙事、色彩弧、母题与章节策略 | 保持9B + NF4 |
+| `director_gpu_memory_gb` | `9.0` | 导演阶段允许使用的显存上限，其余可卸载到内存/磁盘 | 不要直接填满12GB |
+| `director_contact_sheet_assets` | `32` | 给导演观看的高价值素材数量；越多上下文越完整，处理越慢 | `24`–`32` |
+| `crf` / `intermediate_crf` | `19` / `14` | 数值越低画质越高、文件越大；中间文件应比最终文件更高质量 | 保持默认 |
+| `look_strength` | `0.72` | AI导演色彩弧的应用强度 | 写实人像可降至 `0.55`–`0.7` |
+| `shot_match_strength` | `0.3` | 不同设备和来源素材的曝光/饱和度匹配强度 | `0.25`–`0.4` |
+| `film_grain` | `1.6` | 用轻微统一颗粒掩盖素材来源差异 | 干净数字风格可降至 `0.5`–`1.0` |
+| `subtitle_effect` / `subtitle_font` | `auto` / `auto` | AI按旋律、情绪和段落选择字幕动效与字体 | 保持 `auto` |
+
+`vision_batch_size` 只影响编码时的激活显存，不能解决模型权重加载就OOM的问题。`frame_samples` 和 `director_contact_sheet_assets` 主要交换分析时间与选择信息量，并不会让最终视频分辨率变高。
 
 ## 本地 AI 导演
 
@@ -248,6 +307,45 @@ WeMM-Embedding 会分别通过 `encode_query` 和 `encode_document` 比较歌词
 - AI 导演统一概念、叙事弧、调色倾向和视觉母题，并对各乐段给出剪辑强度、景别、素材偏好、字幕与转场意见；
 
 这些决策会写入 `plan.json` 的 `section`、`edit_intent`、`melody`、`quality_score` 和 `art_direction`，方便人工复核。
+
+## 常见问题
+
+### `doctor` 显示 CUDA 未启用
+
+先确认安装的是 `ai-cuda` 而不是 `ai-cpu`，再检查 NVIDIA 驱动是否能够运行 PyTorch 2.14.0 + CUDA 13.2 构建。`nvidia-smi` 能显示显卡不代表当前 Python 环境中的 PyTorch 一定启用了CUDA；以 `uv run beatforge doctor` 的结果为准。修改依赖组合后重新执行对应的 `uv sync`，不要在同一环境混装 CPU 和 CUDA profile。
+
+### ModelScope 找不到 WeMM
+
+这是预期的下载源差异。使用默认 `--source auto`，BeatForge 会只为缺失仓库回退到 Hugging Face；中国大陆网络需要能够访问该站点或使用已经下载好的本地缓存。若使用 `--source modelscope --no-fallback`，WeMM 未收录时会直接失败。成功下载后检查 `.beatforge/models.json`，并启用 `offline = true`。
+
+### WeMM 报自定义代码、Processor 或配置加载错误
+
+确认使用 `tencent/WeMM-Embedding-*` 官方仓库，并已安装 `qwen` extra：
+
+```powershell
+uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
+```
+
+不要绕过锁文件随意降级 Transformers。先记录完整异常、当前 `transformers` 和 `sentence-transformers` 版本，再确认本地模型目录是否下载完整。模型仓库更新后，如需重新获取自定义代码，应在联网模式下明确重新下载并复测，确认无误后再恢复离线模式。
+
+### CUDA 显存不足
+
+- 如果在视觉编码过程中OOM，先把 `vision_batch_size` 调为 `1`；程序也会自动减半重试。
+- 如果在模型刚加载时OOM，改用示例CPU配置中的 WeMM-Embedding-2B 和2B精排模型；降低批量大小对此无效。
+- 如果导演阶段OOM，保持 `director_quantization = "nf4"`，降低 `director_gpu_memory_gb` 和 `director_contact_sheet_assets`，或改用 Qwen3.5-4B。
+- 每次只改一个参数并重新运行 `--plan-only`，从日志确认失败发生在哪个模型阶段。
+
+### 离线模式提示找不到模型
+
+先暂时设为 `offline = false` 并重新运行 `download-models`。模型目录被移动、磁盘盘符变化或 `.beatforge/models.json` 仍指向旧路径时，需要重新生成清单；仅复制清单而不复制其指向的模型目录无效。
+
+### 字幕乱码、方框字或自定义字体没有生效
+
+确认 FFmpeg 构建包含 libass，把 `.ttf`、`.otf` 或 `.ttc` 放入项目 `fonts/`，并让 `subtitle_fonts_dir = "fonts"`。固定字体时填写字体内部的家族名，而不是文件名；不确定时优先使用 `preset:cinematic`、`preset:modern` 等内置预设。字体授权由素材提供者自行确认。
+
+### 成片能生成，但看起来像素材幻灯片
+
+先补充素材 sidecar 的人物、地点、情绪、景别与运镜信息，并确保视频有足够长度和镜头变化。随后查看 `plan.json` 中的语义得分和候选画面：长视频可把 `frame_samples` 提高到 `10`–`12`，召回相近但精排不稳定时可适度提高 `vision_rerank_top_k`。不要单纯堆叠转场；统一的主体、色彩、运动方向和重复母题通常比更多特效更接近真人精剪。
 
 ## 测试
 
