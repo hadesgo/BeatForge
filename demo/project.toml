@@ -1,27 +1,32 @@
 music = "music.wav"
-lyrics = "lyrics.lrc"
+lyrics = "lyrics.lrc" # 删除这一行或文件后，改由 Qwen3-ASR 识别歌词
 media_dir = "media"
 output = "output.mp4"
 cache_dir = ".beatforge"
 
 [ai]
 enabled = true
-device = "auto"
-offline = false
+device = "cuda" # 当前无 NVIDIA 显卡的开发电脑可改为 auto，并使用 --no-ai 测试
+offline = false # 执行 download-models 后可改为 true
 asr_backend = "qwen3"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 whisper_model = "small"
-whisper_compute_type = "int8"
+whisper_compute_type = "int8_float16"
 clap_model = "laion/clap-htsat-fused"
 music_structure_backend = "allin1"
+
+# 12GB 显存质量优先：WeMM 负责跨模态召回，Qwen3-VL Reranker 精排。
+# 两个模型按阶段加载，不会同时驻留显存。
 vision_backend = "wemm-embedding"
 vision_model = "tencent/WeMM-Embedding-9B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-8B"
 vision_quantization = "nf4"
-vision_batch_size = 4
+vision_batch_size = 4 # 显存不足会自动降为 2/1
 vision_rerank_top_k = 8
 frame_samples = 8
+
+# AI 导演直接在 BeatForge 进程内运行，不依赖 Ollama/LM Studio 等服务。
 director_enabled = true
 director_model = "Qwen/Qwen3.5-9B"
 director_quantization = "nf4"
@@ -33,27 +38,37 @@ director_offload = true
 director_contact_sheet_assets = 32
 
 [render]
-width = 960
-height = 540
-fps = 24
-crf = 23
-preset = "veryfast"
-min_shot_seconds = 1.5
-max_shot_seconds = 4.0
+width = 1920
+height = 1080
+fps = 30
+crf = 19
+intermediate_crf = 14 # 降低多次合成产生的代际损失
+preset = "medium"
+encoder_tune = "film"
+min_shot_seconds = 1.8
+max_shot_seconds = 5.5
+
 subtitle_font = "auto"
-subtitle_size = 38
+subtitle_fonts_dir = "fonts"
+subtitle_size = 46
 subtitle_effect = "auto"
-subtitle_margin = 54
+subtitle_margin = 72
 subtitle_highlight_color = "&H0000D7FF"
+
 visual_effects = true
 vignette = true
-film_grain = 1.2
+film_grain = 1.6
+look_strength = 0.72
+shot_match_strength = 0.3
+professional_transitions = true
+transition_min_seconds = 0.16
+transition_max_seconds = 0.55
 
 [render.subtitle_fonts]
-energetic = "Arial Black"
-uplifting = "Microsoft YaHei"
-melancholic = "SimSun"
-dreamy = "Microsoft YaHei Light"
-romantic = "KaiTi"
-dark = "SimHei"
-cinematic = "Microsoft YaHei"
+energetic = "preset:energetic"
+uplifting = "preset:modern"
+melancholic = "preset:cinematic"
+dreamy = "preset:dreamy"
+romantic = "preset:lyrical"
+dark = "preset:dark"
+cinematic = "preset:cinematic"
