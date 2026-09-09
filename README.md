@@ -67,7 +67,7 @@ uv run beatforge download-models my-mv/project.toml
 
 默认 `auto` 模式优先从 ModelScope（魔搭社区）下载，适合中国大陆网络；某个仓库在魔搭不存在时才回退到 Hugging Face。Qwen3-ASR、ForcedAligner、Qwen3-VL Reranker 和 Qwen3.5 可使用魔搭的同名官方仓库。
 
-WeMM-Embedding 若尚未被 ModelScope 收录，会由 `auto` 模式自动转到 Hugging Face；已经下载后，BeatForge 始终从清单记录的本地目录加载。使用 `--source modelscope --no-fallback` 时，这类未收录模型会按预期报告失败，而不会静默换源。
+WeMM-Embedding-9B 已收录到[魔搭社区](https://modelscope.cn/models/tencent-community/WeMM-Embedding-9B)，其魔搭仓库 ID 是 `tencent-community/WeMM-Embedding-9B`，与配置使用的 Hugging Face ID `tencent/WeMM-Embedding-9B` 不同。下载器会自动完成映射，因此默认配置可以直接使用 `auto` 或 `--source modelscope --no-fallback`；模型清单仍以配置中的规范 ID 为键，运行代码无需随下载源变化。
 
 指定独立缓存目录和单模型下载并发数：
 
@@ -314,9 +314,9 @@ WeMM-Embedding 会分别通过 `encode_query` 和 `encode_document` 比较歌词
 
 先确认安装的是 `ai-cuda` 而不是 `ai-cpu`，再检查 NVIDIA 驱动是否能够运行 PyTorch 2.14.0 + CUDA 13.2 构建。`nvidia-smi` 能显示显卡不代表当前 Python 环境中的 PyTorch 一定启用了CUDA；以 `uv run beatforge doctor` 的结果为准。修改依赖组合后重新执行对应的 `uv sync`，不要在同一环境混装 CPU 和 CUDA profile。
 
-### ModelScope 找不到 WeMM
+### ModelScope 下载 WeMM 失败
 
-这是预期的下载源差异。使用默认 `--source auto`，BeatForge 会只为缺失仓库回退到 Hugging Face；中国大陆网络需要能够访问该站点或使用已经下载好的本地缓存。若使用 `--source modelscope --no-fallback`，WeMM 未收录时会直接失败。成功下载后检查 `.beatforge/models.json`，并启用 `offline = true`。
+BeatForge 已把 `tencent/WeMM-Embedding-9B` 自动映射为魔搭的 `tencent-community/WeMM-Embedding-9B`。先确认当前代码包含这项映射，再检查网络、磁盘空间和 ModelScope 登录或访问限制。默认 `--source auto` 会在魔搭下载失败后回退到 Hugging Face；`--source modelscope --no-fallback` 则会保留原始失败信息。成功下载后检查 `.beatforge/models.json`，并启用 `offline = true`。
 
 ### WeMM 报自定义代码、Processor 或配置加载错误
 

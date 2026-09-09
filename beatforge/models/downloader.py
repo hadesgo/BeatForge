@@ -18,6 +18,13 @@ WHISPER_REPOS = {
     "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
 }
 
+# ModelScope mirrors do not always use the same namespace as Hugging Face.
+# Keep the configured repository ID canonical so the manifest can still map it
+# to a local directory regardless of which provider supplied the snapshot.
+MODELSCOPE_REPO_ALIASES = {
+    "tencent/WeMM-Embedding-9B": "tencent-community/WeMM-Embedding-9B",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ModelRequirement:
@@ -111,9 +118,10 @@ def download_required_models(
         for provider, download in providers:
             options: dict[str, object]
             if provider == "modelscope":
-                options = {"model_id": item.repo_id}
+                provider_repo_id = MODELSCOPE_REPO_ALIASES.get(item.repo_id, item.repo_id)
+                options = {"model_id": provider_repo_id}
                 if cache_dir is not None:
-                    target = cache_dir / "modelscope" / item.repo_id
+                    target = cache_dir / "modelscope" / provider_repo_id
                     target.mkdir(parents=True, exist_ok=True)
                     options["local_dir"] = str(target)
             else:

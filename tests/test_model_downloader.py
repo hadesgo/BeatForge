@@ -94,8 +94,11 @@ def test_modelscope_is_preferred_and_manifest_resolves_local_paths(tmp_path: Pat
 
     assert len(calls) == 4
     assert all("model_id" in call and "repo_id" not in call for call in calls)
+    assert calls[3]["model_id"] == "tencent-community/WeMM-Embedding-9B"
     assert all(model.source == "modelscope" for model in models)
+    assert models[3].repo_id == "tencent/WeMM-Embedding-9B"
     assert resolved[config.qwen_asr_model] == str(Path(models[0].local_path).resolve())
+    assert resolved[config.vision_model] == str(Path(models[3].local_path).resolve())
 
 
 def test_auto_source_falls_back_to_huggingface(tmp_path: Path) -> None:
