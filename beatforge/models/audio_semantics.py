@@ -27,29 +27,50 @@ def classify_music(
         import torch
         from transformers import AutoModel, AutoProcessor
     except ImportError as exc:
-        raise RuntimeError("缺少 AI 依赖；CPU 电脑请运行 uv sync --extra ai --extra ai-cpu") from exc
+        raise RuntimeError(
+            "缺少 AI 依赖；CPU 电脑请运行 uv sync --extra ai --extra ai-cpu"
+        ) from exc
 
     samples, _ = librosa.load(audio_file, sr=48_000, mono=True)
     if len(samples) > 48_000 * 30:
         centers = np.linspace(5, len(samples) / 48_000 - 5, 3)
-        clips = [samples[max(0, int((c - 5) * 48_000)):int((c + 5) * 48_000)] for c in centers]
+        clips = [
+            samples[max(0, int((c - 5) * 48_000)) : int((c + 5) * 48_000)]
+            for c in centers
+        ]
     else:
         clips = [samples]
 
     dtype = torch.float16 if device == "cuda" else torch.float32
     processor = AutoProcessor.from_pretrained(model_name, local_files_only=offline)
-    model = AutoModel.from_pretrained(
-        model_name, torch_dtype=dtype, local_files_only=offline,
-    ).to(device).eval()
+    model = (
+        AutoModel.from_pretrained(
+            model_name,
+            dtype=dtype,
+            local_files_only=offline,
+        )
+        .to(device)
+        .eval()
+    )
     labels = list(MOOD_LABELS)
     text = processor(text=list(MOOD_LABELS.values()), return_tensors="pt", padding=True)
     text = {key: value.to(device) for key, value in text.items()}
-    audio = processor(audios=clips, sampling_rate=48_000, return_tensors="pt", padding=True)
+    audio = processor(
+        audio=clips, sampling_rate=48_000, return_tensors="pt", padding=True
+    )
+    for k in audio:
+        audio[k] = audio[k].to(dtype=dtype)
     audio = {key: value.to(device) for key, value in audio.items()}
     with torch.inference_mode():
-        text_features = model.get_text_features(**text)
-        audio_features = model.get_audio_features(**audio)
+        text_output = model.get_text_features(**text)
+        audio_output = model.get_audio_features(**audio)
+
+        text_features = text_output.pooler_output
+        audio_features = audio_output.pooler_output
+
         text_features = torch.nn.functional.normalize(text_features, dim=-1)
         audio_features = torch.nn.functional.normalize(audio_features, dim=-1)
-        scores = (audio_features @ text_features.T).mean(0).softmax(0).float().cpu().numpy()
+        scores = (
+            (audio_features @ text_features.T).mean(0).softmax(0).float().cpu().numpy()
+        )
     return {label: round(float(score), 5) for label, score in zip(labels, scores)}

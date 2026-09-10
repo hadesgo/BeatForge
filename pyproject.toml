@@ -23,8 +23,8 @@ ai = [
   "sentencepiece>=0.2",
   "transformers>=5.16.1",
 ]
-ai-cpu = ["torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0"]
-ai-cuda = ["torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0", "bitsandbytes>=0.50.2"]
+ai-cpu = ["torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0", "torchcodec==0.16.0"]
+ai-cuda = ["torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0", "torchcodec==0.16.0", "bitsandbytes>=0.50.2"]
 qwen = [
   "qwen-vl-utils>=0.0.14",
   "sentence-transformers[image]>=5.7",
@@ -65,6 +65,10 @@ torchvision = [
   { index = "pytorch-cu130", extra = "ai-cuda" },
 ]
 torchaudio = [
+  { index = "pytorch-cpu", extra = "ai-cpu" },
+  { index = "pytorch-cu130", extra = "ai-cuda" },
+]
+torchcodec = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
   { index = "pytorch-cu130", extra = "ai-cuda" },
 ]
