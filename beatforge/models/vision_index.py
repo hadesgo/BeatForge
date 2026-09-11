@@ -15,6 +15,31 @@ from beatforge.models.quantization import QuantizationMode, quantized_load_kwarg
 from beatforge.runtime import command
 
 
+_QWEN_RERANKER_CHAT_TEMPLATE = r"""
+{%- macro render_content(content) -%}
+    {%- if content is string -%}
+        {{- content -}}
+    {%- else -%}
+        {%- for item in content -%}
+            {%- if item.type == 'image' or 'image' in item or 'image_url' in item -%}
+                {{- '<|vision_start|><|image_pad|><|vision_end|>' -}}
+            {%- elif item.type == 'video' or 'video' in item -%}
+                {{- '<|vision_start|><|video_pad|><|vision_end|>' -}}
+            {%- elif item.type == 'text' or 'text' in item -%}
+                {{- item.text -}}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endmacro -%}
+{%- set query = messages | selectattr('role', 'eq', 'query') | first -%}
+{%- set document = messages | selectattr('role', 'eq', 'document') | first -%}
+{{- '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n' -}}
+{{- '<|im_start|>user\n<Query>: ' -}}{{- render_content(query.content) -}}
+{{- '\n<Document>: ' -}}{{- render_content(document.content) -}}{{- '<|im_end|>\n' -}}
+{{- '<|im_start|>assistant\n<think>\n\n</think>\n\n' -}}
+""".strip()
+
+
 class VisionIndex:
     """WeMM/Qwen multimodal embedding index with a SigLIP2 fallback."""
 
@@ -401,7 +426,7 @@ def _load_cross_encoder(CrossEncoder, model_name: str, model_kwargs: dict, *, de
             model_name,
             transformer_task="any-to-any",
             model_kwargs={**shared, **model_kwargs},
-            processor_kwargs=shared.copy(),
+            processor_kwargs={**shared, "chat_template": _QWEN_RERANKER_CHAT_TEMPLATE},
             config_kwargs=shared.copy(),
         )
         true_token_id = transformer.tokenizer.convert_tokens_to_ids("yes")

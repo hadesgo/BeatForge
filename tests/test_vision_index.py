@@ -308,6 +308,11 @@ def test_qwen_reranker_uses_explicit_multimodal_module_chain(monkeypatch) -> Non
     assert isinstance(result, FakeCrossEncoder)
     assert created["transformer"][1]["transformer_task"] == "any-to-any"
     assert created["transformer"][1]["model_kwargs"]["local_files_only"] is True
+    chat_template = created["transformer"][1]["processor_kwargs"]["chat_template"]
+    assert "selectattr('role', 'eq', 'query')" in chat_template
+    assert "selectattr('role', 'eq', 'document')" in chat_template
+    assert "<|image_pad|>" in chat_template
+    assert "<|im_start|>assistant" in chat_template
     assert created["logit_score"] == {"true_token_id": 9693, "false_token_id": 2152}
     assert created["cross_encoder"][0] == ()
     assert "device" not in created["cross_encoder"][1]

@@ -346,7 +346,7 @@ BeatForge 已把 `tencent/WeMM-Embedding-9B` 自动映射为魔搭的 `tencent-c
 
 ### Qwen3-VL-Reranker 提示缺少 `true_token_id`
 
-部分 ModelScope 本地快照即使已经包含 `1_LogitScore/config.json`，Sentence Transformers 的自动模块加载仍可能没有把 token ID 正确传给 `LogitScore`。BeatForge 对 Qwen3-VL-Reranker 显式构造官方的 `Transformer(any-to-any) + LogitScore` 模块链，并从模型自身 tokenizer 获取 yes/no token ID，因此不依赖自动读取这份模块配置，也不需要重新下载整套权重。
+部分 ModelScope 本地快照即使已经包含 `1_LogitScore/config.json`，Sentence Transformers 的自动模块加载仍可能没有把 token ID 正确传给 `LogitScore`。BeatForge 对 Qwen3-VL-Reranker 显式构造官方的 `Transformer(any-to-any) + LogitScore` 模块链，并从模型自身 tokenizer 获取 yes/no token ID，因此不依赖自动读取这份模块配置。程序还会覆盖不兼容的旧聊天模板，使 `query`、`document` 以及图片占位符都能进入实际提示词；无需重新下载整套权重。
 
 ### WeMM 报自定义代码、Processor 或配置加载错误
 
