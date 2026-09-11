@@ -119,11 +119,14 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         source_starts=source_starts,
         target_width=project.render.width,
         target_height=project.render.height,
+        image_composites=project.render.image_composites,
+        image_composite_ratio=project.render.image_composite_ratio,
+        max_composite_images=project.render.max_composite_images,
     )
     art = create_art_direction(analysis, lyrics, project.render, treatment)
     plan_file = project.cache_dir / "plan.json"
     plan = {
-        "version": 2,
+        "version": 3,
         "models": {
             "asr": project.ai.qwen_asr_model if use_ai and project.ai.asr_backend == "qwen3" else project.ai.whisper_model if use_ai else None,
             "aligner": project.ai.qwen_aligner_model if use_ai and project.ai.asr_backend == "qwen3" else None,

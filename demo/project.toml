@@ -56,6 +56,12 @@ subtitle_margin = 72
 subtitle_highlight_color = "&H0000D7FF"
 
 visual_effects = true
+image_composites = true
+image_composite_ratio = 0.24
+max_composite_images = 3
+blurred_image_background = true
+image_background_blur = 26.0
+image_foreground_scale = 0.92
 vignette = true
 film_grain = 1.6
 look_strength = 0.72

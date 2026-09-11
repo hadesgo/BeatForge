@@ -10,8 +10,8 @@ from beatforge.config import RenderConfig
 from beatforge.audio import AudioAnalysis
 from beatforge.director import create_art_direction
 from beatforge.lyrics import LyricLine
-from beatforge.planner import Shot
-from beatforge.renderer import _section_color_filter, _shot_match_filter, _video_encode_args, render
+from beatforge.planner import Shot, ShotLayer
+from beatforge.renderer import _render_shot, _section_color_filter, _shot_match_filter, _video_encode_args, render
 from beatforge.runtime import duration
 
 
@@ -69,3 +69,39 @@ def test_intermediate_encoding_uses_higher_quality_crf() -> None:
     args = _video_encode_args(cfg, intermediate=True)
     assert args[args.index("-crf") + 1] == "13"
     assert args[args.index("-tune") + 1] == "film"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+@pytest.mark.parametrize("effect", [
+    "cinematic_depth", "focus_pull", "pan_reveal", "split_screen",
+    "photo_stack", "double_exposure", "beat_montage",
+])
+def test_all_still_image_effects_render(effect: str, tmp_path: Path) -> None:
+    files = []
+    for index, size in enumerate(((240, 360), (420, 180), (240, 240))):
+        file = tmp_path / f"image-{index}.jpg"
+        Image.new("RGB", size, (40 + index * 70, 80, 150 - index * 40)).save(file)
+        files.append(file)
+    layers = [
+        ShotLayer(index, str(files[index]))
+        for index in range(1, 3)
+    ] if effect in {"split_screen", "photo_stack", "double_exposure", "beat_montage"} else []
+    shot = Shot(
+        0, 0, .5, .5, 0, str(files[0]), "image", 0, "", .75,
+        "dynamic", "none", .8, melody=.7, image_effect=effect, layers=layers,
+    )
+    cfg = RenderConfig(
+        width=160, height=90, fps=10, crf=35, preset="ultrafast",
+        image_background_blur=4, film_grain=0, vignette=False,
+    )
+    analysis = AudioAnalysis(
+        duration=.5, bpm=120, beats=[0, .5], sections=[0, .5],
+        energy_times=[0], energy_values=[.7], average_energy=.7,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+    )
+    output = tmp_path / f"{effect}.mp4"
+
+    _render_shot(shot, output, cfg, create_art_direction(analysis, [], cfg), .5, 1)
+
+    assert output.exists()
+    assert .4 <= duration(output) <= .6

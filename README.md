@@ -161,6 +161,9 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `look_strength` | `0.72` | AI导演色彩弧的应用强度 | 写实人像可降至 `0.55`–`0.7` |
 | `shot_match_strength` | `0.3` | 不同设备和来源素材的曝光/饱和度匹配强度 | `0.25`–`0.4` |
 | `film_grain` | `1.6` | 用轻微统一颗粒掩盖素材来源差异 | 干净数字风格可降至 `0.5`–`1.0` |
+| `image_composite_ratio` | `0.24` | 多图镜头的基础占比；副歌和导演标记的冲击段会自动提高 | `0.18`–`0.30` |
+| `max_composite_images` | `3` | 分屏、照片堆叠和节拍蒙太奇的同镜头素材上限 | 建议保持 `3` |
+| `image_background_blur` | `26.0` | 原比例图片周围的满屏模糊背景强度 | 人像可用 `22`–`32` |
 | `subtitle_effect` / `subtitle_font` | `auto` / `auto` | AI按旋律、情绪和段落选择字幕动效与字体 | 保持 `auto` |
 
 `vision_batch_size` 只影响编码时的激活显存，不能解决模型权重加载就OOM的问题。`frame_samples` 和 `director_contact_sheet_assets` 主要交换分析时间与选择信息量，并不会让最终视频分辨率变高。
@@ -197,6 +200,12 @@ subtitle_effect = "auto"
 subtitle_margin = 72
 subtitle_highlight_color = "&H0000D7FF"
 visual_effects = true
+image_composites = true
+image_composite_ratio = 0.24
+max_composite_images = 3
+blurred_image_background = true
+image_background_blur = 26.0
+image_foreground_scale = 0.92
 vignette = true
 film_grain = 1.6
 look_strength = 0.72
@@ -227,7 +236,21 @@ cinematic = "preset:cinematic"
 
 若希望整首歌固定使用某个预设或自定义字体，可分别设置 `subtitle_font = "preset:minimal"` 或 `subtitle_font = "My MV Font"`。自动字幕还会对异常长的歌词单独缩小字号，普通短句保持原字号；这不会破坏逐字高亮和打字机时序。
 
-图片和视频的推拉幅度同时参考局部能量、旋律变化率和歌曲意境。高能/高节奏密度段落使用锐化与亮色闪切，低能段落使用柔化与长淡入，梦幻和抒情歌曲降低镜头运动，所有镜头可选暗角和动态胶片颗粒。
+图片素材始终保持原始宽高比，不会为填满横屏或竖屏而拉伸。默认把同一图片等比放大、裁切并模糊为满屏背景，再把清晰原图等比缩放到前景；`image_foreground_scale` 控制前景占画面比例。关闭 `blurred_image_background` 后仍保持原比例，但不再施加背景模糊。
+
+图片镜头不再只有随机推拉。规划器会参考歌曲段落、局部能量、旋律变化以及 AI 导演给出的 `edit_intent`，自动选择以下效果，并把结果和辅助图层写入 `plan.json`：
+
+- `cinematic_depth`：克制的景深推拉，适合主歌、前奏和尾奏；
+- `focus_pull`：清晰前景配合柔化背景，随旋律缓慢推进；
+- `pan_reveal`：具有明确方向的画面揭示，替代周期性抖动；
+- `split_screen`：两张语义相关图片分屏并置；
+- `photo_stack`：图片按真实节拍依次滑入并轻微旋转叠放；
+- `double_exposure`：双图银幕混合，适合桥段、梦幻或抽象意境；
+- `beat_montage`：最多四张图片在镜头内部按音乐节拍依次切换。
+
+多图辅助素材来自同一句歌词的视觉语义排序，同时受质量、色彩连续性、重复使用和分辨率惩罚约束。默认仅约 24% 图片镜头使用多图组合，副歌和 AI 导演标记的冲击段会提高概率，呼吸段会降低概率，避免整支 MV 变成模板化电子相册。`image_composites = false` 可只保留单图景深和方向性运镜。
+
+图片和视频的运动强度同时参考局部能量、旋律变化率和歌曲意境。高能/高节奏密度段落使用锐化与亮色闪切，低能段落使用柔化与长淡入，梦幻和抒情歌曲降低镜头运动，所有镜头可选暗角和动态胶片颗粒。
 
 为提高成片统一性，渲染器会把 AI 导演的 `color_arc` 真正转换成按章节推进的轻量色彩风格，而不是只写入 JSON；同时依据素材代表色做受限的曝光和饱和度匹配，最大修正量受到 `shot_match_strength` 控制，不会把夜景强行拉成白天。`look_strength` 控制导演色彩弧强度，设为 `0` 可完全关闭。缩放统一使用 Lanczos，并校正像素宽高比。
 

@@ -148,3 +148,27 @@ def test_repeated_lyrics_reuse_only_when_no_alternative_exists() -> None:
     shots = create_plan(analysis, lyrics, assets, None, min_shot=1.5, max_shot=5)
 
     assert [shot.media_id for shot in shots] == [0, 0]
+
+
+def test_plan_builds_semantically_ranked_multi_image_layers() -> None:
+    analysis = AudioAnalysis(
+        duration=4, bpm=120, beats=[0, 2, 4], sections=[0, 4],
+        energy_times=[0], energy_values=[.7], average_energy=.7,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+        section_labels=["verse"],
+    )
+    lyrics = [LyricLine(0, 4, "海边")]
+    assets = [
+        MediaAsset(0, Path("primary.jpg"), "image", float("inf"), 1200, 1800),
+        MediaAsset(1, Path("second.jpg"), "image", float("inf"), 1920, 1080),
+        MediaAsset(2, Path("third.jpg"), "image", float("inf"), 1080, 1080),
+    ]
+
+    shots = create_plan(
+        analysis, lyrics, assets, np.array([[1.0, .8, .6]]),
+        min_shot=1.5, max_shot=5, image_composite_ratio=1,
+    )
+
+    assert shots[0].image_effect == "split_screen"
+    assert [layer.media_id for layer in shots[0].layers] == [1]
+    assert shots[0].layers[0].enter_offset == 2

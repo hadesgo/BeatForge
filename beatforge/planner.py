@@ -16,6 +16,19 @@ if TYPE_CHECKING:
 
 
 @dataclass(slots=True)
+class ShotLayer:
+    media_id: int
+    file: str
+    kind: str = "image"
+    role: str = "secondary"
+    focus_point: list[float] = field(default_factory=lambda: [.5, .5])
+    source_width: int = 0
+    source_height: int = 0
+    source_color: list[int] = field(default_factory=lambda: [128, 128, 128])
+    enter_offset: float = 0.0
+
+
+@dataclass(slots=True)
 class Shot:
     index: int
     start: float
@@ -40,6 +53,8 @@ class Shot:
     focus_point: list[float] = field(default_factory=lambda: [.5, .5])
     source_width: int = 0
     source_height: int = 0
+    image_effect: str = "cinematic_depth"
+    layers: list[ShotLayer] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -57,6 +72,9 @@ def create_plan(
     source_starts: np.ndarray | None = None,
     target_width: int = 1920,
     target_height: int = 1080,
+    image_composites: bool = True,
+    image_composite_ratio: float = .24,
+    max_composite_images: int = 3,
 ) -> list[Shot]:
     boundaries = _boundaries(analysis, lyrics, min_shot, max_shot, treatment)
     lyric_rows = {id(line): i for i, line in enumerate(lyrics)}
@@ -66,9 +84,11 @@ def create_plan(
     chorus_motifs: list[int] = []
     video_cursors: dict[int, float] = {}
     lyric_asset_history: dict[str, set[int]] = {}
+    lyric_visual_history: dict[str, set[int]] = {}
     active_line_id: int | None = None
     active_lyric_key = ""
     active_line_assets: set[int] = set()
+    active_line_visual_assets: set[int] = set()
     shots: list[Shot] = []
     for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
         midpoint = (start + end) / 2
@@ -77,10 +97,13 @@ def create_plan(
         if line_id != active_line_id:
             if active_lyric_key and active_line_assets:
                 lyric_asset_history.setdefault(active_lyric_key, set()).update(active_line_assets)
+                lyric_visual_history.setdefault(active_lyric_key, set()).update(active_line_visual_assets)
             active_line_id = line_id
             active_lyric_key = _lyric_key(line.text) if line is not None else ""
             active_line_assets = set()
+            active_line_visual_assets = set()
         previously_used_for_lyric = lyric_asset_history.get(active_lyric_key, set())
+        previously_visible_for_lyric = lyric_visual_history.get(active_lyric_key, set())
         energy = analysis.energy_at(midpoint)
         section, section_index = _section_info(analysis, midpoint)
         direction = treatment.section(section_index) if treatment else None
@@ -103,12 +126,14 @@ def create_plan(
             score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif + director_score - repeat - duration_penalty - framing_penalty - upscale_penalty
             ranked.append((score, asset, semantic, asset_column))
         fresh_ranked = [item for item in ranked if item[1].id not in previously_used_for_lyric]
-        _, selected, semantic, selected_column = max(fresh_ranked or ranked, key=lambda item: item[0])
+        eligible_ranked = fresh_ranked or ranked
+        _, selected, semantic, selected_column = max(eligible_ranked, key=lambda item: item[0])
         continues_previous = previous is not None and selected.id == previous.id
         usage[selected.id] = usage.get(selected.id, 0) + 1
         recent.append(selected.id)
         if line is not None:
             active_line_assets.add(selected.id)
+            active_line_visual_assets.add(selected.id)
         if section == "chorus" and selected.id not in chorus_motifs and len(chorus_motifs) < 2:
             chorus_motifs.append(selected.id)
         available = max(0.0, selected.duration - shot_duration - 0.1) if math.isfinite(selected.duration) else 0.0
@@ -121,6 +146,31 @@ def create_plan(
             source_start = ((index * 0.61803398875) % 1) * available
         if selected.kind == "video":
             video_cursors[selected.id] = source_start + shot_duration
+        image_effect = "source_video"
+        layers: list[ShotLayer] = []
+        if selected.kind == "image":
+            image_candidates = [
+                item for item in sorted(eligible_ranked, key=lambda item: item[0], reverse=True)
+                if item[1].kind == "image" and item[1].id != selected.id
+                and item[1].id not in previously_visible_for_lyric
+            ]
+            image_effect, layer_count = _choose_image_effect(
+                index, section, energy, analysis.melody_at(midpoint), len(image_candidates),
+                enabled=image_composites, ratio=image_composite_ratio,
+                max_images=max_composite_images,
+                edit_intent=direction.edit_intent if direction else "continuity",
+            )
+            entry_offsets = _layer_entry_offsets(analysis, start, end, layer_count)
+            for layer_index, (_score, layer_asset, _layer_semantic, _column) in enumerate(image_candidates[:layer_count]):
+                layers.append(ShotLayer(
+                    media_id=layer_asset.id, file=str(layer_asset.file),
+                    role="secondary", focus_point=layer_asset.focus_point.copy(),
+                    source_width=layer_asset.width, source_height=layer_asset.height,
+                    source_color=layer_asset.dominant_color.copy(),
+                    enter_offset=entry_offsets[layer_index],
+                ))
+                usage[layer_asset.id] = usage.get(layer_asset.id, 0) + 1
+                active_line_visual_assets.add(layer_asset.id)
         previous = selected
         shots.append(Shot(
             index=index, start=round(start, 3), end=round(end, 3), duration=round(shot_duration, 3),
@@ -140,9 +190,59 @@ def create_plan(
             focus_point=selected.focus_point.copy(),
             source_width=selected.width,
             source_height=selected.height,
+            image_effect=image_effect,
+            layers=layers,
         ))
     _assign_transitions(shots)
     return shots
+
+
+def _choose_image_effect(
+    index: int, section: str, energy: float, melody: float, available: int,
+    *, enabled: bool, ratio: float, max_images: int,
+    edit_intent: str = "continuity",
+) -> tuple[str, int]:
+    """Choose a restrained, section-consistent still-image treatment."""
+    if not enabled or available <= 0 or max_images < 2:
+        single = "pan_reveal" if energy > .62 else "focus_pull" if melody > .62 else "cinematic_depth"
+        return single, 0
+
+    # A stable gate keeps composites special instead of turning the MV into a slide template.
+    gate = ((index * 37 + 17) % 100) / 100
+    intent_scale = 1.4 if edit_intent == "impact" else .45 if edit_intent == "breathe" else 1.0
+    section_ratio = min(1.0, ratio * intent_scale * (1.85 if section == "chorus" else 1.25 if section in {"bridge", "solo"} else 1.0))
+    if gate >= section_ratio:
+        single = "pan_reveal" if energy > .62 else "focus_pull" if melody > .62 else "cinematic_depth"
+        return single, 0
+
+    if section == "chorus":
+        effect = ("beat_montage", "photo_stack", "split_screen")[index % 3]
+    elif section in {"bridge", "solo"}:
+        effect = "double_exposure" if index % 2 else "photo_stack"
+    else:
+        effect = ("split_screen", "photo_stack", "double_exposure")[index % 3]
+    wanted_total = 4 if effect == "beat_montage" else 3 if effect == "photo_stack" else 2
+    total = min(max_images, wanted_total, available + 1)
+    if total < 2:
+        return "cinematic_depth", 0
+    return effect, total - 1
+
+
+def _layer_entry_offsets(
+    analysis: AudioAnalysis, start: float, end: float, count: int,
+) -> list[float]:
+    """Place layer reveals on real beats, falling back to even musical phrasing."""
+    if count <= 0:
+        return []
+    duration = end - start
+    grid = analysis.downbeats or analysis.beats
+    candidates = [beat - start for beat in grid if start + .12 < beat < end - .12]
+    offsets: list[float] = []
+    for index in range(count):
+        target = duration * (index + 1) / (count + 1)
+        unused = [beat for beat in candidates if all(abs(beat - used) > .08 for used in offsets)]
+        offsets.append(min(unused, key=lambda beat: abs(beat - target)) if unused else target)
+    return [round(value, 3) for value in sorted(offsets)]
 
 
 def _boundaries(

@@ -64,38 +64,16 @@ def _render_shot(
 ) -> None:
     frames = max(1, round(render_duration * cfg.fps))
     if shot.kind == "image":
-        melody_boost = 1 + shot.melody * .22
-        zoom_amount = {"dynamic": .14, "gentle": .045}.get(shot.motion, .08) * art.camera_intensity * melody_boost
-        progress = f"on/{max(1, frames - 1)}"
-        direction = 1 if (shot.media_id + max(0, shot.section_index)) % 2 == 0 else -1
-        pan_x = (
-            f"clip((iw-iw/zoom)/2+{direction}*(iw-iw/zoom)*0.10*({progress}-.5),"
-            "0,iw-iw/zoom)"
-        )
-        vertical_drift = .04 if shot.edit_intent == "breathe" else .015
-        pan_y = (
-            f"clip((ih-ih/zoom)/2-(ih-ih/zoom)*{vertical_drift}*{progress},"
-            "0,ih-ih/zoom)"
-        )
-        if shot.edit_intent == "breathe" or shot.section == "outro":
-            zoom = f"max(1+{zoom_amount}-on/{frames}*{zoom_amount},1)"
-        else:
-            zoom = f"min(1+on/{frames}*{zoom_amount},{1 + zoom_amount})"
-        focus_x, focus_y = _safe_focus(shot.focus_point)
-        visual = (f"scale={cfg.width * 2}:{cfg.height * 2}:force_original_aspect_ratio=increase:flags=lanczos,"
-                  f"crop={cfg.width * 2}:{cfg.height * 2}:"
-                  f"x='clip(iw*{focus_x}-ow/2,0,iw-ow)':y='clip(ih*{focus_y}-oh/2,0,ih-oh)',"
-                  f"zoompan=z='{zoom}':"
-                  f"x='{pan_x}':y='{pan_y}':d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps},setsar=1")
-    else:
-        # Preserve the source cinematography. Adding a synthetic sinusoidal pan to moving
-        # footage creates the characteristic automated, seasick look.
-        overscan = 1.025
-        scaled_width, scaled_height = round(cfg.width * overscan / 2) * 2, round(cfg.height * overscan / 2) * 2
-        focus_x, focus_y = _safe_focus(shot.focus_point)
-        visual = (f"scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase:flags=lanczos,"
-                  f"crop={cfg.width}:{cfg.height}:"
-                  f"x='clip(iw*{focus_x}-ow/2,0,iw-ow)':y='clip(ih*{focus_y}-oh/2,0,ih-oh)',setsar=1")
+        _render_image_shot(shot, output, cfg, art, render_duration, section_count)
+        return
+
+    # Preserve source cinematography: synthetic oscillation on moving footage looks seasick.
+    overscan = 1.025
+    scaled_width, scaled_height = round(cfg.width * overscan / 2) * 2, round(cfg.height * overscan / 2) * 2
+    focus_x, focus_y = _safe_focus(shot.focus_point)
+    visual = (f"scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase:flags=lanczos,"
+              f"crop={cfg.width}:{cfg.height}:"
+              f"x='clip(iw*{focus_x}-ow/2,0,iw-ow)':y='clip(ih*{focus_y}-oh/2,0,ih-oh)',setsar=1")
     grade = art.grade_filter
     effects = [
         _shot_match_filter(shot, cfg.shot_match_strength),
@@ -116,14 +94,155 @@ def _render_shot(
         if art.grain > 0:
             effects.append(f"noise=alls={art.grain}:allf=t+u")
     args = ["ffmpeg", "-y", "-v", "error"]
-    if shot.kind == "image":
-        args += ["-loop", "1", "-framerate", str(cfg.fps)]
-    else:
-        args += ["-stream_loop", "-1", "-ss", str(shot.source_start)]
+    args += ["-stream_loop", "-1", "-ss", str(shot.source_start)]
     args += ["-i", shot.file, "-t", str(render_duration), "-an", "-vf", ",".join(
         [visual, *(item for item in effects if item)]
     ), "-r", str(cfg.fps), *_video_encode_args(cfg, intermediate=True), str(output)]
     command(args)
+
+
+def _render_image_shot(
+    shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
+    render_duration: float, section_count: int,
+) -> None:
+    files = [shot.file, *(layer.file for layer in shot.layers if layer.kind == "image")]
+    args = ["ffmpeg", "-y", "-v", "error"]
+    for file in files:
+        args += ["-loop", "1", "-framerate", str(cfg.fps), "-i", file]
+    filters, current = _image_filter_graph(shot, cfg, art, render_duration, len(files))
+    finishing = [
+        _shot_match_filter(shot, cfg.shot_match_strength), art.grade_filter,
+        _section_color_filter(shot, art, section_count, cfg.look_strength),
+    ]
+    if cfg.visual_effects:
+        if shot.motion == "dynamic":
+            finishing.append("unsharp=5:5:0.42:5:5:0")
+        if art.vignette:
+            finishing.append("vignette=PI/5")
+        if art.grain > 0:
+            finishing.append(f"noise=alls={art.grain}:allf=t+u")
+    finish = ",".join(item for item in finishing if item)
+    filters.append(
+        f"{current}{finish + ',' if finish else ''}fps={cfg.fps},"
+        f"trim=duration={render_duration:.4f},setpts=PTS-STARTPTS,format=yuv420p[vout]"
+    )
+    args += [
+        "-t", str(render_duration), "-filter_complex", ";".join(filters),
+        "-map", "[vout]", "-an", "-r", str(cfg.fps),
+        *_video_encode_args(cfg, intermediate=True), str(output),
+    ]
+    command(args)
+
+
+def _image_filter_graph(
+    shot: Shot, cfg: RenderConfig, art: ArtDirection,
+    duration: float, input_count: int,
+) -> tuple[list[str], str]:
+    effect = shot.image_effect if cfg.visual_effects else "cinematic_depth"
+    if input_count < 2 and effect in {"split_screen", "photo_stack", "double_exposure", "beat_montage"}:
+        effect = "cinematic_depth"
+    filters: list[str] = []
+
+    if effect == "split_screen":
+        gap = max(2, round(cfg.width * .004))
+        left_width = (cfg.width - gap) // 2
+        right_width = cfg.width - gap - left_width
+        _adapt_image(filters, 0, "left", left_width, cfg.height, cfg)
+        _adapt_image(filters, 1, "right", right_width, cfg.height, cfg)
+        filters.append(f"[left][right]hstack=inputs=2[panels]")
+        filters.append(
+            f"color=c=white@0.22:s={gap}x{cfg.height}:r={cfg.fps}:d={duration:.4f}[divider];"
+            f"[panels][divider]overlay=x={left_width}:y=0:shortest=1[composite]"
+        )
+        return filters, "[composite]"
+
+    if effect == "photo_stack":
+        _adapt_image(filters, 0, "base", cfg.width, cfg.height, cfg)
+        current = "[base]"
+        card_width, card_height = round(cfg.width * .56), round(cfg.height * .64)
+        for layer_index in range(1, min(input_count, 3)):
+            angle = -.026 if layer_index % 2 else .022
+            filters.append(
+                f"[{layer_index}:v]scale={card_width}:{card_height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                f"pad=iw+14:ih+14:7:7:color=white,format=rgba,"
+                f"rotate={angle}:ow=rotw(iw):oh=roth(ih):c=none[card{layer_index}]"
+            )
+            planned_enter = shot.layers[layer_index - 1].enter_offset
+            enter = planned_enter if planned_enter > 0 else min(duration * .58, duration * (.18 + .22 * (layer_index - 1)))
+            x = round(cfg.width * (.08 if layer_index % 2 else .40))
+            y = round(cfg.height * (.09 if layer_index % 2 else .15))
+            out = f"[stack{layer_index}]"
+            filters.append(
+                f"{current}[card{layer_index}]overlay="
+                f"x='{x}+(1-min(max((t-{enter:.3f})/.35,0),1))*{(-90 if layer_index % 2 else 90)}':"
+                f"y={y}:enable='gte(t,{enter:.3f})':shortest=1{out}"
+            )
+            current = out
+        return filters, current
+
+    if effect == "double_exposure":
+        _adapt_image(filters, 0, "exposure0", cfg.width, cfg.height, cfg)
+        _adapt_image(filters, 1, "exposure1", cfg.width, cfg.height, cfg)
+        filters.append("[exposure0][exposure1]blend=all_mode=screen:all_opacity=0.34[composite]")
+        return filters, "[composite]"
+
+    if effect == "beat_montage":
+        count = min(input_count, 4)
+        for index in range(count):
+            _adapt_image(filters, index, f"montage{index}", cfg.width, cfg.height, cfg)
+        current = "[montage0]"
+        planned_starts = [0.0, *(layer.enter_offset for layer in shot.layers[:count - 1])]
+        if any(value <= 0 for value in planned_starts[1:]):
+            planned_starts = [duration * index / count for index in range(count)]
+        for index in range(1, count):
+            start = planned_starts[index]
+            end = duration if index == count - 1 else planned_starts[index + 1]
+            out = f"[sequence{index}]"
+            filters.append(
+                f"{current}[montage{index}]overlay=0:0:"
+                f"enable='between(t,{start:.4f},{end:.4f})':shortest=1{out}"
+            )
+            current = out
+        return filters, current
+
+    _adapt_image(filters, 0, "adapted", cfg.width, cfg.height, cfg)
+    frames = max(1, round(duration * cfg.fps))
+    intensity = max(.35, art.camera_intensity) * (1 + shot.melody * .18)
+    amount = ({"pan_reveal": .075, "focus_pull": .045}.get(effect, .055)
+              * intensity * ({"dynamic": 1.35, "gentle": .7}.get(shot.motion, 1.0)))
+    if shot.edit_intent == "breathe" or shot.section == "outro":
+        zoom = f"max(1+{amount:.5f}-on/{frames}*{amount:.5f},1)"
+    else:
+        zoom = f"min(1+on/{frames}*{amount:.5f},{1 + amount:.5f})"
+    direction = -1 if (shot.media_id + max(0, shot.section_index)) % 2 else 1
+    pan = .18 if effect == "pan_reveal" else .06
+    progress = f"on/{max(1, frames - 1)}"
+    x = f"clip((iw-iw/zoom)/2+{direction}*(iw-iw/zoom)*{pan}*({progress}-.5),0,iw-iw/zoom)"
+    y = f"clip((ih-ih/zoom)/2-(ih-ih/zoom)*.035*{progress},0,ih-ih/zoom)"
+    filters.append(
+        f"[adapted]zoompan=z='{zoom}':x='{x}':y='{y}':d=1:"
+        f"s={cfg.width}x{cfg.height}:fps={cfg.fps}[composite]"
+    )
+    return filters, "[composite]"
+
+
+def _adapt_image(
+    filters: list[str], input_index: int, label: str,
+    width: int, height: int, cfg: RenderConfig,
+) -> None:
+    """Fit without distortion and fill any letterbox area with a blurred copy."""
+    foreground_width = max(2, round(width * cfg.image_foreground_scale / 2) * 2)
+    foreground_height = max(2, round(height * cfg.image_foreground_scale / 2) * 2)
+    blur = cfg.image_background_blur if cfg.blurred_image_background else 0
+    background_effect = f"gblur=sigma={blur:.2f},eq=brightness=-.055:saturation=.88" if blur > 0 else "null"
+    filters.append(
+        f"[{input_index}:v]split=2[{label}bgsrc][{label}fgsrc];"
+        f"[{label}bgsrc]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={width}:{height},{background_effect},setsar=1[{label}bg];"
+        f"[{label}fgsrc]scale={foreground_width}:{foreground_height}:"
+        f"force_original_aspect_ratio=decrease:flags=lanczos,setsar=1[{label}fg];"
+        f"[{label}bg][{label}fg]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1[{label}]"
+    )
 
 
 def _safe_focus(value: list[float]) -> tuple[float, float]:
