@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image
 
+import beatforge.models.vision_index as vision_index_module
 from beatforge.media import MediaAsset
 from beatforge.models.vision_index import (
     VisionIndex,
@@ -204,3 +205,57 @@ def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, mon
     assert [pair[0] for pair in predictions[0]] == ["first", "second"]
     assert predictions[0][0][1] is frames[0]
     assert predictions[0][1][1] is frames[2]
+
+
+def test_video_frame_extraction_retries_when_ffmpeg_creates_no_output(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    index = VisionIndex.__new__(VisionIndex)
+    index.cache_dir = tmp_path / "frames"
+    index.cache_dir.mkdir()
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video-placeholder")
+    asset = MediaAsset(0, video, "video", 10.0, 1920, 1080)
+    attempts = []
+
+    def fake_command(args, *, capture=False):
+        assert capture is True
+        attempts.append(float(args[args.index("-ss") + 1]))
+        if len(attempts) == 2:
+            Image.new("RGB", (8, 8), "blue").save(args[-1])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(vision_index_module, "command", fake_command)
+
+    frames, sample_times = index._video_frame_samples(asset, 1)
+
+    assert attempts == [.1, 0.0]
+    assert len(frames) == 1
+    np.testing.assert_array_equal(sample_times, [0.0])
+
+
+def test_quantized_embedding_does_not_pass_device_with_device_map(monkeypatch) -> None:
+    created = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, _model_name, **kwargs):
+            created.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=FakeSentenceTransformer),
+    )
+    monkeypatch.setattr(
+        vision_index_module,
+        "quantized_load_kwargs",
+        lambda *_args: {"quantization_config": "fake"},
+    )
+    index = VisionIndex.__new__(VisionIndex)
+    index.backend = "wemm-embedding"
+    index.torch = SimpleNamespace(bfloat16="bfloat16", float32="float32")
+
+    index._init_multimodal_embedding("fake-model", "cuda", True, "nf4")
+
+    assert "device" not in created
+    assert created["model_kwargs"]["device_map"] == "auto"

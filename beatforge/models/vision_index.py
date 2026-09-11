@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import gc
+import subprocess
 import sys
 from pathlib import Path
 
@@ -66,12 +67,15 @@ class VisionIndex:
                 unique_texts, query=True, show_progress_bar=_progress_enabled(), **query_options,
             ))
             documents: list[str | Image.Image | dict[str, object]] = []
-            spans: list[tuple[int, int, list[Image.Image] | None]] = []
+            spans: list[tuple[int, int, list[Image.Image] | None, np.ndarray | None]] = []
             for asset in tqdm(
                 assets, desc="视觉索引 · 素材预处理", unit="个", dynamic_ncols=True, disable=None,
             ):
                 start = len(documents)
-                frames = None if asset.kind == "image" else self._video_frames(asset, frame_samples)
+                frames, sample_times = (
+                    (None, None) if asset.kind == "image"
+                    else self._video_frame_samples(asset, frame_samples)
+                )
                 if frames is None:
                     image_document: str | dict[str, object] = str(asset.file)
                     if self.backend == "wemm-embedding":
@@ -82,7 +86,7 @@ class VisionIndex:
                         documents.extend({"image": frame} for frame in frames)
                     else:
                         documents.extend(frames)
-                spans.append((start, len(documents), frames))
+                spans.append((start, len(documents), frames, sample_times))
             document_features = np.asarray(self._encode_multimodal(
                 documents,
                 query=False,
@@ -94,13 +98,13 @@ class VisionIndex:
             score_columns: list[np.ndarray] = []
             source_columns: list[np.ndarray] = []
             asset_spans = zip(assets, spans)
-            for asset, (start, end, frames) in tqdm(
+            for asset, (start, end, frames, sample_times) in tqdm(
                 asset_spans, total=len(assets), desc="视觉索引 · 相似度聚合", unit="个",
                 dynamic_ncols=True, disable=None,
             ):
                 frame_scores = all_frame_scores[:, start:end]
                 if asset.kind == "video":
-                    sample_times = self._video_sample_times(asset, frame_samples)
+                    assert sample_times is not None
                     source_columns.append(sample_times[np.argmax(frame_scores, axis=1)])
                     self._update_video_visuals(asset, frames or [])
                     top_count = min(2, frame_scores.shape[1])
@@ -114,7 +118,8 @@ class VisionIndex:
             if self.reranker_model and self.rerank_top_k > 0:
                 scores = self._rerank(
                     unique_texts, assets, scores, frame_samples,
-                    asset_frames=[frames for _start, _end, frames in spans],
+                    asset_frames=[frames for _start, _end, frames, _times in spans],
+                    asset_frame_times=[times for _start, _end, _frames, times in spans],
                 )
             self.best_source_starts = self.best_source_starts[text_rows]
             return scores[text_rows]
@@ -159,10 +164,11 @@ class VisionIndex:
         if quantization != "none" and device == "cuda":
             model_kwargs["device_map"] = "auto"
         load_options = {
-            "device": device,
             "model_kwargs": model_kwargs,
             "local_files_only": offline,
         }
+        if "device_map" not in model_kwargs:
+            load_options["device"] = device
         if self.backend == "wemm-embedding":
             load_options["trust_remote_code"] = True
         self.model = SentenceTransformer(model_name, **load_options)
@@ -171,6 +177,7 @@ class VisionIndex:
     def _rerank(
         self, texts: list[str], assets: list[MediaAsset], base: np.ndarray, frame_samples: int,
         *, asset_frames: list[list[Image.Image] | None] | None = None,
+        asset_frame_times: list[np.ndarray | None] | None = None,
     ) -> np.ndarray:
         del self.model
         gc.collect()
@@ -203,9 +210,11 @@ class VisionIndex:
                     document: str | Image.Image = str(asset.file)
                 else:
                     frames = asset_frames[int(index)] if asset_frames is not None else None
+                    sample_times = asset_frame_times[int(index)] if asset_frame_times is not None else None
                     if frames is None:
-                        frames = self._video_frames(asset, frame_samples)
-                    sample_times = self._video_sample_times(asset, len(frames))
+                        frames, sample_times = self._video_frame_samples(asset, frame_samples)
+                    if sample_times is None:
+                        sample_times = self._video_sample_times(asset, len(frames))
                     target_time = float(self.best_source_starts[row, int(index)])
                     document = frames[_nearest_sample_index(sample_times, target_time)]
                 pairs.append((text, document))
@@ -253,17 +262,61 @@ class VisionIndex:
         return np.stack(vectors)
 
     def _video_frames(self, asset: MediaAsset, count: int) -> list[Image.Image]:
+        frames, _sample_times = self._video_frame_samples(asset, count)
+        return frames
+
+    def _video_frame_samples(self, asset: MediaAsset, count: int) -> tuple[list[Image.Image], np.ndarray]:
         digest = hashlib.sha1(f"{asset.file}:{asset.file.stat().st_mtime_ns}".encode()).hexdigest()[:12]
         frames: list[Image.Image] = []
-        for index, time in enumerate(self._video_sample_times(asset, count)):
-            target = self.cache_dir / f"{digest}-{index}.jpg"
-            if not target.exists():
-                command([
-                    "ffmpeg", "-y", "-v", "error", "-ss", f"{time:.3f}", "-i", str(asset.file),
-                    "-frames:v", "1", "-vf", "scale=768:-2", str(target),
-                ])
-            frames.append(Image.open(target).convert("RGB"))
-        return frames
+        actual_times: list[float] = []
+        failed_samples = 0
+        for requested_time in self._video_sample_times(asset, count):
+            decoded = None
+            for time in _frame_attempt_times(float(requested_time), asset.duration):
+                if any(abs(time - previous) < .001 for previous in actual_times):
+                    continue
+                target = self.cache_dir / f"{digest}-{round(time * 1000):012d}.jpg"
+                try:
+                    decoded = (_open_rgb(target), time) if target.is_file() else None
+                except OSError:
+                    target.unlink(missing_ok=True)
+                if decoded is not None:
+                    break
+                temporary = target.with_name(f"{target.stem}.part.jpg")
+                temporary.unlink(missing_ok=True)
+                try:
+                    command([
+                        "ffmpeg", "-y", "-v", "error", "-ss", f"{time:.3f}",
+                        "-i", str(asset.file), "-an", "-sn", "-frames:v", "1",
+                        "-vf", "scale=768:-2", str(temporary),
+                    ], capture=True)
+                    if not temporary.is_file() or temporary.stat().st_size == 0:
+                        continue
+                    frame = _open_rgb(temporary)
+                    temporary.replace(target)
+                    decoded = (frame, time)
+                    break
+                except (OSError, subprocess.CalledProcessError):
+                    continue
+                finally:
+                    temporary.unlink(missing_ok=True)
+            if decoded is None:
+                failed_samples += 1
+                continue
+            frame, actual_time = decoded
+            frames.append(frame)
+            actual_times.append(actual_time)
+        if not frames:
+            raise RuntimeError(
+                f"无法从视频抽取任何可用画面：{asset.file}。请检查文件是否损坏、"
+                "视频编码是否受当前 FFmpeg 支持。"
+            )
+        if failed_samples:
+            tqdm.write(
+                f"警告：{asset.file.name} 有 {failed_samples}/{count} 个采样点无法解码，"
+                f"已使用其余 {len(frames)} 帧继续分析。"
+            )
+        return frames, np.asarray(actual_times, dtype=float)
 
     @staticmethod
     def _video_sample_times(asset: MediaAsset, count: int) -> np.ndarray:
@@ -304,6 +357,34 @@ def _nearest_sample_index(sample_times: np.ndarray, target: float) -> int:
 def _progress_enabled() -> bool:
     """Only render model-internal progress bars in an interactive terminal."""
     return bool(getattr(sys.stderr, "isatty", lambda: False)())
+
+
+def _frame_attempt_times(requested: float, duration: float) -> list[float]:
+    """Try the requested position first, then progressively safer earlier positions."""
+    safe_end = max(0.0, duration - .5)
+    candidates = [
+        requested,
+        min(requested, safe_end),
+        requested - .25,
+        requested - .75,
+        requested - 1.5,
+        requested - 3.0,
+        0.0,
+    ]
+    output: list[float] = []
+    for candidate in candidates:
+        value = round(float(np.clip(candidate, 0, max(duration, 0))), 3)
+        if value not in output:
+            output.append(value)
+    return output
+
+
+def _open_rgb(path: Path) -> Image.Image:
+    """Load and detach a cached frame so the underlying file can be replaced safely."""
+    with Image.open(path) as source:
+        frame = source.convert("RGB")
+        frame.load()
+    return frame
 
 
 def _unique_with_inverse(values: list[str]) -> tuple[list[str], np.ndarray]:
