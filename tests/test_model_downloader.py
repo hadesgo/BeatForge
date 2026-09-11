@@ -19,9 +19,9 @@ def test_default_manifest_contains_every_configured_huggingface_model_once() -> 
         "Qwen/Qwen3-ASR-1.7B-hf",
         "Qwen/Qwen3-ForcedAligner-0.6B-hf",
         "laion/clap-htsat-fused",
-        "tencent/WeMM-Embedding-9B",
-        "Qwen/Qwen3-VL-Reranker-8B",
-        "Qwen/Qwen3.5-9B",
+        "tencent/WeMM-Embedding-4B",
+        "Qwen/Qwen3-VL-Reranker-2B",
+        "XHToken/Spark-X2.5-4B",
     ]
 
 
@@ -94,9 +94,9 @@ def test_modelscope_is_preferred_and_manifest_resolves_local_paths(tmp_path: Pat
 
     assert len(calls) == 4
     assert all("model_id" in call and "repo_id" not in call for call in calls)
-    assert calls[3]["model_id"] == "tencent-community/WeMM-Embedding-9B"
+    assert calls[3]["model_id"] == "tencent-community/WeMM-Embedding-4B"
     assert all(model.source == "modelscope" for model in models)
-    assert models[3].repo_id == "tencent/WeMM-Embedding-9B"
+    assert models[3].repo_id == "tencent/WeMM-Embedding-4B"
     assert resolved[config.qwen_asr_model] == str(Path(models[0].local_path).resolve())
     assert resolved[config.vision_model] == str(Path(models[3].local_path).resolve())
 

@@ -142,14 +142,16 @@ def test_director_loads_in_process_with_memory_limit_and_releases_cuda(monkeypat
     )
     fake_torch = SimpleNamespace(cuda=fake_cuda, inference_mode=nullcontext)
     fake_transformers = SimpleNamespace(
+        AutoModelForCausalLM=Model,
         AutoModelForMultimodalLM=Model,
         AutoProcessor=Processor,
+        AutoTokenizer=Processor,
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 
     result = _generate_treatment(
-        {}, AIConfig(offline=True, director_quantization="none"), "cuda", tmp_path,
+        {}, AIConfig(offline=True, director_backend="multimodal"), "cuda", tmp_path,
     )
 
     assert result.concept == _treatment().concept
@@ -159,6 +161,68 @@ def test_director_loads_in_process_with_memory_limit_and_releases_cuda(monkeypat
     assert options["offload_folder"] == str(tmp_path / "director-offload")
     assert calls["empty"] == 1
     assert calls["ipc"] == 1
+
+
+def test_spark_director_uses_text_causal_lm_without_contact_sheet(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {}
+    response = _treatment().model_dump_json()
+
+    class Batch(dict):
+        def __init__(self):
+            super().__init__(input_ids=np.zeros((1, 2), dtype=int))
+
+        def to(self, _device):
+            return self
+
+    class Tokenizer:
+        @classmethod
+        def from_pretrained(cls, model_name, **options):
+            calls["tokenizer"] = (model_name, options)
+            return cls()
+
+        def apply_chat_template(self, *_args, **_kwargs):
+            return Batch()
+
+        def batch_decode(self, *_args, **_kwargs):
+            return [response]
+
+    class CausalModel:
+        device = "cpu"
+
+        @classmethod
+        def from_pretrained(cls, model_name, **options):
+            calls["causal_model"] = (model_name, options)
+            return cls()
+
+        def eval(self):
+            return self
+
+        def generate(self, **_kwargs):
+            return np.zeros((1, 3), dtype=int)
+
+    class Unexpected:
+        @classmethod
+        def from_pretrained(cls, *_args, **_kwargs):
+            raise AssertionError("text director must not use multimodal loaders")
+
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False), inference_mode=nullcontext,
+    )
+    fake_transformers = SimpleNamespace(
+        AutoModelForCausalLM=CausalModel,
+        AutoModelForMultimodalLM=Unexpected,
+        AutoProcessor=Unexpected,
+        AutoTokenizer=Tokenizer,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    result = _generate_treatment({}, AIConfig(offline=True), "cpu", tmp_path)
+
+    assert result.concept == _treatment().concept
+    assert calls["causal_model"][0] == "XHToken/Spark-X2.5-4B"
+    assert calls["causal_model"][1]["dtype"] == "auto"
+    assert "quantization_config" not in calls["causal_model"][1]
 
 
 def test_director_contact_sheet_contains_real_candidates(tmp_path: Path) -> None:

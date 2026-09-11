@@ -15,7 +15,6 @@ from beatforge.audio import AudioAnalysis
 from beatforge.config import AIConfig
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
-from beatforge.models.quantization import quantized_load_kwargs
 from beatforge.runtime import command
 
 
@@ -66,9 +65,11 @@ def direct_mv(
     source_starts: np.ndarray | None = None,
 ) -> DirectorTreatment:
     context = _build_context(analysis, lyrics, assets, similarities, source_starts)
-    visual_reference = _build_contact_sheet(
-        assets, similarities, cache_dir, config.director_contact_sheet_assets, source_starts,
-    )
+    visual_reference = None
+    if config.director_backend == "multimodal":
+        visual_reference = _build_contact_sheet(
+            assets, similarities, cache_dir, config.director_contact_sheet_assets, source_starts,
+        )
     treatment = _generate_treatment(context, config, device, cache_dir, visual_reference)
     return _sanitize(treatment, len(analysis.sections) - 1, {asset.id for asset in assets})
 
@@ -82,7 +83,7 @@ def _generate_treatment(
 ) -> DirectorTreatment:
     try:
         import torch
-        from transformers import AutoModelForMultimodalLM, AutoProcessor
+        import transformers
     except ImportError as exc:
         raise RuntimeError("AI 导演需要 ai 与 ai-cpu/ai-cuda/ai-cuda126 extra") from exc
 
@@ -93,7 +94,6 @@ def _generate_treatment(
         "local_files_only": config.offline,
         "low_cpu_mem_usage": True,
     }
-    load_options.update(quantized_load_kwargs(config.director_quantization, torch, device))
     if device == "cuda":
         total_gb = torch.cuda.get_device_properties(0).total_memory / 2**30
         gpu_limit = min(config.director_gpu_memory_gb, max(1.0, total_gb - 1.5))
@@ -105,8 +105,20 @@ def _generate_treatment(
     processor = None
     model = None
     try:
-        processor = AutoProcessor.from_pretrained(config.director_model, local_files_only=config.offline)
-        model = AutoModelForMultimodalLM.from_pretrained(config.director_model, **load_options)
+        common = {
+            "local_files_only": config.offline,
+            "trust_remote_code": True,
+        }
+        if config.director_backend == "text":
+            processor = transformers.AutoTokenizer.from_pretrained(config.director_model, **common)
+            model = transformers.AutoModelForCausalLM.from_pretrained(
+                config.director_model, trust_remote_code=True, **load_options,
+            )
+        else:
+            processor = transformers.AutoProcessor.from_pretrained(config.director_model, **common)
+            model = transformers.AutoModelForMultimodalLM.from_pretrained(
+                config.director_model, trust_remote_code=True, **load_options,
+            )
         model.eval()
         schema = json.dumps(DirectorTreatment.model_json_schema(), ensure_ascii=False)
         project_text = (

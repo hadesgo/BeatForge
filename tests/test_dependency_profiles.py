@@ -16,8 +16,12 @@ def test_cuda126_profile_uses_only_the_cuda126_index() -> None:
         "torchvision==0.29.0",
         "torchaudio==2.11.0",
         "torchcodec==0.16.0",
-        "bitsandbytes>=0.50.2",
     ]
+    assert all(
+        "bitsandbytes" not in dependency
+        for dependencies in extras.values()
+        for dependency in dependencies
+    )
 
     indexes = {item["name"]: item["url"] for item in project["tool"]["uv"]["index"]}
     assert indexes["pytorch-cu126"] == "https://download.pytorch.org/whl/cu126"

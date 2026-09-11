@@ -185,7 +185,6 @@ def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, mon
         float32="float32",
         cuda=SimpleNamespace(is_available=lambda: False, empty_cache=lambda: None),
     )
-    index.quantization = "nf4"
     index.reranker_model = "fake-reranker"
     index.rerank_top_k = 1
     index.batch_size = 2
@@ -197,12 +196,6 @@ def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, mon
         index, "_video_frames",
         lambda *_args: (_ for _ in ()).throw(AssertionError("cached frames must be reused")),
     )
-    monkeypatch.setattr(
-        vision_index_module,
-        "quantized_load_kwargs",
-        lambda *_args: {"quantization_config": "fake"},
-    )
-
     result = index._rerank(
         ["first", "second"], [asset], np.array([[.7], [.6]]), 3,
         asset_frames=[frames],
@@ -213,8 +206,9 @@ def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, mon
     assert [pair[0] for pair in predictions[0]] == ["first", "second"]
     assert predictions[0][0][1] is frames[0]
     assert predictions[0][1][1] is frames[2]
-    assert "device" not in created_options
-    assert created_options["model_kwargs"]["device_map"] == "auto"
+    assert created_options["device"] == "cuda"
+    assert created_options["model_kwargs"]["dtype"] == "bfloat16"
+    assert "quantization_config" not in created_options["model_kwargs"]
 
 
 def test_video_frame_extraction_retries_when_ffmpeg_creates_no_output(
@@ -244,7 +238,7 @@ def test_video_frame_extraction_retries_when_ffmpeg_creates_no_output(
     np.testing.assert_array_equal(sample_times, [0.0])
 
 
-def test_quantized_embedding_does_not_pass_device_with_device_map(monkeypatch) -> None:
+def test_embedding_uses_native_bfloat16_without_quantization(monkeypatch) -> None:
     created = {}
 
     class FakeSentenceTransformer:
@@ -256,19 +250,15 @@ def test_quantized_embedding_does_not_pass_device_with_device_map(monkeypatch) -
         "sentence_transformers",
         SimpleNamespace(SentenceTransformer=FakeSentenceTransformer),
     )
-    monkeypatch.setattr(
-        vision_index_module,
-        "quantized_load_kwargs",
-        lambda *_args: {"quantization_config": "fake"},
-    )
     index = VisionIndex.__new__(VisionIndex)
     index.backend = "wemm-embedding"
     index.torch = SimpleNamespace(bfloat16="bfloat16", float32="float32")
 
-    index._init_multimodal_embedding("fake-model", "cuda", True, "nf4")
+    index._init_multimodal_embedding("fake-model", "cuda", True)
 
-    assert "device" not in created
-    assert created["model_kwargs"]["device_map"] == "auto"
+    assert created["device"] == "cuda"
+    assert created["model_kwargs"]["dtype"] == "bfloat16"
+    assert "quantization_config" not in created["model_kwargs"]
 
 
 def test_qwen_reranker_uses_explicit_multimodal_module_chain(monkeypatch) -> None:
@@ -299,7 +289,7 @@ def test_qwen_reranker_uses_explicit_multimodal_module_chain(monkeypatch) -> Non
 
     result = _load_cross_encoder(
         FakeCrossEncoder,
-        "/models/Qwen3-VL-Reranker-8B",
+        "/models/Qwen3-VL-Reranker-2B",
         {"device_map": "auto", "dtype": "bfloat16"},
         device="cuda",
         offline=True,

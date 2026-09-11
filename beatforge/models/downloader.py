@@ -23,6 +23,7 @@ WHISPER_REPOS = {
 # to a local directory regardless of which provider supplied the snapshot.
 MODELSCOPE_REPO_ALIASES = {
     "tencent/WeMM-Embedding-9B": "tencent-community/WeMM-Embedding-9B",
+    "tencent/WeMM-Embedding-4B": "tencent-community/WeMM-Embedding-4B",
 }
 
 

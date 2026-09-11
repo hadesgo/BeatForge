@@ -86,8 +86,6 @@ def doctor() -> None:
     table.add_row("Qwen3-ASR Native", "OK" if native_asr else "未就绪", f"Transformers {transformers_version}")
     sentence_transformers = importlib.util.find_spec("sentence_transformers")
     table.add_row("WeMM / 视觉精排", "OK" if sentence_transformers else "未安装", "sentence-transformers>=5.7")
-    bitsandbytes = importlib.util.find_spec("bitsandbytes")
-    table.add_row("NF4 量化", "OK" if bitsandbytes else "未安装", "bitsandbytes>=0.50.2")
     table.add_row(
         "Music Structure", "OK" if importlib.util.find_spec("allin1_infer") else "未安装",
         "music-ai extra（All-In-One）",

@@ -11,7 +11,6 @@ from PIL import Image
 from tqdm.auto import tqdm
 
 from beatforge.media import MediaAsset, estimate_focus_point
-from beatforge.models.quantization import QuantizationMode, quantized_load_kwargs
 from beatforge.runtime import command
 
 
@@ -46,7 +45,6 @@ class VisionIndex:
     def __init__(
         self, model_name: str, device: str, offline: bool, cache_dir: Path, *, backend: str,
         reranker_model: str | None = None, rerank_top_k: int = 0,
-        quantization: QuantizationMode = "none",
         batch_size: int = 4,
     ) -> None:
         try:
@@ -60,12 +58,11 @@ class VisionIndex:
         self.offline = offline
         self.reranker_model = reranker_model
         self.rerank_top_k = rerank_top_k
-        self.quantization = quantization
         self.batch_size = batch_size
         self.cache_dir = cache_dir / "frames"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         if backend in {"wemm-embedding", "qwen3-vl-embedding"}:
-            self._init_multimodal_embedding(model_name, device, offline, quantization)
+            self._init_multimodal_embedding(model_name, device, offline)
             return
         dtype = torch.float16 if device == "cuda" else torch.float32
         self.processor = AutoProcessor.from_pretrained(model_name, local_files_only=offline)
@@ -177,7 +174,7 @@ class VisionIndex:
         return self._encode_multimodal(inputs, query=False, **kwargs)
 
     def _init_multimodal_embedding(
-        self, model_name: str, device: str, offline: bool, quantization: QuantizationMode,
+        self, model_name: str, device: str, offline: bool,
     ) -> None:
         try:
             from sentence_transformers import SentenceTransformer
@@ -185,15 +182,11 @@ class VisionIndex:
             raise RuntimeError("WeMM/Qwen 多模态检索需要 sentence-transformers>=5.7") from exc
         dtype = self.torch.bfloat16 if device == "cuda" else self.torch.float32
         model_kwargs = {"dtype": dtype, "attn_implementation": "sdpa"}
-        model_kwargs.update(quantized_load_kwargs(quantization, self.torch, device))
-        if quantization != "none" and device == "cuda":
-            model_kwargs["device_map"] = "auto"
         load_options = {
             "model_kwargs": model_kwargs,
             "local_files_only": offline,
+            "device": device,
         }
-        if "device_map" not in model_kwargs:
-            load_options["device"] = device
         if self.backend == "wemm-embedding":
             load_options["trust_remote_code"] = True
         self.model = SentenceTransformer(model_name, **load_options)
@@ -214,9 +207,6 @@ class VisionIndex:
             raise RuntimeError("Qwen3-VL-Reranker 需要 sentence-transformers>=5.4") from exc
         dtype = self.torch.bfloat16 if self.device == "cuda" else self.torch.float32
         model_kwargs = {"dtype": dtype, "attn_implementation": "sdpa"}
-        model_kwargs.update(quantized_load_kwargs(self.quantization, self.torch, self.device))
-        if self.quantization != "none" and self.device == "cuda":
-            model_kwargs["device_map"] = "auto"
         reranker = _load_cross_encoder(
             CrossEncoder, self.reranker_model, model_kwargs,
             device=self.device, offline=self.offline,

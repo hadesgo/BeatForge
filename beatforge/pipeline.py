@@ -85,7 +85,6 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
             backend=project.ai.vision_backend,
             reranker_model=model_path(project.ai.vision_reranker_model) if project.ai.vision_reranker_model else None,
             rerank_top_k=project.ai.vision_rerank_top_k,
-            quantization=project.ai.vision_quantization,
             batch_size=project.ai.vision_batch_size,
         )
         similarities = index.similarities([line.text for line in lyrics], assets, project.ai.frame_samples)

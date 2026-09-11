@@ -13,12 +13,11 @@ def test_project_paths_and_cpu_defaults(tmp_path: Path) -> None:
     assert config.ai.qwen_asr_model == "Qwen/Qwen3-ASR-1.7B-hf"
     assert config.ai.vision_backend == "wemm-embedding"
     assert config.ai.director_enabled is True
-    assert config.ai.vision_model == "tencent/WeMM-Embedding-9B"
-    assert config.ai.vision_quantization == "nf4"
+    assert config.ai.vision_model == "tencent/WeMM-Embedding-4B"
     assert config.ai.vision_batch_size == 4
     assert config.ai.frame_samples == 8
-    assert config.ai.director_model == "Qwen/Qwen3.5-9B"
-    assert config.ai.director_quantization == "nf4"
+    assert config.ai.director_model == "XHToken/Spark-X2.5-4B"
+    assert config.ai.director_backend == "text"
     assert config.render.subtitle_effect == "auto"
     assert config.render.subtitle_font == "auto"
     assert config.render.subtitle_fonts["energetic"] == "preset:energetic"
