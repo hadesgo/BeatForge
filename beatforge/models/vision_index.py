@@ -192,11 +192,9 @@ class VisionIndex:
         model_kwargs.update(quantized_load_kwargs(self.quantization, self.torch, self.device))
         if self.quantization != "none" and self.device == "cuda":
             model_kwargs["device_map"] = "auto"
-        reranker = CrossEncoder(
-            self.reranker_model,
-            device=self.device,
-            model_kwargs=model_kwargs,
-            local_files_only=self.offline,
+        reranker = _load_cross_encoder(
+            CrossEncoder, self.reranker_model, model_kwargs,
+            device=self.device, offline=self.offline,
         )
         output = base.copy()
         selections: list[tuple[int, np.ndarray]] = []
@@ -385,6 +383,50 @@ def _open_rgb(path: Path) -> Image.Image:
         frame = source.convert("RGB")
         frame.load()
     return frame
+
+
+def _load_cross_encoder(CrossEncoder, model_name: str, model_kwargs: dict, *, device: str, offline: bool):
+    """Load Qwen VL rerankers explicitly to bypass incompatible saved ST module metadata."""
+    if "qwen3-vl-reranker" not in model_name.casefold():
+        options = {"model_kwargs": model_kwargs, "local_files_only": offline}
+        if "device_map" not in model_kwargs:
+            options["device"] = device
+        return CrossEncoder(model_name, **options)
+
+    try:
+        from sentence_transformers.cross_encoder.modules import LogitScore, Transformer
+
+        shared = {"local_files_only": offline}
+        transformer = Transformer(
+            model_name,
+            transformer_task="any-to-any",
+            model_kwargs={**shared, **model_kwargs},
+            processor_kwargs=shared.copy(),
+            config_kwargs=shared.copy(),
+        )
+        true_token_id = transformer.tokenizer.convert_tokens_to_ids("yes")
+        false_token_id = transformer.tokenizer.convert_tokens_to_ids("no")
+        if not isinstance(true_token_id, int) or not isinstance(false_token_id, int):
+            raise ValueError("tokenizer 没有单独的 yes/no token")
+        options = {
+            "modules": [
+                transformer,
+                LogitScore(true_token_id=true_token_id, false_token_id=false_token_id),
+            ],
+        }
+        if "device_map" in model_kwargs:
+            class DeviceMappedCrossEncoder(CrossEncoder):
+                def to(self, *_args, **_kwargs):
+                    return self
+
+            return DeviceMappedCrossEncoder(**options)
+        options["device"] = device
+        return CrossEncoder(**options)
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "无法按 Transformer(any-to-any) + LogitScore 加载 Qwen3-VL-Reranker。"
+            "请确认 sentence-transformers>=5.4、transformers 和模型快照完整。"
+        ) from exc
 
 
 def _unique_with_inverse(values: list[str]) -> tuple[list[str], np.ndarray]:

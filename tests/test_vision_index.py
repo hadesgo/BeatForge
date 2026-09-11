@@ -9,6 +9,7 @@ import beatforge.models.vision_index as vision_index_module
 from beatforge.media import MediaAsset
 from beatforge.models.vision_index import (
     VisionIndex,
+    _load_cross_encoder,
     _nearest_sample_index,
     _unique_with_inverse,
     blend_rerank_scores,
@@ -163,10 +164,11 @@ def test_unique_with_inverse_preserves_first_seen_order() -> None:
 
 def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, monkeypatch) -> None:
     predictions = []
+    created_options = {}
 
     class FakeCrossEncoder:
-        def __init__(self, *_args, **_kwargs):
-            pass
+        def __init__(self, *_args, **kwargs):
+            created_options.update(kwargs)
 
         def predict(self, pairs, **_kwargs):
             predictions.append(pairs)
@@ -177,12 +179,13 @@ def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, mon
     )
     index = VisionIndex.__new__(VisionIndex)
     index.model = object()
-    index.device = "cpu"
+    index.device = "cuda"
     index.torch = SimpleNamespace(
+        bfloat16="bfloat16",
         float32="float32",
         cuda=SimpleNamespace(is_available=lambda: False, empty_cache=lambda: None),
     )
-    index.quantization = "none"
+    index.quantization = "nf4"
     index.reranker_model = "fake-reranker"
     index.rerank_top_k = 1
     index.batch_size = 2
@@ -193,6 +196,11 @@ def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, mon
     monkeypatch.setattr(
         index, "_video_frames",
         lambda *_args: (_ for _ in ()).throw(AssertionError("cached frames must be reused")),
+    )
+    monkeypatch.setattr(
+        vision_index_module,
+        "quantized_load_kwargs",
+        lambda *_args: {"quantization_config": "fake"},
     )
 
     result = index._rerank(
@@ -205,6 +213,8 @@ def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, mon
     assert [pair[0] for pair in predictions[0]] == ["first", "second"]
     assert predictions[0][0][1] is frames[0]
     assert predictions[0][1][1] is frames[2]
+    assert "device" not in created_options
+    assert created_options["model_kwargs"]["device_map"] == "auto"
 
 
 def test_video_frame_extraction_retries_when_ffmpeg_creates_no_output(
@@ -259,3 +269,46 @@ def test_quantized_embedding_does_not_pass_device_with_device_map(monkeypatch) -
 
     assert "device" not in created
     assert created["model_kwargs"]["device_map"] == "auto"
+
+
+def test_qwen_reranker_uses_explicit_multimodal_module_chain(monkeypatch) -> None:
+    created = {}
+
+    class FakeTransformer:
+        def __init__(self, model_name, **kwargs):
+            created["transformer"] = (model_name, kwargs)
+            self.tokenizer = SimpleNamespace(
+                convert_tokens_to_ids=lambda token: {"yes": 9693, "no": 2152}[token],
+            )
+
+    class FakeLogitScore:
+        def __init__(self, **kwargs):
+            created["logit_score"] = kwargs
+
+    class FakeCrossEncoder:
+        def __init__(self, *args, **kwargs):
+            created["cross_encoder"] = (args, kwargs)
+            self.to("cuda")
+
+        def to(self, *_args, **_kwargs):
+            created["moved_after_device_map"] = True
+            return self
+
+    module = SimpleNamespace(Transformer=FakeTransformer, LogitScore=FakeLogitScore)
+    monkeypatch.setitem(sys.modules, "sentence_transformers.cross_encoder.modules", module)
+
+    result = _load_cross_encoder(
+        FakeCrossEncoder,
+        "/models/Qwen3-VL-Reranker-8B",
+        {"device_map": "auto", "dtype": "bfloat16"},
+        device="cuda",
+        offline=True,
+    )
+
+    assert isinstance(result, FakeCrossEncoder)
+    assert created["transformer"][1]["transformer_task"] == "any-to-any"
+    assert created["transformer"][1]["model_kwargs"]["local_files_only"] is True
+    assert created["logit_score"] == {"true_token_id": 9693, "false_token_id": 2152}
+    assert created["cross_encoder"][0] == ()
+    assert "device" not in created["cross_encoder"][1]
+    assert "moved_after_device_map" not in created
