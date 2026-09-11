@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import gc
+import sys
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from tqdm.auto import tqdm
 
 from beatforge.media import MediaAsset, estimate_focus_point
 from beatforge.models.quantization import QuantizationMode, quantized_load_kwargs
@@ -60,10 +62,14 @@ class VisionIndex:
                     "Retrieve the music-video shot that best matches the lyrics, narrative action, "
                     "scene, and emotional atmosphere."
                 )
-            text_features = np.asarray(self._encode_multimodal(unique_texts, query=True, **query_options))
+            text_features = np.asarray(self._encode_multimodal(
+                unique_texts, query=True, show_progress_bar=_progress_enabled(), **query_options,
+            ))
             documents: list[str | Image.Image | dict[str, object]] = []
             spans: list[tuple[int, int, list[Image.Image] | None]] = []
-            for asset in assets:
+            for asset in tqdm(
+                assets, desc="视觉索引 · 素材预处理", unit="个", dynamic_ncols=True, disable=None,
+            ):
                 start = len(documents)
                 frames = None if asset.kind == "image" else self._video_frames(asset, frame_samples)
                 if frames is None:
@@ -82,11 +88,16 @@ class VisionIndex:
                 query=False,
                 normalize_embeddings=True,
                 convert_to_numpy=True,
+                show_progress_bar=_progress_enabled(),
             ))
             all_frame_scores = text_features @ document_features.T
             score_columns: list[np.ndarray] = []
             source_columns: list[np.ndarray] = []
-            for asset, (start, end, frames) in zip(assets, spans):
+            asset_spans = zip(assets, spans)
+            for asset, (start, end, frames) in tqdm(
+                asset_spans, total=len(assets), desc="视觉索引 · 相似度聚合", unit="个",
+                dynamic_ncols=True, disable=None,
+            ):
                 frame_scores = all_frame_scores[:, start:end]
                 if asset.kind == "video":
                     sample_times = self._video_sample_times(asset, frame_samples)
@@ -107,7 +118,12 @@ class VisionIndex:
                 )
             self.best_source_starts = self.best_source_starts[text_rows]
             return scores[text_rows]
-        image_features = np.stack([self._asset_embedding(asset, frame_samples) for asset in assets])
+        image_features = np.stack([
+            self._asset_embedding(asset, frame_samples)
+            for asset in tqdm(
+                assets, desc="视觉索引 · 素材编码", unit="个", dynamic_ncols=True, disable=None,
+            )
+        ])
         text_features = self._text_embeddings(unique_texts)
         return (text_features @ image_features.T)[text_rows]
 
@@ -196,6 +212,7 @@ class VisionIndex:
         values = np.asarray(
             reranker.predict(
                 pairs, batch_size=self.batch_size,
+                show_progress_bar=_progress_enabled(),
                 prompt=(
                     "Judge whether the candidate shot is suitable for a polished music video. "
                     "Prioritize lyrical meaning, emotional atmosphere, composition, subject action, "
@@ -282,6 +299,11 @@ def _nearest_sample_index(sample_times: np.ndarray, target: float) -> int:
     if sample_times.size == 0:
         return 0
     return int(np.argmin(np.abs(sample_times - target)))
+
+
+def _progress_enabled() -> bool:
+    """Only render model-internal progress bars in an interactive terminal."""
+    return bool(getattr(sys.stderr, "isatty", lambda: False)())
 
 
 def _unique_with_inverse(values: list[str]) -> tuple[list[str], np.ndarray]:
