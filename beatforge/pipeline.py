@@ -30,7 +30,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     if use_ai:
         require_usable_ai_device(project.ai.device, device)
     optimize_torch_runtime(device)
-    from beatforge.models.downloader import WHISPER_REPOS, load_download_manifest
+    from beatforge.models.downloader import load_download_manifest
     downloaded = load_download_manifest(project.cache_dir / "models.json")
 
     def model_path(repo_id: str) -> str:
@@ -43,15 +43,12 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     elif use_ai:
         from beatforge.models.transcriber import transcribe
         lyrics = transcribe(
-            project.music, backend=project.ai.asr_backend,
+            project.music,
             qwen_model=model_path(project.ai.qwen_asr_model),
             qwen_aligner=model_path(project.ai.qwen_aligner_model),
-            whisper_model=model_path(WHISPER_REPOS.get(
-                project.ai.whisper_model, project.ai.whisper_model,
-            )), device=device,
-            compute_type=project.ai.whisper_compute_type, offline=project.ai.offline,
+            device=device, offline=project.ai.offline,
         )
-        write_srt(lyrics, project.cache_dir / "whisper.srt")
+        write_srt(lyrics, project.cache_dir / "asr.srt")
         release_gpu()
     else:
         lyrics = []
@@ -127,8 +124,8 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     plan = {
         "version": 3,
         "models": {
-            "asr": project.ai.qwen_asr_model if use_ai and project.ai.asr_backend == "qwen3" else project.ai.whisper_model if use_ai else None,
-            "aligner": project.ai.qwen_aligner_model if use_ai and project.ai.asr_backend == "qwen3" else None,
+            "asr": project.ai.qwen_asr_model if use_ai else None,
+            "aligner": project.ai.qwen_aligner_model if use_ai else None,
             "audio": project.ai.clap_model if use_ai else None,
             "vision": project.ai.vision_model if similarities is not None else None,
             "vision_reranker": project.ai.vision_reranker_model if similarities is not None else None,

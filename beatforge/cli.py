@@ -73,12 +73,6 @@ def doctor() -> None:
             f"{exc} · 请用同一个 uv profile 重新同步 torch/vision/audio",
         )
     try:
-        import ctranslate2
-        types = ", ".join(sorted(ctranslate2.get_supported_compute_types(resolve_device("auto"))))
-        table.add_row("CTranslate2", "OK", types)
-    except (ImportError, RuntimeError) as exc:
-        table.add_row("CTranslate2", "未就绪", str(exc))
-    try:
         transformers_version = importlib.metadata.version("transformers")
         native_asr = tuple(map(int, transformers_version.split(".")[:2])) >= (5, 13)
     except (importlib.metadata.PackageNotFoundError, ValueError):

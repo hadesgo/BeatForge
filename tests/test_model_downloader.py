@@ -25,13 +25,10 @@ def test_default_manifest_contains_every_configured_huggingface_model_once() -> 
     ]
 
 
-def test_whisper_backend_resolves_short_model_name_and_deduplicates() -> None:
-    config = AIConfig(
-        asr_backend="faster-whisper", whisper_model="large-v3-turbo",
-        director_model="laion/clap-htsat-fused",
-    )
+def test_model_manifest_deduplicates_shared_repository() -> None:
+    config = AIConfig(director_model="laion/clap-htsat-fused")
     repos = [item.repo_id for item in required_models(config)]
-    assert repos[0] == "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+    assert repos[0] == "Qwen/Qwen3-ASR-1.7B-hf"
     assert repos.count("laion/clap-htsat-fused") == 1
 
 

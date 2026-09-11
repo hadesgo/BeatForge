@@ -8,11 +8,8 @@ cache_dir = ".beatforge"
 enabled = true
 device = "cuda" # 当前无 NVIDIA 显卡的开发电脑可改为 auto，并使用 --no-ai 测试
 offline = false # 执行 download-models 后可改为 true
-asr_backend = "qwen3"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
-whisper_model = "small"
-whisper_compute_type = "int8_float16"
 clap_model = "laion/clap-htsat-fused"
 music_structure_backend = "allin1"
 

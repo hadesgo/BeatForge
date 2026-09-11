@@ -264,7 +264,6 @@ CPU兼容配置（用于功能验证，完整推理会很慢）：
 ```toml
 [ai]
 device = "auto"
-asr_backend = "qwen3"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 vision_backend = "wemm-embedding"
@@ -284,7 +283,6 @@ director_gpu_memory_gb = 9.0
 ```toml
 [ai]
 device = "cuda"
-asr_backend = "qwen3"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 vision_backend = "wemm-embedding"
@@ -299,7 +297,7 @@ director_backend = "text"
 director_gpu_memory_gb = 9.0
 ```
 
-运行 `uv run beatforge doctor` 检查实际使用 CPU 还是 CUDA。Faster Whisper、原 Qwen3-VL-Embedding 和 SigLIP2 仍可通过 `asr_backend`/`vision_backend` 作为兼容后备。
+运行 `uv run beatforge doctor` 检查实际使用 CPU 还是 CUDA。歌词识别统一使用 Qwen3-ASR；原 Qwen3-VL-Embedding 和 SigLIP2 仍可通过 `vision_backend` 作为兼容后备。
 
 ## 素材语义
 
@@ -428,8 +426,8 @@ uv run beatforge run demo/project.toml --plan-only
 ```text
 beatforge/audio.py                    节拍、章节与能量分析
 beatforge/director.py                 导演方案到字幕与视觉艺术指导
-beatforge/models/ai_director.py       本地 Qwen3.5 导演协议与校验
-beatforge/models/transcriber.py       Qwen3-ASR/Whisper 时间轴
+beatforge/models/ai_director.py       本地 Spark-X2.5 导演协议与校验
+beatforge/models/transcriber.py       Qwen3-ASR 与强制对齐时间轴
 beatforge/models/audio_semantics.py   CLAP 音乐语义
 beatforge/models/music_structure.py   All-In-One/Beat This 结构分析
 beatforge/models/vision_index.py      WeMM/Qwen3-VL-Embedding/SigLIP2 检索

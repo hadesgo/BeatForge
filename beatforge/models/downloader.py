@@ -8,16 +8,6 @@ from typing import Callable, Literal
 from beatforge.config import AIConfig
 
 
-WHISPER_REPOS = {
-    "tiny": "Systran/faster-whisper-tiny",
-    "base": "Systran/faster-whisper-base",
-    "small": "Systran/faster-whisper-small",
-    "medium": "Systran/faster-whisper-medium",
-    "large-v3": "Systran/faster-whisper-large-v3",
-    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-    "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-}
-
 # ModelScope mirrors do not always use the same namespace as Hugging Face.
 # Keep the configured repository ID canonical so the manifest can still map it
 # to a local directory regardless of which provider supplied the snapshot.
@@ -53,13 +43,10 @@ def required_models(config: AIConfig) -> list[ModelRequirement]:
     """Return the deduplicated model set used by this project."""
     if not config.enabled:
         return []
-    if config.asr_backend == "qwen3":
-        items = [
-            ModelRequirement("歌词识别", config.qwen_asr_model),
-            ModelRequirement("歌词强制对齐", config.qwen_aligner_model),
-        ]
-    else:
-        items = [ModelRequirement("歌词识别", WHISPER_REPOS.get(config.whisper_model, config.whisper_model))]
+    items = [
+        ModelRequirement("歌词识别", config.qwen_asr_model),
+        ModelRequirement("歌词强制对齐", config.qwen_aligner_model),
+    ]
     items.extend([
         ModelRequirement("音乐情绪分析", config.clap_model),
         ModelRequirement("视觉语义检索", config.vision_model),

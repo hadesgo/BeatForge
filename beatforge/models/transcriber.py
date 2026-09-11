@@ -8,12 +8,10 @@ from beatforge.runtime import release_gpu
 
 
 def transcribe(
-    audio: Path, *, backend: str, qwen_model: str, qwen_aligner: str,
-    whisper_model: str, device: str, compute_type: str, offline: bool,
+    audio: Path, *, qwen_model: str, qwen_aligner: str,
+    device: str, offline: bool,
 ) -> list[LyricLine]:
-    if backend == "qwen3":
-        return _transcribe_qwen(audio, qwen_model, qwen_aligner, device, offline)
-    return _transcribe_whisper(audio, whisper_model, device, compute_type, offline)
+    return _transcribe_qwen(audio, qwen_model, qwen_aligner, device, offline)
 
 
 def _transcribe_qwen(audio: Path, model_name: str, aligner_name: str, device: str, offline: bool) -> list[LyricLine]:
@@ -94,21 +92,3 @@ def group_aligned_tokens(items: list[Any], max_characters: int = 18, gap_seconds
 def _line_from_tokens(tokens: list[LyricToken]) -> LyricLine:
     text = "".join(token.text for token in tokens).strip()
     return LyricLine(tokens[0].start, tokens[-1].end, text, tokens)
-
-
-def _transcribe_whisper(audio: Path, model_name: str, device: str, compute_type: str, offline: bool) -> list[LyricLine]:
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError as exc:
-        raise RuntimeError("缺少 Faster Whisper 依赖") from exc
-    if device == "cpu" and "float16" in compute_type:
-        compute_type = "int8"
-    model = WhisperModel(model_name, device=device, compute_type=compute_type, local_files_only=offline)
-    segments, _ = model.transcribe(
-        str(audio), language="zh", beam_size=5, vad_filter=True,
-        word_timestamps=True, condition_on_previous_text=False,
-    )
-    return [
-        LyricLine(float(segment.start), float(segment.end), segment.text.strip())
-        for segment in segments if segment.text.strip()
-    ]
