@@ -112,3 +112,39 @@ def test_low_resolution_asset_receives_upscale_penalty() -> None:
     low = MediaAsset(0, Path("low.jpg"), "image", float("inf"), 320, 180)
     high = MediaAsset(1, Path("high.jpg"), "image", float("inf"), 3840, 2160)
     assert _upscale_penalty(low, 1920, 1080) > _upscale_penalty(high, 1920, 1080)
+
+
+def test_repeated_lyrics_prefer_different_assets() -> None:
+    analysis = AudioAnalysis(
+        duration=8, bpm=120, beats=[0, 2, 4, 6, 8], sections=[0, 4, 8],
+        energy_times=[0], energy_values=[.5], average_energy=.5,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+        section_labels=["verse", "verse"],
+    )
+    lyrics = [LyricLine(0, 4, "再次飞翔！"), LyricLine(4, 8, " 再次飞翔 ")]
+    assets = [
+        MediaAsset(0, Path("best.jpg"), "image", float("inf"), 1920, 1080),
+        MediaAsset(1, Path("alternate.jpg"), "image", float("inf"), 1920, 1080),
+    ]
+    similarities = np.array([[1.0, .1], [1.0, .1]])
+
+    shots = create_plan(
+        analysis, lyrics, assets, similarities, min_shot=1.5, max_shot=5,
+    )
+
+    assert [shot.media_id for shot in shots] == [0, 1]
+
+
+def test_repeated_lyrics_reuse_only_when_no_alternative_exists() -> None:
+    analysis = AudioAnalysis(
+        duration=8, bpm=120, beats=[0, 4, 8], sections=[0, 4, 8],
+        energy_times=[0], energy_values=[.5], average_energy=.5,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+        section_labels=["verse", "verse"],
+    )
+    lyrics = [LyricLine(0, 4, "同一句"), LyricLine(4, 8, "同一句")]
+    assets = [MediaAsset(0, Path("only.jpg"), "image", float("inf"), 1920, 1080)]
+
+    shots = create_plan(analysis, lyrics, assets, None, min_shot=1.5, max_shot=5)
+
+    assert [shot.media_id for shot in shots] == [0, 0]

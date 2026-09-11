@@ -65,10 +65,22 @@ def create_plan(
     previous: MediaAsset | None = None
     chorus_motifs: list[int] = []
     video_cursors: dict[int, float] = {}
+    lyric_asset_history: dict[str, set[int]] = {}
+    active_line_id: int | None = None
+    active_lyric_key = ""
+    active_line_assets: set[int] = set()
     shots: list[Shot] = []
     for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
         midpoint = (start + end) / 2
         line = next((line for line in lyrics if line.start <= midpoint < line.end), None)
+        line_id = id(line) if line is not None else None
+        if line_id != active_line_id:
+            if active_lyric_key and active_line_assets:
+                lyric_asset_history.setdefault(active_lyric_key, set()).update(active_line_assets)
+            active_line_id = line_id
+            active_lyric_key = _lyric_key(line.text) if line is not None else ""
+            active_line_assets = set()
+        previously_used_for_lyric = lyric_asset_history.get(active_lyric_key, set())
         energy = analysis.energy_at(midpoint)
         section, section_index = _section_info(analysis, midpoint)
         direction = treatment.section(section_index) if treatment else None
@@ -90,10 +102,13 @@ def create_plan(
             upscale_penalty = _upscale_penalty(asset, target_width, target_height)
             score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif + director_score - repeat - duration_penalty - framing_penalty - upscale_penalty
             ranked.append((score, asset, semantic, asset_column))
-        _, selected, semantic, selected_column = max(ranked, key=lambda item: item[0])
+        fresh_ranked = [item for item in ranked if item[1].id not in previously_used_for_lyric]
+        _, selected, semantic, selected_column = max(fresh_ranked or ranked, key=lambda item: item[0])
         continues_previous = previous is not None and selected.id == previous.id
         usage[selected.id] = usage.get(selected.id, 0) + 1
         recent.append(selected.id)
+        if line is not None:
+            active_line_assets.add(selected.id)
         if section == "chorus" and selected.id not in chorus_motifs and len(chorus_motifs) < 2:
             chorus_motifs.append(selected.id)
         available = max(0.0, selected.duration - shot_duration - 0.1) if math.isfinite(selected.duration) else 0.0
@@ -172,6 +187,11 @@ def _tag_score(line: LyricLine | None, asset: MediaAsset) -> float:
     tokens = set(re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{1,4}", line.text.lower()))
     haystack = " ".join([asset.description, *asset.tags]).lower()
     return sum(0.15 for token in tokens if token in haystack)
+
+
+def _lyric_key(text: str) -> str:
+    """Normalize cosmetic lyric differences when tracking repeated lines."""
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", text.casefold(), flags=re.UNICODE)
 
 
 def _section_at(analysis: AudioAnalysis, time: float) -> str:
