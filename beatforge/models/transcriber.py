@@ -23,7 +23,7 @@ def _transcribe_qwen(audio: Path, model_name: str, aligner_name: str, device: st
     except (ImportError, RuntimeError) as exc:
         raise RuntimeError(
             "无法加载原生 Qwen3-ASR：需要 transformers>=5.13，且 torch、torchvision、"
-            f"torchaudio 必须来自项目锁定的同一 CPU/CUDA 13.0 构建。原始错误：{exc}"
+            f"torchaudio 必须来自项目锁定的同一 CPU/CUDA 构建（CUDA 12.6 或 13.0）。原始错误：{exc}"
         ) from exc
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
     device_map = "auto" if device == "cuda" else {"": "cpu"}

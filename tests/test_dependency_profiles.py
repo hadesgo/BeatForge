@@ -1,0 +1,41 @@
+from __future__ import annotations
+
+import tomllib
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_cuda126_profile_uses_only_the_cuda126_index() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    extras = project["project"]["optional-dependencies"]
+    assert extras["ai-cuda126"] == [
+        "torch==2.14.0",
+        "torchvision==0.29.0",
+        "torchaudio==2.11.0",
+        "torchcodec==0.16.0",
+        "bitsandbytes>=0.50.2",
+    ]
+
+    indexes = {item["name"]: item["url"] for item in project["tool"]["uv"]["index"]}
+    assert indexes["pytorch-cu126"] == "https://download.pytorch.org/whl/cu126"
+
+    for package in ("torch", "torchvision", "torchaudio", "torchcodec"):
+        routes = project["tool"]["uv"]["sources"][package]
+        assert {"index": "pytorch-cu126", "extra": "ai-cuda126"} in routes
+
+
+def test_pytorch_profiles_are_pairwise_exclusive() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    conflicts = {
+        frozenset(item["extra"] for item in conflict)
+        for conflict in project["tool"]["uv"]["conflicts"]
+    }
+
+    assert conflicts >= {
+        frozenset(("ai-cpu", "ai-cuda")),
+        frozenset(("ai-cpu", "ai-cuda126")),
+        frozenset(("ai-cuda", "ai-cuda126")),
+    }
