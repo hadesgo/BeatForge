@@ -25,7 +25,6 @@ ai = [
 ]
 ai-cpu = ["torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0", "torchcodec==0.16.0"]
 ai-cuda = ["torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0", "torchcodec==0.16.0"]
-ai-cuda126 = ["torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0", "torchcodec==0.16.0"]
 qwen = [
   "qwen-vl-utils>=0.0.14",
   "sentence-transformers[image]>=5.7",
@@ -46,18 +45,11 @@ build-backend = "hatchling.build"
 default-groups = ["dev"]
 conflicts = [
   [{ extra = "ai-cpu" }, { extra = "ai-cuda" }],
-  [{ extra = "ai-cpu" }, { extra = "ai-cuda126" }],
-  [{ extra = "ai-cuda" }, { extra = "ai-cuda126" }],
 ]
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
 [[tool.uv.index]]
@@ -69,22 +61,18 @@ explicit = true
 torch = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
   { index = "pytorch-cu130", extra = "ai-cuda" },
-  { index = "pytorch-cu126", extra = "ai-cuda126" },
 ]
 torchvision = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
   { index = "pytorch-cu130", extra = "ai-cuda" },
-  { index = "pytorch-cu126", extra = "ai-cuda126" },
 ]
 torchaudio = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
   { index = "pytorch-cu130", extra = "ai-cuda" },
-  { index = "pytorch-cu126", extra = "ai-cuda126" },
 ]
 torchcodec = [
   { index = "pytorch-cpu", extra = "ai-cpu" },
   { index = "pytorch-cu130", extra = "ai-cuda" },
-  { index = "pytorch-cu126", extra = "ai-cuda126" },
 ]
 
 [tool.pytest.ini_options]

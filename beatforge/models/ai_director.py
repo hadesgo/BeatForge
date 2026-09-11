@@ -85,7 +85,7 @@ def _generate_treatment(
         import torch
         import transformers
     except ImportError as exc:
-        raise RuntimeError("AI 导演需要 ai 与 ai-cpu/ai-cuda/ai-cuda126 extra") from exc
+        raise RuntimeError("AI 导演需要 ai 与 ai-cpu/ai-cuda extra") from exc
 
     offload_dir = cache_dir / "director-offload"
     load_options: dict = {

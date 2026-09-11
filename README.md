@@ -22,7 +22,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
-模型分阶段加载并释放，不会同时占用显存。完整 AI 流程以 **12GB 显存的 NVIDIA 显卡**作为最低目标规格，不限定具体型号；基准环境为 Python 3.13、PyTorch 2.14.0 + CUDA 13.0，另提供 CUDA 12.6 兼容 profile。无 NVIDIA 显卡的电脑仍可完成开发、单元测试和 `--no-ai` 渲染验证，但完整模型推理速度不作为支持目标。
+模型分阶段加载并释放，不会同时占用显存。完整 AI 流程以 **12GB 显存的 NVIDIA 显卡**作为最低目标规格，不限定具体型号；基准环境为 Python 3.13、PyTorch 2.14.0 + CUDA 13.0。无 NVIDIA 显卡的电脑仍可完成开发、单元测试和 `--no-ai` 渲染验证，但完整模型推理速度不作为支持目标。
 
 默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B、WeMM-Embedding-4B、Qwen3-VL-Reranker-2B 和 Spark-X2.5-4B 均使用原生 BF16/模型原始精度，不依赖 bitsandbytes 等运行时量化库。视觉召回完成后会先删除 WeMM 并释放 CUDA 缓存，再加载精排模型；导演又在整个视觉索引释放后加载，因此三个大模型不会同时驻留显存。CUDA运行时仍启用TF32、高精度矩阵乘策略和cuDNN形状调优。
 
@@ -49,13 +49,7 @@ uv sync --extra ai --extra ai-cpu --extra qwen --extra music-ai
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 ```
 
-驱动不支持 CUDA 13.x、但支持 CUDA 12.6 的 NVIDIA 显卡（兼容 profile）：
-
-```powershell
-uv sync --extra ai --extra ai-cuda126 --extra qwen --extra music-ai
-```
-
-`ai-cpu`、`ai-cuda` 和 `ai-cuda126` 三个 profile 两两互斥，uv 会阻止混装。`ai-cuda` 从 CUDA 13.0 源安装 `torch 2.14.0+cu130`、`torchvision 0.29.0+cu130`、`torchaudio 2.11.0+cu130` 和 `torchcodec 0.16.0+cu130`；`ai-cuda126` 从 `https://download.pytorch.org/whl/cu126` 成套安装相同版本的 `+cu126` 构建。以上包均提供 Python 3.13 轮子。不要再单独覆盖其中任何一个包。模型权重不会在 `uv sync` 时下载。建议先用下面的统一下载命令准备权重；完成后，运行时会直接使用下载清单中的本地目录。
+`ai-cpu` 和 `ai-cuda` 两个 profile 互斥，uv 会阻止混装。`ai-cuda` 从 CUDA 13.0 源安装 `torch 2.14.0+cu130`、`torchvision 0.29.0+cu130`、`torchaudio 2.11.0+cu130` 和 `torchcodec 0.16.0+cu130`。以上包均提供 Python 3.13 轮子。不要再单独覆盖其中任何一个包。模型权重不会在 `uv sync` 时下载。
 
 ### 模型兼容性与安全
 
@@ -104,8 +98,6 @@ uv run beatforge download-models my-mv/project.toml --source modelscope --no-fal
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 uv run beatforge init my-mv
 ```
-
-若驱动只支持 CUDA 12.x，把上面的 `ai-cuda` 替换为 `ai-cuda126`，其余流程不变。
 
 将音乐放到 `my-mv/music.mp3`，图片和视频放到 `my-mv/media/`。如果已有 LRC，保存为 `my-mv/lyrics.lrc`；如果要使用 Qwen3-ASR，删除该文件并删除或注释 `project.toml` 的 `lyrics` 配置。
 
@@ -341,20 +333,13 @@ WeMM-Embedding 会分别通过 `encode_query` 和 `encode_document` 比较歌词
 
 ### `doctor` 显示 CUDA 未启用
 
-先确认安装的是 `ai-cuda` 或 `ai-cuda126`，而不是 `ai-cpu`。`ai-cuda` 需要能够运行 CUDA 13.0 构建的驱动；CUDA 13.x 至少需要 R580 系列驱动。驱动较旧时可选择 `ai-cuda126`。`nvidia-smi` 能显示显卡不代表当前 Python 环境中的 PyTorch 一定启用了 CUDA；以 `uv run beatforge doctor` 的结果为准。修改依赖组合后重新执行对应的 `uv sync`，不要混装不同 profile。
+先确认安装的是 `ai-cuda`，而不是 `ai-cpu`。`ai-cuda` 需要能够运行 CUDA 13.0 构建的驱动；CUDA 13.x 至少需要 R580 系列驱动。`nvidia-smi` 能显示显卡不代表当前 Python 环境中的 PyTorch 一定启用了 CUDA；以 `uv run beatforge doctor` 的结果为准。
 
-如果警告中显示 `found version 12080`，说明当前驱动无法运行 CUDA 13.0 PyTorch，但可以使用 CUDA 12.6 兼容 profile，无需仅为此升级驱动：
-
-```bash
-uv sync --extra ai --extra ai-cuda126 --extra qwen --extra music-ai --refresh-package torch --refresh-package torchvision --refresh-package torchaudio --refresh-package torchcodec
-uv run beatforge doctor
-```
-
-升级到 R580 或更新驱动并重启后，可以改回 `ai-cuda` 使用 CUDA 13.0 构建。
+如果警告中显示 `found version 12080`，说明当前驱动无法运行 CUDA 13.0 PyTorch。请升级到支持 CUDA 13.x 的 R580 或更新驱动并重启，然后重新同步 `ai-cuda` 环境。
 
 ### PyTorch 与 TorchAudio 的 CUDA 版本不同
 
-例如旧环境中的 `PyTorch has CUDA version 13.2 whereas TorchAudio has CUDA version 13.0`，表示 PyTorch 包来自不同 CUDA 软件源。更新代码后用所选 profile 强制刷新；不要单独运行 `pip install torchaudio`。修复后，下面四个导入必须同时成功，版本后缀应全部为 `+cu130`（`ai-cuda`）或全部为 `+cu126`（`ai-cuda126`）：
+例如旧环境中的 `PyTorch has CUDA version 13.2 whereas TorchAudio has CUDA version 13.0`，表示 PyTorch 包来自不同 CUDA 软件源。更新代码后用 `ai-cuda` profile 强制刷新；不要单独运行 `pip install torchaudio`。修复后，下面四个导入必须同时成功，版本后缀应全部为 `+cu130`：
 
 ```bash
 uv run python -c "import torch, torchvision, torchaudio, torchcodec; print(torch.__version__, torchvision.__version__, torchaudio.__version__, torchcodec.__version__, torch.version.cuda)"
@@ -375,8 +360,6 @@ BeatForge 会把 `tencent/WeMM-Embedding-4B` 自动映射为魔搭命名空间�
 ```powershell
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 ```
-
-CUDA 12.6 环境把命令中的 `ai-cuda` 替换为 `ai-cuda126`。
 
 不要绕过锁文件随意降级 Transformers。先记录完整异常、当前 `transformers` 和 `sentence-transformers` 版本，再确认本地模型目录是否下载完整。模型仓库更新后，如需重新获取自定义代码，应在联网模式下明确重新下载并复测，确认无误后再恢复离线模式。
 
