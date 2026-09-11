@@ -46,6 +46,10 @@ class VisionIndex:
         ).to(device).eval()
 
     def similarities(self, texts: list[str], assets: list[MediaAsset], frame_samples: int) -> np.ndarray:
+        unique_texts, text_rows = _unique_with_inverse(texts)
+        if not assets:
+            self.best_source_starts = np.zeros((len(texts), 0), dtype=float)
+            return np.zeros((len(texts), 0), dtype=float)
         if self.backend in {"wemm-embedding", "qwen3-vl-embedding"}:
             query_options = {
                 "normalize_embeddings": True,
@@ -56,7 +60,7 @@ class VisionIndex:
                     "Retrieve the music-video shot that best matches the lyrics, narrative action, "
                     "scene, and emotional atmosphere."
                 )
-            text_features = np.asarray(self._encode_multimodal(texts, query=True, **query_options))
+            text_features = np.asarray(self._encode_multimodal(unique_texts, query=True, **query_options))
             documents: list[str | Image.Image | dict[str, object]] = []
             spans: list[tuple[int, int, list[Image.Image] | None]] = []
             for asset in assets:
@@ -79,11 +83,11 @@ class VisionIndex:
                 normalize_embeddings=True,
                 convert_to_numpy=True,
             ))
+            all_frame_scores = text_features @ document_features.T
             score_columns: list[np.ndarray] = []
             source_columns: list[np.ndarray] = []
             for asset, (start, end, frames) in zip(assets, spans):
-                vectors = document_features[start:end]
-                frame_scores = text_features @ vectors.T
+                frame_scores = all_frame_scores[:, start:end]
                 if asset.kind == "video":
                     sample_times = self._video_sample_times(asset, frame_samples)
                     source_columns.append(sample_times[np.argmax(frame_scores, axis=1)])
@@ -92,16 +96,20 @@ class VisionIndex:
                     strongest = np.partition(frame_scores, -top_count, axis=1)[:, -top_count:]
                     score_columns.append(strongest.mean(axis=1))
                 else:
-                    source_columns.append(np.zeros(len(texts)))
+                    source_columns.append(np.zeros(len(unique_texts)))
                     score_columns.append(frame_scores[:, 0])
             self.best_source_starts = np.stack(source_columns, axis=1)
             scores = np.stack(score_columns, axis=1)
             if self.reranker_model and self.rerank_top_k > 0:
-                scores = self._rerank(texts, assets, scores, frame_samples)
-            return scores
+                scores = self._rerank(
+                    unique_texts, assets, scores, frame_samples,
+                    asset_frames=[frames for _start, _end, frames in spans],
+                )
+            self.best_source_starts = self.best_source_starts[text_rows]
+            return scores[text_rows]
         image_features = np.stack([self._asset_embedding(asset, frame_samples) for asset in assets])
-        text_features = self._text_embeddings(texts)
-        return text_features @ image_features.T
+        text_features = self._text_embeddings(unique_texts)
+        return (text_features @ image_features.T)[text_rows]
 
     def _encode_multimodal(self, inputs, *, query: bool, **kwargs):
         batch_size = min(self.batch_size, max(1, len(inputs)))
@@ -144,7 +152,10 @@ class VisionIndex:
         self.model = SentenceTransformer(model_name, **load_options)
         self.processor = None
 
-    def _rerank(self, texts: list[str], assets: list[MediaAsset], base: np.ndarray, frame_samples: int) -> np.ndarray:
+    def _rerank(
+        self, texts: list[str], assets: list[MediaAsset], base: np.ndarray, frame_samples: int,
+        *, asset_frames: list[list[Image.Image] | None] | None = None,
+    ) -> np.ndarray:
         del self.model
         gc.collect()
         if self.torch.cuda.is_available():
@@ -165,27 +176,38 @@ class VisionIndex:
             local_files_only=self.offline,
         )
         output = base.copy()
+        selections: list[tuple[int, np.ndarray]] = []
+        pairs: list[tuple[str, str | Image.Image]] = []
         for row, text in enumerate(texts):
             candidates = np.argsort(base[row])[-min(self.rerank_top_k, len(assets)):][::-1]
-            documents: list[str | Image.Image] = []
+            selections.append((row, candidates))
             for index in candidates:
                 asset = assets[int(index)]
                 if asset.kind == "image":
-                    documents.append(str(asset.file))
+                    document: str | Image.Image = str(asset.file)
                 else:
-                    frames = self._video_frames(asset, frame_samples)
+                    frames = asset_frames[int(index)] if asset_frames is not None else None
+                    if frames is None:
+                        frames = self._video_frames(asset, frame_samples)
                     sample_times = self._video_sample_times(asset, len(frames))
                     target_time = float(self.best_source_starts[row, int(index)])
-                    documents.append(frames[_nearest_sample_index(sample_times, target_time)])
-            values = reranker.predict(
-                [(text, document) for document in documents], batch_size=self.batch_size,
+                    document = frames[_nearest_sample_index(sample_times, target_time)]
+                pairs.append((text, document))
+        values = np.asarray(
+            reranker.predict(
+                pairs, batch_size=self.batch_size,
                 prompt=(
                     "Judge whether the candidate shot is suitable for a polished music video. "
                     "Prioritize lyrical meaning, emotional atmosphere, composition, subject action, "
                     "shot scale, and narrative continuity."
                 ),
             )
-            output[row, candidates] = blend_rerank_scores(base[row, candidates], np.asarray(values).reshape(-1))
+        ).reshape(-1)
+        offset = 0
+        for row, candidates in selections:
+            end = offset + len(candidates)
+            output[row, candidates] = blend_rerank_scores(base[row, candidates], values[offset:end])
+            offset = end
         self.model = reranker
         return output
 
@@ -260,3 +282,18 @@ def _nearest_sample_index(sample_times: np.ndarray, target: float) -> int:
     if sample_times.size == 0:
         return 0
     return int(np.argmin(np.abs(sample_times - target)))
+
+
+def _unique_with_inverse(values: list[str]) -> tuple[list[str], np.ndarray]:
+    """Return stable unique values and rows that restore the original order."""
+    unique: list[str] = []
+    positions: dict[str, int] = {}
+    inverse = np.empty(len(values), dtype=np.intp)
+    for row, value in enumerate(values):
+        position = positions.get(value)
+        if position is None:
+            position = len(unique)
+            positions[value] = position
+            unique.append(value)
+        inverse[row] = position
+    return unique, inverse

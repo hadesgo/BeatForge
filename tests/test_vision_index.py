@@ -1,9 +1,17 @@
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+from PIL import Image
 
 from beatforge.media import MediaAsset
-from beatforge.models.vision_index import VisionIndex, _nearest_sample_index, blend_rerank_scores
+from beatforge.models.vision_index import (
+    VisionIndex,
+    _nearest_sample_index,
+    _unique_with_inverse,
+    blend_rerank_scores,
+)
 
 
 class FakeSentenceTransformer:
@@ -109,3 +117,90 @@ def test_visual_encoding_reduces_batch_after_cuda_oom() -> None:
 
     assert result.shape == (4, 2)
     assert index.model.batches == [4, 2]
+
+
+def test_duplicate_lyrics_are_encoded_once_and_restored(tmp_path: Path) -> None:
+    class FakeWeMM:
+        def __init__(self):
+            self.queries = None
+
+        def encode_query(self, inputs, **_kwargs):
+            self.queries = inputs
+            return np.array([[1.0, 0.0], [0.0, 1.0]])
+
+        def encode_document(self, _inputs, **_kwargs):
+            return np.array([[1.0, 0.0], [0.0, 1.0]])
+
+        def encode(self, *_args, **_kwargs):
+            raise AssertionError("WeMM should use encode_query/encode_document")
+
+    index = VisionIndex.__new__(VisionIndex)
+    index.backend = "wemm-embedding"
+    index.model = FakeWeMM()
+    index.batch_size = 4
+    index.reranker_model = None
+    index.rerank_top_k = 0
+    assets = [
+        MediaAsset(0, tmp_path / "first.jpg", "image", float("inf"), 100, 100),
+        MediaAsset(1, tmp_path / "second.jpg", "image", float("inf"), 100, 100),
+    ]
+
+    scores = index.similarities(["副歌", "主歌", "副歌"], assets, frame_samples=3)
+
+    assert index.model.queries == ["副歌", "主歌"]
+    assert scores.shape == (3, 2)
+    np.testing.assert_array_equal(scores[0], scores[2])
+    np.testing.assert_array_equal(index.best_source_starts[0], index.best_source_starts[2])
+
+
+def test_unique_with_inverse_preserves_first_seen_order() -> None:
+    unique, inverse = _unique_with_inverse(["b", "a", "b", "c", "a"])
+
+    assert unique == ["b", "a", "c"]
+    np.testing.assert_array_equal(inverse, [0, 1, 0, 2, 1])
+
+
+def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, monkeypatch) -> None:
+    predictions = []
+
+    class FakeCrossEncoder:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def predict(self, pairs, **_kwargs):
+            predictions.append(pairs)
+            return np.array([.2, .8])
+
+    monkeypatch.setitem(
+        sys.modules, "sentence_transformers", SimpleNamespace(CrossEncoder=FakeCrossEncoder),
+    )
+    index = VisionIndex.__new__(VisionIndex)
+    index.model = object()
+    index.device = "cpu"
+    index.torch = SimpleNamespace(
+        float32="float32",
+        cuda=SimpleNamespace(is_available=lambda: False, empty_cache=lambda: None),
+    )
+    index.quantization = "none"
+    index.reranker_model = "fake-reranker"
+    index.rerank_top_k = 1
+    index.batch_size = 2
+    index.offline = False
+    index.best_source_starts = np.array([[.1], [9.9]])
+    asset = MediaAsset(0, tmp_path / "clip.mp4", "video", 10.0, 1920, 1080)
+    frames = [Image.new("RGB", (8, 8), color) for color in ("red", "green", "blue")]
+    monkeypatch.setattr(
+        index, "_video_frames",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("cached frames must be reused")),
+    )
+
+    result = index._rerank(
+        ["first", "second"], [asset], np.array([[.7], [.6]]), 3,
+        asset_frames=[frames],
+    )
+
+    assert result.shape == (2, 1)
+    assert len(predictions) == 1
+    assert [pair[0] for pair in predictions[0]] == ["first", "second"]
+    assert predictions[0][0][1] is frames[0]
+    assert predictions[0][1][1] is frames[2]
