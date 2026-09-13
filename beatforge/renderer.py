@@ -8,7 +8,7 @@ from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection
 from beatforge.lyrics import LyricLine, write_ass
 from beatforge.planner import Shot
-from beatforge.runtime import command
+from beatforge.runtime import command, duration
 
 
 def render(
@@ -122,8 +122,14 @@ def _render_image_shot(
         if art.grain > 0:
             finishing.append(f"noise=alls={art.grain}:allf=t+u")
     finish = ",".join(item for item in finishing if item)
+    # Normalize to the exact target canvas: composite effects (e.g. split_screen's
+    # hstack) can emit odd widths, and xfade/concat reject mismatched input sizes.
+    normalize = (
+        f"scale={cfg.width}:{cfg.height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+        f"pad={cfg.width}:{cfg.height}:(ow-iw)/2:(oh-ih)/2:color=black"
+    )
     filters.append(
-        f"{current}{finish + ',' if finish else ''}fps={cfg.fps},"
+        f"{current}{finish + ',' if finish else ''}{normalize},fps={cfg.fps},"
         f"trim=duration={render_duration:.4f},setpts=PTS-STARTPTS,format=yuv420p[vout]"
     )
     args += [
@@ -336,18 +342,25 @@ def _compose_transitions(
     for index in range(len(shots)):
         args += ["-i", str(clips / f"{index:05}.mp4")]
     filters = [f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS[v{index}]" for index in range(len(shots))]
+    # Anchor every fade to the actual on-disk clip durations: frame rounding makes
+    # rendered clips slightly shorter than shot.duration + handle, so a timeline
+    # built from ideal durations drifts past the real streams and xfade rejects
+    # the offset as invalid.
+    actual = [duration(clips / f"{index:05}.mp4") for index in range(len(shots))]
     current = "[v0]"
-    timeline = shots[0].duration
-    for index, (name, duration) in enumerate(transitions):
+    timeline = actual[0]
+    for index, (name, transition_duration) in enumerate(transitions):
         label = f"[x{index + 1}]"
-        if name == "cut" or duration <= 0:
+        if name == "cut" or transition_duration <= 0:
             filters.append(f"{current}[v{index + 1}]concat=n=2:v=1:a=0{label}")
+            timeline += actual[index + 1]
         else:
+            offset = max(0.0, timeline - transition_duration - .001)
             filters.append(
-                f"{current}[v{index + 1}]xfade=transition={name}:duration={duration}:offset={round(timeline, 3)}{label}"
+                f"{current}[v{index + 1}]xfade=transition={name}:duration={transition_duration}:offset={round(offset, 3)}{label}"
             )
+            timeline = offset + actual[index + 1]
         current = label
-        timeline += shots[index + 1].duration
     end_fade = min(.5, shots[-1].duration / 3)
     filters.append(f"{current}fade=t=in:st=0:d=0.25,fade=t=out:st={max(0, timeline - end_fade):.3f}:d={end_fade:.3f}[vout]")
     args += [
@@ -355,3 +368,5 @@ def _compose_transitions(
         "-r", str(cfg.fps), *_video_encode_args(cfg, intermediate=True), str(output),
     ]
     command(args)
+
+

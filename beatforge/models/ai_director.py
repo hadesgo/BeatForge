@@ -5,6 +5,7 @@ import gc
 import math
 import subprocess
 from pathlib import Path
+import re
 from typing import Literal
 
 import numpy as np
@@ -87,6 +88,8 @@ def _generate_treatment(
     except ImportError as exc:
         raise RuntimeError("AI 导演需要 ai 与 ai-cpu/ai-cuda extra") from exc
 
+    _repair_remote_tied_weights(config.director_model)
+
     offload_dir = cache_dir / "director-offload"
     load_options: dict = {
         "device_map": "auto" if device == "cuda" else {"": "cpu"},
@@ -120,6 +123,11 @@ def _generate_treatment(
                 config.director_model, trust_remote_code=True, **load_options,
             )
         model.eval()
+        # Spark-X2.5's generation_config uses the legacy top_k=-1 sentinel for
+        # "no top-k truncation"; transformers>=5 requires a strictly positive
+        # integer (or None/0 to disable). Normalize so sampling matches intent.
+        if getattr(model.generation_config, "top_k", None) is not None and model.generation_config.top_k <= 0:
+            model.generation_config.top_k = None
         schema = json.dumps(DirectorTreatment.model_json_schema(), ensure_ascii=False)
         project_text = (
             f"JSON Schema:\n{schema}\n\n项目数据:\n{json.dumps(context, ensure_ascii=False)}"
@@ -169,6 +177,10 @@ def _generate(model, processor, messages: list[dict], config: AIConfig, torch) -
         tokenize=True,
         return_dict=True,
         return_tensors="pt",
+        # Spark-X2.5 is an R1-style reasoning model: with thinking enabled it burns
+        # the whole token budget on hidden reasoning and never emits the JSON.
+        # enable_thinking=False renders "<Bot></think>" so it answers directly.
+        enable_thinking=False,
     ).to(model.device)
     generation = {
         "max_new_tokens": config.director_max_new_tokens,
@@ -189,6 +201,72 @@ def _extract_json(content: str) -> str:
         text = "\n".join(lines[1:-1])
     start, end = text.find("{"), text.rfind("}")
     return text[start:end + 1] if start >= 0 and end > start else text
+
+
+def _repair_remote_tied_weights(model_name: str) -> None:
+    """transformers >= 5 requires ``_tied_weights_keys`` to be a ``{target: source}``
+    mapping, but some remote-code models (e.g. Spark-X2.5) still declare the legacy
+    list form, which crashes ``get_expanded_tied_weights_keys`` with
+    ``AttributeError: 'list' object has no attribute 'keys'``.
+
+    Fix the local model file first: transformers re-copies remote code from the
+    local model directory into its module cache whenever the two differ, so a
+    patch applied only to the cache copy is silently reverted. The embedding
+    parameter name is derived from ``get_input_embeddings``.
+    """
+    module_paths: list[Path] = []
+    local_dir = Path(model_name)
+    if (local_dir / "modeling_spark.py").exists():
+        module_paths.append(local_dir / "modeling_spark.py")
+    try:
+        from transformers.dynamic_module_utils import HF_MODULES_CACHE, get_cached_module_file
+        module_rel = get_cached_module_file(
+            model_name, "modeling_spark.py", local_files_only=True,
+        )
+        cached = Path(module_rel)
+        if not cached.is_absolute():
+            cached = Path(HF_MODULES_CACHE) / cached
+        if cached not in module_paths:
+            module_paths.append(cached)
+    except Exception:
+        pass
+    list_pattern = re.compile(r"_tied_weights_keys\s*=\s*\[([^\]]*)\]")
+    embed_patterns = (
+        (r"def get_input_embeddings\s*\(self\):\s*return\s+self\.model\.([\w.]+)", "model."),
+        (r"def get_input_embeddings\s*\(self\):\s*return\s+self\.([\w.]+)", ""),
+    )
+    for module_path in module_paths:
+        if not module_path.exists():
+            continue
+        try:
+            text = module_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        match = list_pattern.search(text)
+        if not match:
+            continue
+        embed_match = None
+        source = ""
+        for embed_pattern, prefix in embed_patterns:
+            embed_match = re.search(embed_pattern, text)
+            if embed_match:
+                source = f"{prefix}{embed_match.group(1)}.weight"
+                break
+        if not embed_match:
+            continue
+        keys = [item.strip().strip('"' + "'") for item in match.group(1).split(",") if item.strip()]
+        if not keys:
+            continue
+        mapping = ", ".join(f'"{key}": "{source}"' for key in keys)
+        patched = list_pattern.sub(f"_tied_weights_keys = {{{mapping}}}", text, count=1)
+        if patched == text:
+            continue
+        try:
+            module_path.write_text(patched, encoding="utf-8")
+        except OSError:
+            continue
+        print(f"    已修复 {module_path} 的 _tied_weights_keys 兼容性（transformers>=5 要求 dict 映射）")
+
 
 
 def _build_context(
@@ -250,7 +328,7 @@ def _build_context(
 
 def _lyric_candidates(
     lyrics: list[LyricLine], assets: list[MediaAsset], similarities: np.ndarray | None,
-    source_starts: np.ndarray | None, candidate_ids: set[int], limit: int = 4,
+    source_starts: np.ndarray | None, candidate_ids: set[int], limit: int = 2,
 ) -> list[dict]:
     if similarities is None or similarities.ndim != 2:
         return []
@@ -278,7 +356,7 @@ def _lyric_candidates(
     return output
 
 
-def _candidate_ids(assets: list[MediaAsset], similarities: np.ndarray | None, limit: int = 60) -> set[int]:
+def _candidate_ids(assets: list[MediaAsset], similarities: np.ndarray | None, limit: int = 24) -> set[int]:
     if len(assets) <= limit:
         return {asset.id for asset in assets}
     semantic = np.max(similarities, axis=0) if similarities is not None and similarities.size else np.zeros(len(assets))
