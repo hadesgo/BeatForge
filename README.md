@@ -184,14 +184,20 @@ director_contact_sheet_assets = 0
 
 `director_gpu_memory_gb` 是 Accelerate 的权重上限；12GB 显卡默认只允许导演使用9GB。Spark-X2.5-4B 使用 `AutoModelForCausalLM` 和原始权重直接加载，超出部分在 `director_offload = true` 时卸载到内存和 `.beatforge/director-offload/`。Spark 是文本模型，因此它读取 WeMM/Qwen 精排后的素材描述、候选得分和视频时间点，不直接读取联系表图片；`director_contact_sheet_assets` 对默认导演保持为0。若以后切回多模态导演，需同时设置 `director_backend = "multimodal"`，才会生成并传入联系表。
 
+Spark-X2.5 发布的 `modeling_spark.py` 是按 `transformers==4.57` 写的，与本项目要求的 `transformers>=5.16.1` 有两处不兼容：`_tied_weights_keys` 的旧列表写法会让权重加载直接失败，`create_causal_mask` 的参数名也从 `input_embeds` 改成了 `inputs_embeds` 并去掉了 `cache_position`。BeatForge 会在加载前就地改写本地模型目录里的这份远程代码，并打印「已修复 … 的远程代码兼容性：…」；改写依据是**已安装**的 `create_causal_mask` 签名，所以新旧参数名都能正确处理，且重复运行不会重复改写。`scripts/director_model_probe.py` 用一份只有几百万参数的迷你模型在 CPU 上跑通同一份远程代码，不需要 7.7GB 权重和显卡就能验证注意力实现、因果性、滑动窗口和 KV 缓存一致性：
+
+```bash
+uv run python scripts/director_model_probe.py
+```
+
 ### 提示词上限与显存预留
 
-导演是整条链路里唯一会把超长序列喂给语言模型的一步，而 Spark-X2.5 的注意力是手写的 `torch.matmul` + softmax：没有 SDPA 或 flash-attn 后端，滑动窗口层也只是给完整的 `[头数, 提示词, 提示词]` 分数矩阵加掩码，并不切掉 KV；同时 prefill 会对**每一个**提示词位置跑一次语言头。两者都随提示词长度平方增长，因此提示词必须限长，且显存预算必须为它们单独留出空间。
+导演是整条链路里唯一会把超长序列喂给语言模型的一步，而 Spark-X2.5 的注意力是手写的 `torch.matmul` + softmax：没有 SDPA 或 flash-attn 后端，滑动窗口层也只是给完整的 `[头数, 提示词, 提示词]` 分数矩阵加掩码，并不切掉 KV。这个开销随提示词长度平方增长，因此提示词必须限长，且显存预算必须为它单独留出空间。
 
 BeatForge 用两道闸门处理：
 
 - `director_prompt_tokens`（默认 `2600`）限制提示词长度。超长歌曲会按阶梯逐级降级——先裁剪逐句候选表，再减少送入的素材条数，最后才对歌词抽样——每一级都用 tokenizer 实测 token 数，直到装进预算为止。被裁掉候选表时，提示词里的字段说明会同步改写，不会指向已经不存在的表。
-- 加载前先按公式估算序列侧开销（注意力分数矩阵、掩码、全量 logits、KV 缓存、激活），再从**当前空闲显存**而不是显卡总容量里扣除，剩下的才是权重预算，并且权重预算不会超过 `director_gpu_memory_gb`。加载和生成期间若仍抛显存不足，会自动用更小的权重预算重试一次。
+- 加载前先按公式估算序列侧开销（注意力分数矩阵、掩码、保守估的 logits、KV 缓存、激活），再从**当前空闲显存**而不是显卡总容量里扣除，剩下的才是权重预算，并且权重预算不会超过 `director_gpu_memory_gb`。加载和生成期间若仍抛显存不足，会自动用更小的权重预算重试一次。
 
 启动时会打印一行诊断，例如：
 

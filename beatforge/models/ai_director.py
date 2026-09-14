@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import json
 import gc
+import importlib
+import inspect
+import json
 import math
-import subprocess
-from pathlib import Path
 import re
+import subprocess
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -57,10 +60,9 @@ SYSTEM_PROMPT = """你是一位经验丰富的音乐录影带导演和剪辑指�
 # The director prompt is the only place in the pipeline that feeds a very long
 # sequence to a language model, and Spark-X2.5 computes attention with plain
 # matmuls: every layer materialises a full [heads, prompt, prompt] score matrix
-# (the sliding-window layers mask it afterwards instead of slicing the keys) and
-# the prefill runs the language head over every prompt position because
-# ``logits_to_keep`` defaults to 0. Both grow with the square of the prompt, so
-# the prompt is capped and the GPU budget reserves that memory explicitly.
+# (the sliding-window layers mask it afterwards instead of slicing the keys).
+# That cost grows with the square of the prompt, so the prompt is capped and the
+# GPU budget reserves that memory explicitly.
 TREATMENT_SPEC = """返回一个 JSON 对象，字段如下：
 - concept: 全片概念，一句话（<=300字）
 - narrative_arc: 叙事弧（<=500字）
@@ -147,7 +149,7 @@ def _generate_treatment(
     except ImportError as exc:
         raise RuntimeError("AI 导演需要 ai 与 ai-cpu/ai-cuda extra") from exc
 
-    _repair_remote_tied_weights(config.director_model)
+    _repair_remote_model_code(config.director_model)
 
     offload_dir = cache_dir / "director-offload"
     model_config = _load_model_config(transformers, config)
@@ -273,7 +275,9 @@ def _load_model_config(transformers, config: AIConfig):
 
 
 def _dtype_bytes(model_config) -> int:
-    dtype = str(getattr(model_config, "torch_dtype", "") or getattr(model_config, "dtype", ""))
+    """Read the weight dtype. ``dtype`` comes first on purpose: ``torch_dtype`` is
+    a deprecated alias on transformers >= 5 and reading it logs a warning."""
+    dtype = str(getattr(model_config, "dtype", "") or getattr(model_config, "torch_dtype", ""))
     return 4 if "32" in dtype else 2
 
 
@@ -302,6 +306,10 @@ def _sequence_reserve_gb(config: AIConfig, model_config, prompt_tokens: int) -> 
     sequence = prompt_tokens + config.director_max_new_tokens
     scores = heads * prefill * prefill * SCORE_BYTES_PER_ELEMENT
     masks = 2 * prefill * prefill * dtype_bytes
+    # `generate` sets `logits_to_keep=1`, so in practice only the last position
+    # reaches the language head and this term is nearly free. Budget the
+    # pessimistic version anyway: the remote forward defaults `logits_to_keep` to
+    # 0, and under-reserving costs an OOM retry that reloads the whole checkpoint.
     logits = prefill * vocab * dtype_bytes
     kv = 2 * kv_heads * head_dim * dtype_bytes * (
         full_layers * sequence + sliding_layers * min(window or sequence, sequence)
@@ -385,6 +393,27 @@ def _trim_context(
     return trimmed
 
 
+def _rendered_token_count(rendered) -> int:
+    """Token count of an ``apply_chat_template(..., tokenize=True)`` result.
+
+    The processors this project uses return a ``BatchEncoding`` holding
+    ``input_ids`` and ``attention_mask``; its ``len`` is the number of *keys* (2),
+    not the number of tokens, so reading it directly silently disabled the prompt
+    cap. Bare lists of ids and batched tensors are handled too.
+    """
+    if isinstance(rendered, Mapping) and "input_ids" in rendered:
+        rendered = rendered["input_ids"]
+    shape = getattr(rendered, "shape", None)
+    if shape:
+        return int(shape[-1])
+    if rendered and not isinstance(rendered[0], (int, np.integer)):
+        # Batched output: either ``[[id, ...]]`` or ``[tensor]``.
+        rendered = rendered[0]
+        shape = getattr(rendered, "shape", None)
+        return int(shape[-1]) if shape else len(rendered)
+    return len(rendered)
+
+
 def _prompt_tokens(processor, messages: list[dict]) -> int:
     """Measure the rendered prompt, falling back to a character estimate."""
     try:
@@ -393,8 +422,7 @@ def _prompt_tokens(processor, messages: list[dict]) -> int:
         )
     except Exception:
         return _estimated_tokens(messages)
-    shape = getattr(rendered, "shape", None)
-    return int(shape[-1]) if shape else len(rendered)
+    return _rendered_token_count(rendered)
 
 
 def _estimated_tokens(messages: list[dict]) -> int:
@@ -442,17 +470,110 @@ def _extract_json(content: str) -> str:
     return text[start:end + 1] if start >= 0 and end > start else text
 
 
-def _repair_remote_tied_weights(model_name: str) -> None:
+TIED_WEIGHTS_LIST = re.compile(r"_tied_weights_keys\s*=\s*\[([^\]]*)\]")
+TIED_WEIGHTS_EMBEDDINGS = (
+    (r"def get_input_embeddings\s*\(self\):\s*return\s+self\.model\.([\w.]+)", "model."),
+    (r"def get_input_embeddings\s*\(self\):\s*return\s+self\.([\w.]+)", ""),
+)
+MASK_KWARGS_BLOCK = re.compile(r"(?P<indent>[ \t]*)mask_kwargs\s*=\s*\{(?P<body>[^{}]*)\}")
+MASK_KWARG_ENTRY = re.compile(r'"(?P<key>\w+)"\s*:\s*(?P<value>[^,\n]+),')
+# transformers renamed this argument when the masking helpers moved to
+# `transformers.masking_utils`, so the remote call has to follow the installed
+# signature instead of the one it was written against.
+MASK_KWARG_ALIASES = {"input_embeds": "inputs_embeds", "inputs_embeds": "input_embeds"}
+
+
+def _mask_kwarg_parameters() -> set[str] | None:
+    """Keyword names the installed mask helpers accept.
+
+    The remote code builds one ``mask_kwargs`` dict and feeds it to both
+    ``create_causal_mask`` and ``create_sliding_window_causal_mask``, so only the
+    intersection of the two signatures can be passed through safely.
+
+    ``None`` means "cannot tell" (missing transformers, or only ``**kwargs``
+    signatures): the remote call is then left untouched, because dropping
+    arguments we cannot verify would silently change the mask.
+    """
+    accepted: set[str] | None = None
+    for name in ("create_causal_mask", "create_sliding_window_causal_mask"):
+        try:
+            module = importlib.import_module("transformers.masking_utils")
+            parameters = inspect.signature(getattr(module, name)).parameters
+        except Exception:
+            continue
+        if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            # This helper swallows anything, so it cannot narrow the set.
+            continue
+        accepted = set(parameters) if accepted is None else accepted & set(parameters)
+    return accepted
+
+
+def _repair_tied_weights(text: str) -> tuple[str, str | None]:
     """transformers >= 5 requires ``_tied_weights_keys`` to be a ``{target: source}``
     mapping, but some remote-code models (e.g. Spark-X2.5) still declare the legacy
     list form, which crashes ``get_expanded_tied_weights_keys`` with
     ``AttributeError: 'list' object has no attribute 'keys'``.
 
-    Fix the local model file first: transformers re-copies remote code from the
-    local model directory into its module cache whenever the two differ, so a
-    patch applied only to the cache copy is silently reverted. The embedding
-    parameter name is derived from ``get_input_embeddings``.
+    The embedding parameter name is derived from ``get_input_embeddings``.
     """
+    match = TIED_WEIGHTS_LIST.search(text)
+    if not match:
+        return text, None
+    source = ""
+    for embed_pattern, prefix in TIED_WEIGHTS_EMBEDDINGS:
+        embed_match = re.search(embed_pattern, text)
+        if embed_match:
+            source = f"{prefix}{embed_match.group(1)}.weight"
+            break
+    if not source:
+        return text, None
+    keys = [item.strip().strip("\"'") for item in match.group(1).split(",") if item.strip()]
+    if not keys:
+        return text, None
+    mapping = ", ".join(f'"{key}": "{source}"' for key in keys)
+    patched = TIED_WEIGHTS_LIST.sub(f"_tied_weights_keys = {{{mapping}}}", text, count=1)
+    return patched, "_tied_weights_keys 改为 dict 映射"
+
+
+def _repair_mask_kwargs(text: str, accepted: set[str] | None) -> tuple[str, str | None]:
+    """Align the remote ``mask_kwargs`` dict with the installed transformers.
+
+    Spark-X2.5 builds it against transformers 4.57 (``input_embeds`` plus
+    ``cache_position``), while 5.x renamed the first to ``inputs_embeds`` and
+    dropped the second, so the call dies with ``TypeError: create_causal_mask()
+    got an unexpected keyword argument 'input_embeds'``. Entries are matched
+    against the installed signature, which keeps the same rewrite correct on
+    both sides of the rename.
+    """
+    if accepted is None:
+        return text, None
+    changes: list[str] = []
+
+    def rebuild(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        entries = MASK_KWARG_ENTRY.findall(match.group("body"))
+        if not entries:
+            return match.group(0)
+        lines: list[str] = []
+        for key, value in entries:
+            if key not in accepted:
+                alias = MASK_KWARG_ALIASES.get(key)
+                if alias is None or alias not in accepted:
+                    changes.append(f"删除 {key}")
+                    continue
+                changes.append(f"{key} → {alias}")
+                key = alias
+            lines.append(f'{indent}    "{key}": {value},')
+        body = "\n".join(lines)
+        return f"{indent}mask_kwargs = {{\n{body}\n{indent}}}"
+
+    patched = MASK_KWARGS_BLOCK.sub(rebuild, text, count=1)
+    return patched, ("、".join(changes) if changes else None)
+
+
+def _remote_module_paths(model_name: str) -> list[Path]:
+    """The remote modelling file in the local model directory, plus the copy
+    transformers keeps in its module cache."""
     module_paths: list[Path] = []
     local_dir = Path(model_name)
     if (local_dir / "modeling_spark.py").exists():
@@ -469,42 +590,36 @@ def _repair_remote_tied_weights(model_name: str) -> None:
             module_paths.append(cached)
     except Exception:
         pass
-    list_pattern = re.compile(r"_tied_weights_keys\s*=\s*\[([^\]]*)\]")
-    embed_patterns = (
-        (r"def get_input_embeddings\s*\(self\):\s*return\s+self\.model\.([\w.]+)", "model."),
-        (r"def get_input_embeddings\s*\(self\):\s*return\s+self\.([\w.]+)", ""),
-    )
-    for module_path in module_paths:
+    return module_paths
+
+
+def _repair_remote_model_code(model_name: str) -> None:
+    """Rewrite the remote modelling file on disk so it runs on the transformers
+    release that is actually installed.
+
+    Patch the local model file first: transformers re-copies remote code from the
+    local model directory into its module cache whenever the two differ, so a
+    patch applied only to the cache copy is silently reverted (and the cache
+    directory is keyed by a hash of the sources, so it moves on every edit).
+    """
+    accepted = _mask_kwarg_parameters()
+    for module_path in _remote_module_paths(model_name):
         if not module_path.exists():
             continue
         try:
             text = module_path.read_text(encoding="utf-8")
         except OSError:
             continue
-        match = list_pattern.search(text)
-        if not match:
-            continue
-        embed_match = None
-        source = ""
-        for embed_pattern, prefix in embed_patterns:
-            embed_match = re.search(embed_pattern, text)
-            if embed_match:
-                source = f"{prefix}{embed_match.group(1)}.weight"
-                break
-        if not embed_match:
-            continue
-        keys = [item.strip().strip('"' + "'") for item in match.group(1).split(",") if item.strip()]
-        if not keys:
-            continue
-        mapping = ", ".join(f'"{key}": "{source}"' for key in keys)
-        patched = list_pattern.sub(f"_tied_weights_keys = {{{mapping}}}", text, count=1)
-        if patched == text:
+        text, tied_note = _repair_tied_weights(text)
+        text, mask_note = _repair_mask_kwargs(text, accepted)
+        notes = [note for note in (tied_note, mask_note) if note]
+        if not notes:
             continue
         try:
-            module_path.write_text(patched, encoding="utf-8")
+            module_path.write_text(text, encoding="utf-8")
         except OSError:
             continue
-        print(f"    已修复 {module_path} 的 _tied_weights_keys 兼容性（transformers>=5 要求 dict 映射）")
+        print(f"    已修复 {module_path} 的远程代码兼容性：{'；'.join(notes)}")
 
 
 

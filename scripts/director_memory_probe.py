@@ -1,12 +1,16 @@
 """Print the director's sequence-side memory estimate for representative prompts.
 
 The director is the only stage that feeds a very long sequence to a language
-model, and Spark-X2.5 computes attention with plain matmuls (no SDPA/flash-attn)
-while prefilling the language head over every prompt position. Both costs grow
+model, and Spark-X2.5 computes attention with plain matmuls (no SDPA/flash-attn),
+so every layer materialises a full prompt x prompt score matrix. That cost grows
 with the square of the prompt, so this probe shows why the prompt cap exists and
 how much of a 12GB card is left for weights at different prompt lengths.
 
 Run: uv run python scripts/director_memory_probe.py
+
+This probe only does the arithmetic; `scripts/director_model_probe.py` is the one
+that actually runs the remote model code (on CPU, with a few million parameters)
+to check the masks. Neither needs the 7.7GB checkpoint.
 """
 
 from __future__ import annotations
@@ -86,7 +90,7 @@ def main() -> int:
         print(f"{label:<36}{prompt_tokens:>8}{reserve:>9.1f}G{budget:>9.1f}G  {verdict}")
 
     print()
-    print(f"序列预留 = 注意力分数矩阵 + 掩码 + 全量 prefill logits + KV 缓存 + 激活，"
+    print(f"序列预留 = 注意力分数矩阵 + 掩码 + 保守的 prefill logits + KV 缓存 + 激活，"
           f"再加固定开销 {DIRECTOR_OVERHEAD_GB:.1f}GiB，下限 {MIN_DIRECTOR_RESERVE_GB:.1f}GiB；"
           f"JSON 修复轮次另按 +{REPAIR_TOKENS} tokens 计入。")
     print(f"权重预算按空闲显存而非显卡总容量计算，因此先关掉其他占显存的程序更有效。")

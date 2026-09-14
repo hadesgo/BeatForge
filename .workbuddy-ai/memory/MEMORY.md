@@ -13,9 +13,14 @@ Spark-X2.5-4B 的 remote code 有两个必须靠外部兜住的特性，任何"�
 1. 注意力是手写 `torch.matmul` + softmax，**没有 SDPA / flash-attn 后端**；滑动窗口层
    （27/36 层，window=512）是给完整的 `[heads, n, n]` 分数矩阵加掩码，**不切 KV**。
    分数矩阵峰值按 `heads * n² * 6 字节`（bf16 矩阵 + fp32 softmax 副本）估算。
-2. 未定义 `prepare_inputs_for_generation`，`logits_to_keep` 默认 0，prefill 会对
-   **每个 prompt 位置**跑 lm_head：`n * vocab * dtype_bytes`（vocab=131072）。
-以上两项都随提示词长度**平方**增长，所以提示词必须限长。
+2. `logits_to_keep` **不是**瓶颈：remote `forward` 的默认值确实是 0，但 transformers 5.16 的
+   `generate` 会在 `_supports_logits_to_keep()` 为真时显式传 `logits_to_keep=1`（已实测 spy 到
+   `[1, 1]`），prefill 只对最后一个位置跑 lm_head。`_sequence_reserve_gb` 里的
+   `prefill * vocab * dtype_bytes` 现在是**刻意的保守余量**（≈0.66GiB @2600 tokens），
+   不是真实开销；不要因为"省显存"就删掉它，删除只会在 transformers 改行为时换来一次 OOM 重载。
+   旧结论"prefill 对每个 prompt 位置跑 lm_head"已作废（README 与注释同步改过）。
+
+真正随提示词长度**平方**增长的是 1，所以提示词必须限长。
 
 - `AIConfig.director_prompt_tokens`（默认 2600）限制提示词长度；`PROMPT_LADDER` 逐级降级
   （先裁候选表 → 再减素材数 → 最后才对歌词抽样），每级用 tokenizer 实测。
@@ -25,6 +30,33 @@ Spark-X2.5-4B 的 remote code 有两个必须靠外部兜住的特性，任何"�
   `director_gpu_memory_gb` 取小。Accelerate 的 `max_memory` 只预算权重，不能替代这一步。
 - OOM 时自动用 `RETRY_BUDGET_SCALE`（0.65）更小的权重预算重试一次。
 - `scripts/director_memory_probe.py` 可在无显卡、不加载模型的情况下打印各提示词长度的预留量。
+
+## 远程代码兼容层（`_repair_remote_model_code`）
+Spark-X2.5 自带的 `modeling_spark.py` 是按 `transformers==4.57` 写的（`config.json` 里
+`transformers_version: 4.57.1`），而项目锁 `transformers>=5.16.1`。加载前必须就地改写本地模型目录里
+的这份文件，目前两处：
+1. `_tied_weights_keys` 旧列表写法 → `{target: source}` 映射（否则权重加载就炸）。
+2. `mask_kwargs` 里 `create_causal_mask(input_embeds=..., cache_position=...)` → 5.16 已改名为
+   `inputs_embeds` 并删掉 `cache_position`，否则首次前向报
+   `TypeError: create_causal_mask() got an unexpected keyword argument 'input_embeds'`。
+
+- 改写依据是**已安装**的 `create_causal_mask` 签名（`inspect.signature` 逐项过滤 + `MASK_KWARG_ALIASES`
+  别名映射），所以新旧 transformers 都对，且幂等；签名里有 `**kwargs` 时一律不动（无法验证就别乱删参数）。
+- 只打补丁到 HF 的 modules 缓存目录是没用的：缓存目录名是源码哈希，改了本地文件就会换目录重建。
+- **`config._attn_implementation` 必须是 `eager`**。remote 注意力手工加 4D float 掩码，若落到 sdpa，
+  `create_causal_mask` 会返回 `None`，注意力**静默失去掩码**。`Spark2_5PreTrainedModel` 没声明
+  `_supports_sdpa`，所以现在默认就是 eager；改模型/改 transformers 后要用探针复核这一条。
+- `scripts/director_model_probe.py`：把 config 缩到几百万参数后在 **CPU** 上跑同一份远程代码，
+  不需要 7.7GB 权重就能验四件事：注意力实现、因果性（前缀一致）、滑动窗口、带缓存/无缓存贪心一致。
+  滑动窗口那一项**必须用单层**——感受野 = 层数 × window，多层会掩盖窗口外的 token。
+
+## 提示词长度必须用 `_rendered_token_count` 量
+`processor.apply_chat_template(..., tokenize=True)` 返回的是含 `input_ids`/`attention_mask` 的
+`BatchEncoding`，`len()` 是**键的个数（2）**，不是 token 数。曾因此把 `_prompt_tokens` 写成
+`len(rendered)`，导致：提示词上限全程失效（`_fit_prompt` 每级都判"装得下"，从没裁过）、
+序列预留按 2 tokens 算成 1.5GiB 下限，日志打印「导演提示词约 2 tokens · 权重预算 9.0GiB」。
+修复后同一场景是「2848 tokens · 预留 3.5GiB · 预算 7.3GiB」。改任何长度测量都要覆盖
+BatchEncoding / 张量 / 列表 / 嵌套列表四种形态（测试在 `tests/test_ai_director.py`）。
 
 ## 图片运镜（`beatforge/renderer.py::_image_filter_graph`）
 - **禁止再用 `zoompan` 做图片运镜**。它把 `x`/`y` 截断到输入帧的整数像素，而本项目运镜只有
@@ -40,7 +72,8 @@ Spark-X2.5-4B 的 remote code 有两个必须靠外部兜住的特性，任何"�
   会破坏这一前提，使单帧步长正负相消、读数全是噪声——曾因此在真实片段上报出 58/101 静止帧、
   1.75px 抖动的假结论（一致性只有 0.033）。
 - 判据是**一致性** `|Σstep| / Σ|step|`：≈1 才有效，< 0.5 时脚本直接判"测量不可信"。
-  `scripts/jitter_probe.py` 与技能的 `subpixel_motion.py` 都已内置该判据。
+  `scripts/jitter_probe.py` 已内置该判据。（本文件曾提到"技能的 `subpixel_motion.py`"，
+  但本机与项目里都没有任何 skills 目录，该文件不存在——需要时按本文自行重建。）
 - 要测真实运镜是否平滑，用 `scripts/camera_move_probe.py --controlled`（关掉颗粒/暗角/调色、
   单层铺满）或 `scripts/zoompan_probe.py`。可信结论：旧 zoompan 抖动 1.67px / 比值 18.6
   → 新 perspective 0.117px / 比值 1.5。
@@ -50,7 +83,9 @@ Spark-X2.5-4B 的 remote code 有两个必须靠外部兜住的特性，任何"�
 
 ## 本机环境注意
 - `uv run pytest` 默认临时目录无权限，需要 `--basetemp=<可写目录> -p no:cacheprovider`。
-- 无 NVIDIA 显卡：AI 链路用 `--no-ai` 验证，模型相关测试用 mock。显存相关改动靠单元测试 + 数值估算验证，不做 GPU 实机验证。
+- **本机有可用 CUDA 显卡**：RTX 5070 12GB（`torch.cuda.is_available()` 为 True，空闲约 10.8GiB），
+  但 `nvidia-smi` 会报 `Failed to initialize NVML: Unknown Error`，所以别用 nvidia-smi 判断显存，
+  用 `torch.cuda.mem_get_info()`。AI 链路可以真机验证：`--no-ai` 仍是最快的回归方式。
 - `AIConfig.device` 只允许 `auto|cuda|cpu`，无法选多卡；但 `beatforge/models/` 下多处仍用
   `device == "cuda"` 判断（`transcriber.py`、`vision_index.py`、`audio_semantics.py`），
   一旦放开 `cuda:N` 会静默退回 fp32/CPU。导演模块已改为 `_is_cuda()` 前缀匹配，其余待跟进。

@@ -371,7 +371,11 @@ def test_director_prompt_is_trimmed_until_it_fits_the_budget() -> None:
     class Processor:
         def apply_chat_template(self, messages, **_kwargs):
             text = messages[-1]["content"]
-            return list(range(len(text) // 4))
+            ids = list(range(len(text) // 4))
+            # Real processors return a BatchEncoding holding input_ids and
+            # attention_mask; its len() is the number of *keys*, so treating it
+            # as a token count used to make the prompt cap a no-op.
+            return {"input_ids": ids, "attention_mask": [1] * len(ids)}
 
     context = {
         "song": {"duration": 240.0},
@@ -504,3 +508,196 @@ def test_treatment_spec_documents_every_schema_field() -> None:
         assert field in TREATMENT_SPEC, field
     for field in SectionDirection.model_fields:
         assert field in TREATMENT_SPEC, field
+
+
+# Spark-X2.5's published `modeling_spark.py` is written against transformers# 4.57, while the project pins transformers >= 5.16. The repair functions rewrite
+# that file in place, so these tests pin down the two rewrites as text.
+LEGACY_REMOTE_MODULE = '''class Spark2_5ForCausalLM(Spark2_5PreTrainedModel, GenerationMixin):
+    _tied_weights_keys = ["lm_head.weight"]
+
+    def get_input_embeddings(self):
+        return self.model.embedding
+
+    def forward(self):
+        if not isinstance(attention_mask, dict):
+            mask_kwargs = {
+                "config": self.config,
+                "input_embeds": inputs_embeds,
+                "attention_mask": attention_mask,
+                "cache_position": cache_position,
+                "past_key_values": past_key_values,
+                "position_ids": position_ids,
+            }
+            causal_mask_mapping = {
+                "full_attention": create_causal_mask(**mask_kwargs),
+            }
+'''
+
+# transformers.masking_utils.create_causal_mask, both sides of the rename.
+MASK_PARAMETERS_5 = frozenset({
+    "config", "inputs_embeds", "attention_mask", "past_key_values", "position_ids",
+    "or_mask_function", "and_mask_function", "block_sequence_ids", "layer_idx",
+    "allow_is_causal_skip",
+})
+MASK_PARAMETERS_4 = frozenset({
+    "config", "input_embeds", "attention_mask", "cache_position", "past_key_values",
+    "position_ids", "or_mask_function", "and_mask_function",
+})
+
+
+def test_remote_mask_kwargs_follow_the_installed_signature() -> None:
+    from beatforge.models.ai_director import _repair_mask_kwargs
+
+    patched, note = _repair_mask_kwargs(LEGACY_REMOTE_MODULE, MASK_PARAMETERS_5)
+
+    assert '"inputs_embeds": inputs_embeds,' in patched
+    assert '"input_embeds":' not in patched
+    assert "cache_position" not in patched
+    assert note == "input_embeds → inputs_embeds、删除 cache_position"
+    # Everything the mask helpers still accept has to survive untouched.
+    assert '"config": self.config,' in patched
+    assert '"past_key_values": past_key_values,' in patched
+    assert '"position_ids": position_ids,' in patched
+    assert "create_causal_mask(**mask_kwargs)" in patched
+
+
+def test_remote_mask_kwargs_are_left_alone_on_the_old_signature() -> None:
+    from beatforge.models.ai_director import _repair_mask_kwargs
+
+    assert _repair_mask_kwargs(LEGACY_REMOTE_MODULE, MASK_PARAMETERS_4) == (
+        LEGACY_REMOTE_MODULE, None,
+    )
+
+
+def test_remote_mask_kwargs_are_left_alone_when_the_signature_is_unknown() -> None:
+    from beatforge.models.ai_director import _repair_mask_kwargs
+
+    # `**kwargs` signatures cannot be verified, and dropping arguments blindly
+    # would change the mask instead of fixing a crash.
+    assert _repair_mask_kwargs(LEGACY_REMOTE_MODULE, None) == (LEGACY_REMOTE_MODULE, None)
+
+
+def test_remote_tied_weights_become_a_mapping() -> None:
+    from beatforge.models.ai_director import _repair_tied_weights
+
+    patched, note = _repair_tied_weights(LEGACY_REMOTE_MODULE)
+
+    assert '_tied_weights_keys = {"lm_head.weight": "model.embedding.weight"}' in patched
+    assert note == "_tied_weights_keys 改为 dict 映射"
+
+
+def test_remote_code_repair_rewrites_the_file_only_once(monkeypatch, tmp_path: Path) -> None:
+    from beatforge.models.ai_director import _repair_remote_model_code
+
+    module = tmp_path / "modeling_spark.py"
+    module.write_text(LEGACY_REMOTE_MODULE, encoding="utf-8")
+    monkeypatch.setattr(
+        "beatforge.models.ai_director._remote_module_paths", lambda _model_name: [module],
+    )
+    monkeypatch.setattr(
+        "beatforge.models.ai_director._mask_kwarg_parameters", lambda: MASK_PARAMETERS_5,
+    )
+
+    _repair_remote_model_code("unused")
+    once = module.read_text(encoding="utf-8")
+
+    assert '"inputs_embeds": inputs_embeds,' in once
+    assert '_tied_weights_keys = {"lm_head.weight": "model.embedding.weight"}' in once
+
+    # A second run must be a no-op, otherwise every start would rewrite the file
+    # and invalidate transformers' module cache.
+    _repair_remote_model_code("unused")
+    assert module.read_text(encoding="utf-8") == once
+
+
+def test_rendered_token_count_handles_every_processor_shape() -> None:
+    from beatforge.models.ai_director import _rendered_token_count
+
+    # The shape that matters: a BatchEncoding of input_ids + attention_mask, whose
+    # own len() is 2 keys while the prompt is 4 tokens long.
+    assert _rendered_token_count({"input_ids": [1, 2, 3, 4], "attention_mask": [1] * 4}) == 4
+    assert _rendered_token_count(np.zeros((1, 7), dtype=int)) == 7
+    assert _rendered_token_count([[1, 2, 3]]) == 3
+    assert _rendered_token_count([1, 2, 3]) == 3
+
+
+def test_prompt_tokens_measures_tokens_not_encoding_keys() -> None:
+    from beatforge.models.ai_director import _prompt_tokens
+
+    class Processor:
+        def apply_chat_template(self, messages, **_kwargs):
+            ids = list(range(len(messages[-1]["content"]) // 4))
+            return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+
+    assert _prompt_tokens(Processor(), [{"role": "user", "content": "x" * 400}]) == 100
+
+
+def test_prompt_tokens_falls_back_to_a_character_estimate() -> None:
+    from beatforge.models.ai_director import _prompt_tokens
+
+    class Processor:
+        def apply_chat_template(self, *_args, **_kwargs):
+            raise ValueError("no chat template")
+
+    assert _prompt_tokens(Processor(), [{"role": "user", "content": "x" * 360}]) == int(360 / 1.8) + 64
+
+
+def test_mask_kwarg_parameters_intersects_both_mask_helpers(monkeypatch) -> None:
+    """The remote code shares one `mask_kwargs` dict between both helpers, so a
+    name accepted by only one of them must not be passed through."""
+    import types
+
+    from beatforge.models.ai_director import _mask_kwarg_parameters
+
+    def create_causal_mask(config, inputs_embeds, attention_mask, cache_position): ...
+
+    def create_sliding_window_causal_mask(config, inputs_embeds, attention_mask): ...
+
+    module = types.ModuleType("transformers.masking_utils")
+    module.create_causal_mask = create_causal_mask
+    module.create_sliding_window_causal_mask = create_sliding_window_causal_mask
+    monkeypatch.setitem(sys.modules, "transformers.masking_utils", module)
+
+    assert _mask_kwarg_parameters() == {"config", "inputs_embeds", "attention_mask"}
+
+
+def test_mask_kwarg_parameters_gives_up_on_kwargs_signatures(monkeypatch) -> None:
+    import types
+
+    from beatforge.models.ai_director import _mask_kwarg_parameters
+
+    def create_causal_mask(**kwargs): ...
+
+    def create_sliding_window_causal_mask(**kwargs): ...
+
+    module = types.ModuleType("transformers.masking_utils")
+    module.create_causal_mask = create_causal_mask
+    module.create_sliding_window_causal_mask = create_sliding_window_causal_mask
+    monkeypatch.setitem(sys.modules, "transformers.masking_utils", module)
+
+    assert _mask_kwarg_parameters() is None
+
+
+def test_dtype_bytes_prefers_dtype_over_the_deprecated_alias() -> None:
+    from beatforge.models.ai_director import _dtype_bytes
+
+    class Config:
+        dtype = "bfloat16"
+
+        @property
+        def torch_dtype(self):
+            # On transformers >= 5 this alias logs a deprecation warning when read.
+            raise AssertionError("the deprecated alias must not be read when dtype exists")
+
+    assert _dtype_bytes(Config()) == 2
+
+
+def test_dtype_bytes_still_understands_configs_with_only_the_old_alias() -> None:
+    from beatforge.models.ai_director import _dtype_bytes
+
+    class LegacyConfig:
+        dtype = None
+        torch_dtype = "float32"
+
+    assert _dtype_bytes(LegacyConfig()) == 4
+
