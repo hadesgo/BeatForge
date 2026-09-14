@@ -26,6 +26,28 @@ Spark-X2.5-4B 的 remote code 有两个必须靠外部兜住的特性，任何"�
 - OOM 时自动用 `RETRY_BUDGET_SCALE`（0.65）更小的权重预算重试一次。
 - `scripts/director_memory_probe.py` 可在无显卡、不加载模型的情况下打印各提示词长度的预留量。
 
+## 图片运镜（`beatforge/renderer.py::_image_filter_graph`）
+- **禁止再用 `zoompan` 做图片运镜**。它把 `x`/`y` 截断到输入帧的整数像素，而本项目运镜只有
+  0.03–0.1 px/帧，结果是"连续多帧静止 + 突然跳 1 像素"的顿挫。改用
+  `perspective=...:interpolation=cubic:sense=source:eval=frame`，逐帧求值裁剪四边形，亚像素重采样。
+- `perspective` 的表达式**只暴露 `on`（帧序号）**，不暴露 `t`；用 `t` 直接报错。
+- 几何量别写反：**裁剪框宽 = `W/zoom`**，**可平移量程 = `W - W/zoom`**。写反会变成极端硬推镜。
+- 回归测试在 `tests/test_renderer.py`：断言无 zoompan、裁剪框是矩形且不越界、保持宽高比、
+  相邻帧步长不超过 `max(平均步长*6, 0.5px)`。改运镜必须让这些测试继续通过。
+
+## 运镜抖动怎么测（别拿成片直接测）
+- 相位相关测帧间位移的前提是**相邻帧互为刚体变换**。成片里的暗角、颗粒、调色固定在画面坐标上，
+  会破坏这一前提，使单帧步长正负相消、读数全是噪声——曾因此在真实片段上报出 58/101 静止帧、
+  1.75px 抖动的假结论（一致性只有 0.033）。
+- 判据是**一致性** `|Σstep| / Σ|step|`：≈1 才有效，< 0.5 时脚本直接判"测量不可信"。
+  `scripts/jitter_probe.py` 与技能的 `subpixel_motion.py` 都已内置该判据。
+- 要测真实运镜是否平滑，用 `scripts/camera_move_probe.py --controlled`（关掉颗粒/暗角/调色、
+  单层铺满）或 `scripts/zoompan_probe.py`。可信结论：旧 zoompan 抖动 1.67px / 比值 18.6
+  → 新 perspective 0.117px / 比值 1.5。
+- 自己写测量时的三个硬坑：float32 会让 FFT 退化成 complex64 且 DC 基底淹没真实峰（必须去均值
+  + float64）；三点抛物线拟合峰值在小平移下低偏差约 40%（用局部上采样 DFT）；测试卡要用类照片的
+  1/f 噪声且中灰，不能用平滑噪声或条纹。
+
 ## 本机环境注意
 - `uv run pytest` 默认临时目录无权限，需要 `--basetemp=<可写目录> -p no:cacheprovider`。
 - 无 NVIDIA 显卡：AI 链路用 `--no-ai` 验证，模型相关测试用 mock。显存相关改动靠单元测试 + 数值估算验证，不做 GPU 实机验证。

@@ -263,11 +263,13 @@ cinematic = "preset:cinematic"
 
 - `cinematic_depth`：克制的景深推拉，适合主歌、前奏和尾奏；
 - `focus_pull`：清晰前景配合柔化背景，随旋律缓慢推进；
-- `pan_reveal`：具有明确方向的画面揭示，替代周期性抖动；
+- `pan_reveal`：具有明确方向的画面揭示；
 - `split_screen`：两张语义相关图片分屏并置；
 - `photo_stack`：图片按真实节拍依次滑入并轻微旋转叠放；
 - `double_exposure`：双图银幕混合，适合桥段、梦幻或抽象意境；
 - `beat_montage`：最多四张图片在镜头内部按音乐节拍依次切换。
+
+图片运镜使用 `perspective` 滤镜逐帧求值裁剪四边形，而不是 `zoompan`。`zoompan` 会把裁剪原点截断到输入帧的整数像素上：本项目的运镜速度通常只有每帧 0.03–0.1 像素，于是画面会连续多帧完全静止、再突然跳一个整像素，在任何直线边缘上都能看出规律性的顿挫。`perspective` 对每帧做真正的亚像素仿射重采样，单次重采样即可完成，既不会像超采样那样二次损失清晰度，也不会出现整像素跳变。裁剪框宽度是 `W/zoom`，可平移量程是 `W - W/zoom`，两者不可互换。
 
 多图辅助素材来自同一句歌词的视觉语义排序，同时受质量、色彩连续性、重复使用和分辨率惩罚约束。默认仅约 24% 图片镜头使用多图组合，副歌和 AI 导演标记的冲击段会提高概率，呼吸段会降低概率，避免整支 MV 变成模板化电子相册。`image_composites = false` 可只保留单图景深和方向性运镜。
 
@@ -447,6 +449,16 @@ uv run python scripts/reuse_probe.py
 uv run python scripts/director_memory_probe.py
 ```
 
+排查图片运镜的帧间抖动（需要 FFmpeg，不需要显卡）。`jitter_probe.py` 用相位相关测量相邻帧之间的亚像素位移，并列出每一帧的步长；`zoompan_probe.py` 用受控光斑对比 `zoompan`、`perspective` 与超采样三种实现；`camera_move_probe.py` 走真实渲染路径，`--controlled` 会关闭颗粒、暗角和调色，让位移测量不被噪声干扰：
+
+```powershell
+uv run python scripts/jitter_probe.py demo/.beatforge/clips/00002.mp4
+uv run python scripts/zoompan_probe.py
+uv run python scripts/camera_move_probe.py --controlled
+```
+
+这三个工具都会先打印一个**一致性**（`|累计位移| / Σ|单帧位移|`）：测量成立的前提是相邻帧互为刚体变换，而暗角、颗粒、调色都固定在画面坐标上，会破坏这个前提。一致性低于 0.5 时脚本会直接判定"测量不可信"并拒绝给出结论——此时看到的"抖动"是噪声，不是成片的问题。要判断真实运镜是否平滑，请用 `camera_move_probe.py --controlled` 或 `zoompan_probe.py` 的受控片段。
+
 在你自己的 AI 环境中执行模型烟雾测试：
 
 ```powershell
@@ -467,5 +479,6 @@ beatforge/models/vision_index.py      WeMM/Qwen3-VL-Embedding/SigLIP2 检索
 beatforge/planner.py                  多目标镜头编排
 beatforge/renderer.py                 FFmpeg 成片渲染
 beatforge/pipeline.py                 分阶段模型生命周期
+scripts/                              演示素材、复用/显存/抖动探针
 tests/                                不下载模型的测试
 ```

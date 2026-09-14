@@ -223,11 +223,30 @@ def _image_filter_graph(
     direction = -1 if (shot.media_id + max(0, shot.section_index)) % 2 else 1
     pan = .18 if effect == "pan_reveal" else .06
     progress = f"on/{max(1, frames - 1)}"
-    x = f"clip((iw-iw/zoom)/2+{direction}*(iw-iw/zoom)*{pan}*({progress}-.5),0,iw-iw/zoom)"
-    y = f"clip((ih-ih/zoom)/2-(ih-ih/zoom)*.035*{progress},0,ih-ih/zoom)"
+    # ``perspective`` is used instead of ``zoompan`` because zoompan truncates the
+    # crop origin to whole pixels of its input frame. The camera move here is only
+    # a fraction of a pixel per frame, so zoompan holds the image still for several
+    # frames and then snaps it by a whole pixel - a visible stutter on any straight
+    # edge. Feeding it a supersampled frame only shrinks the jump; perspective
+    # evaluates the crop rectangle per frame with true sub-pixel interpolation, so
+    # the move stays smooth and nothing is resampled twice.
+    #
+    # The crop is ``W/zoom`` wide and may travel ``W - W/zoom`` before leaving the
+    # frame; the two are easy to confuse and swapping them turns the move into a
+    # hard punch-in.
+    crop_width = f"(W/({zoom}))"
+    crop_height = f"(H/({zoom}))"
+    travel = f"(W-W/({zoom}))"
+    rise = f"(H-H/({zoom}))"
+    origin_x = f"clip((W-W/({zoom}))/2+{direction}*{travel}*{pan}*({progress}-.5),0,W-W/({zoom}))"
+    origin_y = f"clip((H-H/({zoom}))/2-{rise}*.035*{progress},0,H-H/({zoom}))"
     filters.append(
-        f"[adapted]zoompan=z='{zoom}':x='{x}':y='{y}':d=1:"
-        f"s={cfg.width}x{cfg.height}:fps={cfg.fps}[composite]"
+        f"[adapted]perspective="
+        f"x0='{origin_x}':y0='{origin_y}':"
+        f"x1='{origin_x}+{crop_width}':y1='{origin_y}':"
+        f"x2='{origin_x}':y2='{origin_y}+{crop_height}':"
+        f"x3='{origin_x}+{crop_width}':y3='{origin_y}+{crop_height}':"
+        f"interpolation=cubic:sense=source:eval=frame[composite]"
     )
     return filters, "[composite]"
 
