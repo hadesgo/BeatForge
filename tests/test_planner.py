@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -5,7 +6,35 @@ import numpy as np
 from beatforge.audio import AudioAnalysis
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
-from beatforge.planner import _upscale_penalty, create_plan
+from beatforge.planner import _least_used_assets, _reuse_penalty, _upscale_penalty, create_plan
+
+
+def _grid(duration: float, labels: list[str] | None = None) -> AudioAnalysis:
+    return AudioAnalysis(
+        duration=duration, bpm=120, beats=[x / 2 for x in range(int(duration * 2) + 1)],
+        sections=[0, duration / 2, duration],
+        energy_times=[0, duration], energy_values=[.5, .6], average_energy=.55,
+        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+        downbeats=[float(x) for x in range(0, int(duration) + 1, 2)],
+        section_labels=labels or ["verse", "chorus"],
+    )
+
+
+def _lines(duration: float) -> list[LyricLine]:
+    return [LyricLine(i * 4, (i + 1) * 4, f"第{i}句") for i in range(int(duration / 4))]
+
+
+def _images(count: int) -> list[MediaAsset]:
+    return [
+        MediaAsset(i, Path(f"p{i}.jpg"), "image", float("inf"), 1920, 1080)
+        for i in range(count)
+    ]
+
+
+def _visible_ids(shots) -> list[int]:
+    return [shot.media_id for shot in shots] + [
+        layer.media_id for shot in shots for layer in shot.layers
+    ]
 
 
 def test_plan_is_continuous() -> None:
@@ -148,6 +177,65 @@ def test_repeated_lyrics_reuse_only_when_no_alternative_exists() -> None:
     shots = create_plan(analysis, lyrics, assets, None, min_shot=1.5, max_shot=5)
 
     assert [shot.media_id for shot in shots] == [0, 0]
+
+
+def test_assets_are_never_shown_twice_when_supply_is_sufficient() -> None:
+    analysis = _grid(100)
+    lyrics = _lines(100)
+    assets = _images(50)
+    similarities = np.random.default_rng(3).uniform(.2, .9, size=(len(lyrics), len(assets)))
+
+    shots = create_plan(
+        analysis, lyrics, assets, similarities, min_shot=1.8, max_shot=5.5,
+        image_composite_ratio=1,
+    )
+
+    visible = _visible_ids(shots)
+    assert len(visible) == len(set(visible))
+    # Composites are still allowed to spend the surplus material.
+    assert any(shot.layers for shot in shots)
+
+
+def test_scarce_assets_are_spread_evenly_instead_of_repeating_hero_shots() -> None:
+    analysis = _grid(100)
+    lyrics = _lines(100)
+    assets = _images(8)
+    similarities = np.full((len(lyrics), len(assets)), .2)
+    similarities[:, 0] = 1.0
+
+    shots = create_plan(analysis, lyrics, assets, similarities, min_shot=1.8, max_shot=5.5)
+
+    visible = Counter(_visible_ids(shots))
+    assert len(visible) == len(assets)
+    assert max(visible.values()) - min(visible.values()) <= 1
+
+
+def test_asset_repeat_policy_can_be_turned_off() -> None:
+    analysis = _grid(20)
+    lyrics = _lines(20)
+    assets = _images(10)
+    similarities = np.full((len(lyrics), len(assets)), .2)
+    similarities[:, 0] = 1.0
+
+    strict = create_plan(analysis, lyrics, assets, similarities, min_shot=1.8, max_shot=5.5)
+    loose = create_plan(
+        analysis, lyrics, assets, similarities, min_shot=1.8, max_shot=5.5,
+        avoid_asset_repeats=False,
+    )
+
+    assert len({shot.media_id for shot in strict}) == len(strict)
+    assert len({shot.media_id for shot in loose}) < len(loose)
+
+
+def test_least_used_tier_and_reuse_penalty_follow_visible_history() -> None:
+    assets = _images(3)
+    minimum, tier = _least_used_assets(assets, {0: 2, 1: 2, 2: 1})
+    assert minimum == 1
+    assert [asset.id for asset in tier] == [2]
+
+    assert _reuse_penalty(0, None, 5) == 0.0
+    assert _reuse_penalty(1, 4, 5) > _reuse_penalty(1, 3, 5) > _reuse_penalty(1, 0, 5)
+    assert _reuse_penalty(2, 0, 5) > _reuse_penalty(1, 0, 5)
 
 
 def test_plan_builds_semantically_ranked_multi_image_layers() -> None:

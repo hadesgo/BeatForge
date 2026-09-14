@@ -36,6 +36,7 @@ class RenderConfig(BaseModel):
     image_composites: bool = True
     image_composite_ratio: float = Field(default=.24, ge=0, le=1)
     max_composite_images: int = Field(default=3, ge=2, le=4)
+    avoid_asset_repeats: bool = True
     blurred_image_background: bool = True
     image_background_blur: float = Field(default=26.0, ge=0, le=80)
     image_foreground_scale: float = Field(default=.92, ge=.55, le=1.0)
@@ -160,6 +161,7 @@ visual_effects = true
 image_composites = true # AI 按段落自动选择分屏、照片堆叠、双重曝光和节拍蒙太奇
 image_composite_ratio = 0.24 # 多图镜头占比；副歌会适当提高
 max_composite_images = 3 # 建议 2~3；4 仅适合短促高能蒙太奇
+avoid_asset_repeats = true # 素材充足时每个镜头用不同素材；多图合成只消耗富余素材
 blurred_image_background = true # 图片保持原比例，空余区域由同图模糊背景填满
 image_background_blur = 26.0
 image_foreground_scale = 0.92

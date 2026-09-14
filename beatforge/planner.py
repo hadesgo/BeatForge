@@ -75,35 +75,43 @@ def create_plan(
     image_composites: bool = True,
     image_composite_ratio: float = .24,
     max_composite_images: int = 3,
+    avoid_asset_repeats: bool = True,
 ) -> list[Shot]:
+    """Lay out shots on the musical grid and pick media for each of them.
+
+    Reuse policy: an asset that is already on screen is only chosen again when the
+    remaining untouched assets can no longer cover the remaining shots. While the
+    supply lasts, every shot gets something the audience has not seen yet.
+    """
     boundaries = _boundaries(analysis, lyrics, min_shot, max_shot, treatment)
     lyric_rows = {id(line): i for i, line in enumerate(lyrics)}
     usage: dict[int, int] = {}
-    recent: list[int] = []
+    last_seen: dict[int, int] = {}
     previous: MediaAsset | None = None
     chorus_motifs: list[int] = []
     video_cursors: dict[int, float] = {}
-    lyric_asset_history: dict[str, set[int]] = {}
     lyric_visual_history: dict[str, set[int]] = {}
     active_line_id: int | None = None
     active_lyric_key = ""
-    active_line_assets: set[int] = set()
     active_line_visual_assets: set[int] = set()
     shots: list[Shot] = []
+    shot_count = len(boundaries) - 1
     for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
         midpoint = (start + end) / 2
         line = next((line for line in lyrics if line.start <= midpoint < line.end), None)
         line_id = id(line) if line is not None else None
         if line_id != active_line_id:
-            if active_lyric_key and active_line_assets:
-                lyric_asset_history.setdefault(active_lyric_key, set()).update(active_line_assets)
+            if active_lyric_key and active_line_visual_assets:
                 lyric_visual_history.setdefault(active_lyric_key, set()).update(active_line_visual_assets)
             active_line_id = line_id
             active_lyric_key = _lyric_key(line.text) if line is not None else ""
-            active_line_assets = set()
             active_line_visual_assets = set()
-        previously_used_for_lyric = lyric_asset_history.get(active_lyric_key, set())
         previously_visible_for_lyric = lyric_visual_history.get(active_lyric_key, set())
+        remaining_shots = shot_count - index
+        minimum_usage, least_used = _least_used_assets(assets, usage)
+        # Assets left over after covering every remaining shot with a distinct one.
+        # Only this surplus may be spent on composite layers.
+        spare_assets = len(least_used) - remaining_shots
         energy = analysis.energy_at(midpoint)
         section, section_index = _section_info(analysis, midpoint)
         direction = treatment.section(section_index) if treatment else None
@@ -113,7 +121,7 @@ def create_plan(
             semantic = float(similarities[lyric_rows[id(line)], asset_column]) if line and similarities is not None else _tag_score(line, asset)
             mood = 0.12 if asset.mood == analysis.mood else 0.0
             movement = _motion_fit(asset, energy)
-            repeat = usage.get(asset.id, 0) * 0.09 + (0.22 if asset.id in recent[-2:] else 0)
+            repeat = _reuse_penalty(usage.get(asset.id, 0), last_seen.get(asset.id), index)
             quality = asset.quality_score * .16
             continuity = _color_similarity(previous, asset) * (.08 if section != "chorus" else .03)
             shot_variety = -.09 if previous and previous.shot_size != "unknown" and previous.shot_size == asset.shot_size else 0
@@ -125,14 +133,18 @@ def create_plan(
             upscale_penalty = _upscale_penalty(asset, target_width, target_height)
             score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif + director_score - repeat - duration_penalty - framing_penalty - upscale_penalty
             ranked.append((score, asset, semantic, asset_column))
-        fresh_ranked = [item for item in ranked if item[1].id not in previously_used_for_lyric]
-        eligible_ranked = fresh_ranked or ranked
-        _, selected, semantic, selected_column = max(eligible_ranked, key=lambda item: item[0])
+        # A repeated lyric line should not show the same picture twice.
+        candidates = [item for item in ranked if item[1].id not in previously_visible_for_lyric] or ranked
+        if avoid_asset_repeats:
+            # Prefer the least-used assets so the audience keeps seeing new material;
+            # an asset is only shown again once everything else has caught up.
+            tier = [item for item in candidates if usage.get(item[1].id, 0) == minimum_usage]
+            candidates = tier or candidates
+        _, selected, semantic, selected_column = max(candidates, key=lambda item: item[0])
         continues_previous = previous is not None and selected.id == previous.id
         usage[selected.id] = usage.get(selected.id, 0) + 1
-        recent.append(selected.id)
+        last_seen[selected.id] = index
         if line is not None:
-            active_line_assets.add(selected.id)
             active_line_visual_assets.add(selected.id)
         if section == "chorus" and selected.id not in chorus_motifs and len(chorus_motifs) < 2:
             chorus_motifs.append(selected.id)
@@ -149,11 +161,24 @@ def create_plan(
         image_effect = "source_video"
         layers: list[ShotLayer] = []
         if selected.kind == "image":
+            # Composites may draw on the whole pool, but they always favour the
+            # least-used images so they cannot drain the shots still to come.
+            layer_pool = candidates if (spare_assets >= 0 or not avoid_asset_repeats) else ranked
             image_candidates = [
-                item for item in sorted(eligible_ranked, key=lambda item: item[0], reverse=True)
+                item for item in sorted(
+                    layer_pool, key=lambda item: (usage.get(item[1].id, 0), -item[0]),
+                )
                 if item[1].kind == "image" and item[1].id != selected.id
                 and item[1].id not in previously_visible_for_lyric
             ]
+            if avoid_asset_repeats and spare_assets >= 0:
+                # Composite layers are a luxury: they may only spend assets that are
+                # surplus to the distinct ones still needed to cover the remaining shots.
+                spare_pool = [
+                    item for item in image_candidates
+                    if usage.get(item[1].id, 0) == minimum_usage
+                ]
+                image_candidates = (spare_pool or image_candidates)[:spare_assets]
             image_effect, layer_count = _choose_image_effect(
                 index, section, energy, analysis.melody_at(midpoint), len(image_candidates),
                 enabled=image_composites, ratio=image_composite_ratio,
@@ -170,6 +195,7 @@ def create_plan(
                     enter_offset=entry_offsets[layer_index],
                 ))
                 usage[layer_asset.id] = usage.get(layer_asset.id, 0) + 1
+                last_seen[layer_asset.id] = index
                 active_line_visual_assets.add(layer_asset.id)
         previous = selected
         shots.append(Shot(
@@ -195,6 +221,32 @@ def create_plan(
         ))
     _assign_transitions(shots)
     return shots
+
+
+def _least_used_assets(
+    assets: list[MediaAsset], usage: dict[int, int],
+) -> tuple[int, list[MediaAsset]]:
+    """Return the lowest on-screen count and every asset still sitting at it."""
+    if not assets:
+        return 0, []
+    counts = [usage.get(asset.id, 0) for asset in assets]
+    minimum = min(counts)
+    return minimum, [asset for asset, count in zip(assets, counts) if count == minimum]
+
+
+def _reuse_penalty(visible: int, last_index: int | None, index: int) -> float:
+    """Price a repeat by how often and how recently the asset was already shown."""
+    if visible <= 0:
+        return 0.0
+    penalty = visible * .09
+    if last_index is None:
+        return penalty
+    gap = index - last_index
+    if gap <= 1:
+        return penalty + .34
+    if gap == 2:
+        return penalty + .18
+    return penalty
 
 
 def _choose_image_effect(

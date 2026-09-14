@@ -118,6 +118,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         image_composites=project.render.image_composites,
         image_composite_ratio=project.render.image_composite_ratio,
         max_composite_images=project.render.max_composite_images,
+        avoid_asset_repeats=project.render.avoid_asset_repeats,
     )
     art = create_art_direction(analysis, lyrics, project.render, treatment)
     plan_file = project.cache_dir / "plan.json"
