@@ -79,6 +79,7 @@ class AIConfig(BaseModel):
     director_cpu_memory_gb: float = Field(default=20.0, ge=4, le=256)
     director_offload: bool = True
     director_contact_sheet_assets: int = Field(default=0, ge=0, le=48)
+    director_prompt_tokens: int = Field(default=2600, ge=256, le=32000)
 
 
 class ProjectConfig(BaseModel):
@@ -140,6 +141,7 @@ director_gpu_memory_gb = 9.0 # 12GB 显卡为渲染和临时张量预留约 3GB
 director_cpu_memory_gb = 20.0
 director_offload = true
 director_contact_sheet_assets = 0 # Spark 是文本模型；改用多模态导演时可设为 24~32
+director_prompt_tokens = 2600 # 导演提示词上限；Spark 的注意力开销随提示词长度平方增长，12GB 显存不要调高
 
 [render]
 width = 1920

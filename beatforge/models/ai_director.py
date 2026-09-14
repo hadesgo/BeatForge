@@ -52,7 +52,55 @@ class DirectorTreatment(BaseModel):
 
 
 SYSTEM_PROMPT = """你是一位经验丰富的音乐录影带导演和剪辑指导。根据已经完成的音乐分析、逐句歌词、素材元数据和视觉检索候选，制定一份可执行的导演方案。
-要求：先建立一套克制且统一的视觉圣经，再安排局部变化；保持主体、景别、运动方向、视觉母题和色彩发展的连续性；主歌重视叙事连续性，副歌重复可识别的视觉记忆点，桥段只做一次明确反差，结尾留有呼吸；歌词与画面可以直译、隐喻、情绪呼应或有意对照。color_arc 使用2到4个简短且可执行的色彩阶段，优先使用 natural、warm amber、cold blue、teal orange、dreamy violet、forest green、muted monochrome 等描述，避免每个乐段都换一种无关风格。字幕效果属于同一套设计系统，只有在章节或能量显著变化时才切换。不要虚构不存在的素材 ID；不要输出时间码或 FFmpeg 命令。只返回符合 JSON Schema 的数据。"""
+要求：先建立一套克制且统一的视觉圣经，再安排局部变化；保持主体、景别、运动方向、视觉母题和色彩发展的连续性；主歌重视叙事连续性，副歌重复可识别的视觉记忆点，桥段只做一次明确反差，结尾留有呼吸；歌词与画面可以直译、隐喻、情绪呼应或有意对照。color_arc 使用2到4个简短且可执行的色彩阶段，优先使用 natural、warm amber、cold blue、teal orange、dreamy violet、forest green、muted monochrome 等描述，避免每个乐段都换一种无关风格。字幕效果属于同一套设计系统，只有在章节或能量显著变化时才切换。不要虚构不存在的素材 ID；不要输出时间码或 FFmpeg 命令。只返回符合字段说明的 JSON 对象，不要输出解释。"""
+
+# The director prompt is the only place in the pipeline that feeds a very long
+# sequence to a language model, and Spark-X2.5 computes attention with plain
+# matmuls: every layer materialises a full [heads, prompt, prompt] score matrix
+# (the sliding-window layers mask it afterwards instead of slicing the keys) and
+# the prefill runs the language head over every prompt position because
+# ``logits_to_keep`` defaults to 0. Both grow with the square of the prompt, so
+# the prompt is capped and the GPU budget reserves that memory explicitly.
+TREATMENT_SPEC = """返回一个 JSON 对象，字段如下：
+- concept: 全片概念，一句话（<=300字）
+- narrative_arc: 叙事弧（<=500字）
+- visual_style: 统一的视觉风格（<=240字）
+- color_arc: 2~4 个色彩阶段描述
+- motif_asset_ids: 1~5 个全片复现的视觉母题素材 id
+- grade_profile: energetic|uplifting|melancholic|dreamy|romantic|dark|cinematic
+- transition_tone: bright|dark|soft|neutral
+- sections: 每个乐段一项，字段为
+  - section_index: 整数，对应 sections 列表下标
+  - narrative_role: 该乐段的叙事作用（<=160字）
+  - lyric_relation: literal|metaphorical|emotional|contrast|abstract
+  - cut_intensity: 0~1
+  - preferred_media: any|image|video
+  - preferred_shot_sizes: 0~3 项，wide|medium|closeup|detail|unknown
+  - preferred_asset_ids: 0~5 个素材 id
+  - subtitle_effect: karaoke|cinematic|bounce|float|glow|typewriter
+  - transition_tone: bright|dark|soft|neutral
+  - edit_intent: continuity|impact|breathe"""
+
+# Prompt variants tried in order until the measured prompt fits the token budget:
+# (lyric stride, candidates per lyric, assets). The per-lyric candidate rows are
+# the most redundant part, so they go first; sampling the lyrics is the last
+# resort because they carry the narrative the director is asked to shape.
+PROMPT_LADDER: tuple[tuple[int, int, int], ...] = (
+    (1, 2, 24),
+    (1, 2, 16),
+    (1, 1, 16),
+    (1, 1, 12),
+    (1, 0, 12),
+    (1, 0, 8),
+    (2, 0, 8),
+)
+# bf16 score matrix plus the fp32 softmax copy and its bf16 cast.
+SCORE_BYTES_PER_ELEMENT = 6
+# Prompt tokens the JSON-repair round adds on top of the first attempt.
+REPAIR_TOKENS = 768
+DIRECTOR_OVERHEAD_GB = 1.0
+MIN_DIRECTOR_RESERVE_GB = 1.5
+RETRY_BUDGET_SCALE = 0.65
 
 
 def direct_mv(
@@ -75,6 +123,17 @@ def direct_mv(
     return _sanitize(treatment, len(analysis.sections) - 1, {asset.id for asset in assets})
 
 
+def _is_cuda(device: str) -> bool:
+    """``resolve_device`` can return ``cuda``, ``cpu`` or a user-supplied
+    ``cuda:N``, so match on the prefix instead of equality."""
+    return device.startswith("cuda")
+
+
+def _gpu_index(device: str) -> int:
+    _, _, index = device.partition(":")
+    return int(index) if index.isdigit() else 0
+
+
 def _generate_treatment(
     context: dict,
     config: AIConfig,
@@ -91,74 +150,61 @@ def _generate_treatment(
     _repair_remote_tied_weights(config.director_model)
 
     offload_dir = cache_dir / "director-offload"
-    load_options: dict = {
-        "device_map": "auto" if device == "cuda" else {"": "cpu"},
-        "dtype": "auto",
+    model_config = _load_model_config(transformers, config)
+    common = {
         "local_files_only": config.offline,
-        "low_cpu_mem_usage": True,
+        "trust_remote_code": True,
     }
-    if device == "cuda":
-        total_gb = torch.cuda.get_device_properties(0).total_memory / 2**30
-        gpu_limit = min(config.director_gpu_memory_gb, max(1.0, total_gb - 1.5))
-        load_options["max_memory"] = {0: f"{gpu_limit:.1f}GiB", "cpu": f"{config.director_cpu_memory_gb:.1f}GiB"}
-        if config.director_offload:
-            offload_dir.mkdir(parents=True, exist_ok=True)
-            load_options.update({"offload_folder": str(offload_dir), "offload_state_dict": True})
+    if config.director_backend == "text":
+        processor = transformers.AutoTokenizer.from_pretrained(config.director_model, **common)
+    else:
+        processor = transformers.AutoProcessor.from_pretrained(config.director_model, **common)
+    messages, prompt_tokens, trimmed_context = _fit_prompt(processor, context, config, visual_reference)
+    (cache_dir / "director-context.json").write_text(
+        json.dumps(trimmed_context, ensure_ascii=False, indent=2), "utf-8",
+    )
+    budgets: list[float | None] = [None]
+    if _is_cuda(device):
+        reserve = _sequence_reserve_gb(config, model_config, prompt_tokens)
+        budgets = _gpu_budgets(torch, config, reserve, _gpu_index(device))
+        free_gb = torch.cuda.mem_get_info(_gpu_index(device))[0] / 2**30
+        print(
+            f"    导演提示词约 {prompt_tokens} tokens · 空闲显存 {free_gb:.1f}GiB · "
+            f"权重预算 {budgets[0]:.1f}GiB（其余 {reserve:.1f}GiB 留给注意力矩阵、"
+            "日志张量和 KV 缓存）"
+        )
 
-    processor = None
     model = None
     try:
-        common = {
-            "local_files_only": config.offline,
-            "trust_remote_code": True,
-        }
-        if config.director_backend == "text":
-            processor = transformers.AutoTokenizer.from_pretrained(config.director_model, **common)
-            model = transformers.AutoModelForCausalLM.from_pretrained(
-                config.director_model, trust_remote_code=True, **load_options,
-            )
-        else:
-            processor = transformers.AutoProcessor.from_pretrained(config.director_model, **common)
-            model = transformers.AutoModelForMultimodalLM.from_pretrained(
-                config.director_model, trust_remote_code=True, **load_options,
-            )
-        model.eval()
-        # Spark-X2.5's generation_config uses the legacy top_k=-1 sentinel for
-        # "no top-k truncation"; transformers>=5 requires a strictly positive
-        # integer (or None/0 to disable). Normalize so sampling matches intent.
-        if getattr(model.generation_config, "top_k", None) is not None and model.generation_config.top_k <= 0:
-            model.generation_config.top_k = None
-        schema = json.dumps(DirectorTreatment.model_json_schema(), ensure_ascii=False)
-        project_text = (
-            f"JSON Schema:\n{schema}\n\n项目数据:\n{json.dumps(context, ensure_ascii=False)}"
-        )
-        user_content: str | list[dict] = project_text
-        if visual_reference is not None:
-            user_content = [
-                {"type": "image", "image": str(visual_reference)},
-                {"type": "text", "text": (
-                    "上图是候选素材联系表，画面左上角编号对应项目数据里的素材 ID。"
-                    "请同时判断构图、主体、景别、色彩、镜头之间的视觉连续性和歌词意境。\n\n"
-                    + project_text
-                )},
-            ]
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
-        raw = _generate(model, processor, messages, config, torch)
-        try:
-            return DirectorTreatment.model_validate_json(_extract_json(raw))
-        except ValidationError as exc:
-            messages.extend([
-                {"role": "assistant", "content": raw},
-                {"role": "user", "content": (
-                    "上一个结果未通过校验。修正后只返回完整 JSON，不要解释。"
-                    f"\n校验错误：{exc}"
-                )},
-            ])
-            corrected = _generate(model, processor, messages, config, torch)
-            return DirectorTreatment.model_validate_json(_extract_json(corrected))
+        for attempt, budget in enumerate(budgets):
+            try:
+                model = _load_director_model(transformers, config, device, budget, offload_dir)
+                model.eval()
+                _normalize_generation_config(model)
+                raw = _generate(model, processor, messages, config, torch)
+                try:
+                    return DirectorTreatment.model_validate_json(_extract_json(raw))
+                except ValidationError as exc:
+                    messages = [
+                        *messages,
+                        {"role": "assistant", "content": raw},
+                        {"role": "user", "content": (
+                            "上一个结果未通过校验。修正后只返回完整 JSON，不要解释。"
+                            f"\n校验错误：{exc}"
+                        )},
+                    ]
+                    corrected = _generate(model, processor, messages, config, torch)
+                    return DirectorTreatment.model_validate_json(_extract_json(corrected))
+            except RuntimeError as exc:
+                del model
+                model = None
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                if attempt + 1 >= len(budgets) or not _is_out_of_memory(exc):
+                    raise
+                print(f"    导演阶段显存不足，改用 {budgets[attempt + 1]:.1f}GiB 权重预算重试")
+        raise RuntimeError("AI 导演未能加载")
     finally:
         if model is not None:
             del model
@@ -168,6 +214,199 @@ def _generate_treatment(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
+
+
+def _load_director_model(
+    transformers, config: AIConfig, device: str, budget_gb: float | None, offload_dir: Path,
+):
+    cuda = _is_cuda(device)
+    load_options: dict = {
+        "device_map": "auto" if cuda else {"": "cpu"},
+        "dtype": "auto",
+        "local_files_only": config.offline,
+        "low_cpu_mem_usage": True,
+    }
+    if cuda and budget_gb is not None:
+        load_options["max_memory"] = {
+            _gpu_index(device): f"{budget_gb:.1f}GiB",
+            "cpu": f"{config.director_cpu_memory_gb:.1f}GiB",
+        }
+        if config.director_offload:
+            offload_dir.mkdir(parents=True, exist_ok=True)
+            load_options.update({"offload_folder": str(offload_dir), "offload_state_dict": True})
+    if config.director_backend == "text":
+        return transformers.AutoModelForCausalLM.from_pretrained(
+            config.director_model, trust_remote_code=True, **load_options,
+        )
+    return transformers.AutoModelForMultimodalLM.from_pretrained(
+        config.director_model, trust_remote_code=True, **load_options,
+    )
+
+
+def _normalize_generation_config(model) -> None:
+    """Spark-X2.5's generation_config uses the legacy top_k=-1 sentinel for
+    "no top-k truncation"; transformers>=5 requires a strictly positive
+    integer (or None/0 to disable). Normalize so sampling matches intent.
+    Remote-code models are not required to expose ``generation_config``.
+    """
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is None:
+        return
+    if getattr(generation_config, "top_k", None) is not None and generation_config.top_k <= 0:
+        generation_config.top_k = None
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """Match both torch.cuda.OutOfMemoryError and torch.OutOfMemoryError."""
+    return "out of memory" in str(exc).lower()
+
+
+def _load_model_config(transformers, config: AIConfig):
+    """Read the model config without loading weights; only used for budgeting."""
+    try:
+        return transformers.AutoConfig.from_pretrained(
+            config.director_model, local_files_only=config.offline, trust_remote_code=True,
+        )
+    except Exception:
+        # A broken or unusual remote config must not stop the director.
+        return None
+
+
+def _dtype_bytes(model_config) -> int:
+    dtype = str(getattr(model_config, "torch_dtype", "") or getattr(model_config, "dtype", ""))
+    return 4 if "32" in dtype else 2
+
+
+def _sequence_reserve_gb(config: AIConfig, model_config, prompt_tokens: int) -> float:
+    """Memory one forward pass needs on top of the model weights, in GiB.
+
+    Accelerate's ``max_memory`` only budgets the weights, so everything the
+    prefill and the KV cache need has to be subtracted from the GPU budget by
+    hand. Assumes an eager attention implementation, which is what the
+    remote-code director models ship.
+    """
+    dtype_bytes = _dtype_bytes(model_config)
+    layers = int(getattr(model_config, "num_hidden_layers", 0) or 36)
+    heads = int(getattr(model_config, "num_attention_heads", 0) or 16)
+    kv_heads = int(getattr(model_config, "num_key_value_heads", 0) or heads)
+    hidden = int(getattr(model_config, "hidden_size", 0) or 2560)
+    head_dim = int(getattr(model_config, "head_dim", 0) or max(1, hidden // max(heads, 1)))
+    intermediate = int(getattr(model_config, "intermediate_size", 0) or hidden * 4)
+    vocab = int(getattr(model_config, "vocab_size", 0) or 0)
+    window = int(getattr(model_config, "sliding_window", 0) or 0)
+    layer_types = list(getattr(model_config, "layer_types", None) or [])
+    full_layers = sum(1 for kind in layer_types if str(kind) == "full_attention") or layers
+    sliding_layers = max(0, layers - full_layers)
+
+    prefill = prompt_tokens + REPAIR_TOKENS
+    sequence = prompt_tokens + config.director_max_new_tokens
+    scores = heads * prefill * prefill * SCORE_BYTES_PER_ELEMENT
+    masks = 2 * prefill * prefill * dtype_bytes
+    logits = prefill * vocab * dtype_bytes
+    kv = 2 * kv_heads * head_dim * dtype_bytes * (
+        full_layers * sequence + sliding_layers * min(window or sequence, sequence)
+    )
+    activations = prefill * intermediate * dtype_bytes * 3
+    return max(
+        MIN_DIRECTOR_RESERVE_GB,
+        DIRECTOR_OVERHEAD_GB + (scores + masks + logits + kv + activations) / 2**30,
+    )
+
+
+def _gpu_budgets(torch, config: AIConfig, reserve_gb: float, index: int = 0) -> list[float]:
+    """Weight budgets to try, in GiB: the configured ceiling and one retry."""
+    free_gb = torch.cuda.mem_get_info(index)[0] / 2**30
+    budget = max(1.0, min(config.director_gpu_memory_gb, free_gb - reserve_gb))
+    return [round(budget, 1), round(max(1.0, budget * RETRY_BUDGET_SCALE), 1)]
+
+
+def _fit_prompt(
+    processor, context: dict, config: AIConfig, visual_reference: Path | None,
+) -> tuple[list[dict], int, dict]:
+    """Trim the context until the rendered prompt fits the configured budget."""
+    budget = max(256, config.director_prompt_tokens)
+    messages: list[dict] = []
+    tokens = 0
+    trimmed = context
+    for stride, candidates, assets in PROMPT_LADDER:
+        trimmed = _trim_context(
+            context, lyric_stride=stride, candidate_limit=candidates, asset_limit=assets,
+        )
+        messages = _prompt_messages(trimmed, visual_reference)
+        tokens = _prompt_tokens(processor, messages)
+        if tokens <= budget:
+            break
+    return messages, tokens, trimmed
+
+
+def _prompt_messages(context: dict, visual_reference: Path | None) -> list[dict]:
+    project_text = f"{TREATMENT_SPEC}\n\n项目数据:\n{json.dumps(context, ensure_ascii=False)}"
+    user_content: str | list[dict] = project_text
+    if visual_reference is not None:
+        user_content = [
+            {"type": "image", "image": str(visual_reference)},
+            {"type": "text", "text": (
+                "上图是候选素材联系表，画面左上角编号对应项目数据里的素材 ID。"
+                "请同时判断构图、主体、景别、色彩、镜头之间的视觉连续性和歌词意境。\n\n"
+                + project_text
+            )},
+        ]
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def _trim_context(
+    context: dict, *, lyric_stride: int, candidate_limit: int, asset_limit: int,
+) -> dict:
+    """Drop optional detail so a long song still fits the prompt budget."""
+    trimmed = dict(context)
+    trimmed["assets"] = list(context.get("assets", []))[:asset_limit]
+    lyrics = list(context.get("lyrics", []))
+    kept = set(range(0, len(lyrics), lyric_stride))
+    trimmed["lyrics"] = [line for index, line in enumerate(lyrics) if index in kept]
+    # A row without candidates carries no retrieval signal - the lyric index is
+    # already implied by the position in ``lyrics`` - so drop the table instead
+    # of paying tokens for bare index bookkeeping.
+    trimmed["lyric_candidates"] = [
+        {"i": row["i"], "c": row["c"][:candidate_limit]}
+        for row in context.get("lyric_candidates", [])
+        if candidate_limit and row["i"] in kept
+    ]
+    if not trimmed["lyric_candidates"]:
+        # Keep the brief honest: never point the director at a table that the
+        # trimmer just removed.
+        trimmed["instruction"] = (
+            "lyrics 是 [起始秒, 歌词] 列表。为每个 section index 提供一项导演策略；"
+            "素材选择只能使用 assets 中出现的 id。不要求逐句换镜；"
+            "应优先用它建立连续的段落叙事和重复母题。"
+        )
+    return trimmed
+
+
+def _prompt_tokens(processor, messages: list[dict]) -> int:
+    """Measure the rendered prompt, falling back to a character estimate."""
+    try:
+        rendered = processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+        )
+    except Exception:
+        return _estimated_tokens(messages)
+    shape = getattr(rendered, "shape", None)
+    return int(shape[-1]) if shape else len(rendered)
+
+
+def _estimated_tokens(messages: list[dict]) -> int:
+    """Conservative estimate when the chat template cannot be rendered."""
+    total = 0
+    for message in messages:
+        content = message.get("content", "")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            total += sum(len(str(item.get("text", ""))) for item in content if isinstance(item, dict))
+    return int(total / 1.8) + 64
 
 
 def _generate(model, processor, messages: list[dict], config: AIConfig, torch) -> str:
@@ -276,6 +515,8 @@ def _build_context(
     similarities: np.ndarray | None,
     source_starts: np.ndarray | None = None,
 ) -> dict:
+    """Build the director brief. Kept compact: every character here becomes
+    prompt tokens, and prompt tokens are quadratic in attention memory."""
     candidate_ids = _candidate_ids(assets, similarities)
     return {
         "song": {
@@ -297,22 +538,15 @@ def _build_context(
             }
             for index, (start, end) in enumerate(zip(analysis.sections, analysis.sections[1:]))
         ],
-        "lyrics": [
-            {"start": line.start, "end": line.end, "text": line.text}
-            for line in lyrics
-        ],
+        "lyrics": [[round(line.start, 2), line.text] for line in lyrics],
         "assets": [
             {
                 "id": asset.id,
                 "kind": asset.kind,
                 "description": asset.description,
-                "tags": asset.tags[:12],
                 "mood": asset.mood,
-                "quality": asset.quality_score,
                 "shot_size": asset.shot_size,
                 "camera_motion": asset.camera_motion,
-                "dominant_color": asset.dominant_color,
-                "focus_point": asset.focus_point,
             }
             for asset in assets if asset.id in candidate_ids
         ],
@@ -320,8 +554,10 @@ def _build_context(
             lyrics, assets, similarities, source_starts, candidate_ids,
         ),
         "instruction": (
+            "lyrics 是 [起始秒, 歌词] 列表；lyric_candidates 的 i 是歌词在 lyrics 中的下标，"
+            "c 是 [素材id, 检索得分, 视频取材秒] 列表，只有视频素材带第三项。"
             "为每个 section index 提供一项导演策略；素材选择只能使用 assets 中出现的 id。"
-            "lyric_candidates 是检索系统按逐句歌词给出的候选，不要求逐句换镜；应优先用它建立连续的段落叙事和重复母题。"
+            "不要求逐句换镜；应优先用它建立连续的段落叙事和重复母题。"
         ),
     }
 
@@ -342,17 +578,14 @@ def _lyric_candidates(
         ][:limit]
         candidates = []
         for column in columns:
-            item = {
-                "asset_id": assets[column].id,
-                "score": round(float(similarities[row, column]), 4),
-            }
+            item = [assets[column].id, round(float(similarities[row, column]), 4)]
             if (
                 assets[column].kind == "video" and source_starts is not None
                 and row < source_starts.shape[0] and column < source_starts.shape[1]
             ):
-                item["source_time"] = round(float(source_starts[row, column]), 3)
+                item.append(round(float(source_starts[row, column]), 3))
             candidates.append(item)
-        output.append({"lyric_index": row, "text": lyrics[row].text, "candidates": candidates})
+        output.append({"i": row, "c": candidates})
     return output
 
 

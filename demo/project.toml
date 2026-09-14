@@ -28,6 +28,7 @@ director_model = "XHToken/Spark-X2.5-4B"
 director_backend = "text"
 director_temperature = 0.18
 director_max_new_tokens = 3072
+director_prompt_tokens = 2600
 director_gpu_memory_gb = 9.0
 director_cpu_memory_gb = 20.0
 director_offload = true

@@ -24,7 +24,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 
 模型分阶段加载并释放，不会同时占用显存。完整 AI 流程以 **12GB 显存的 NVIDIA 显卡**作为最低目标规格，不限定具体型号；基准环境为 Python 3.13、PyTorch 2.14.0 + CUDA 13.0。无 NVIDIA 显卡的电脑仍可完成开发、单元测试和 `--no-ai` 渲染验证，但完整模型推理速度不作为支持目标。
 
-默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B、WeMM-Embedding-4B、Qwen3-VL-Reranker-2B 和 Spark-X2.5-4B 均使用原生 BF16/模型原始精度，不依赖 bitsandbytes 等运行时量化库。视觉召回完成后会先删除 WeMM 并释放 CUDA 缓存，再加载精排模型；导演又在整个视觉索引释放后加载，因此三个大模型不会同时驻留显存。CUDA运行时仍启用TF32、高精度矩阵乘策略和cuDNN形状调优。
+默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B、WeMM-Embedding-4B、Qwen3-VL-Reranker-2B 和 Spark-X2.5-4B 均使用原生 BF16/模型原始精度，不依赖 bitsandbytes 等运行时量化库。视觉召回完成后会先删除 WeMM 并释放 CUDA 缓存，再加载精排模型；导演又在整个视觉索引释放后加载，因此三个大模型不会同时驻留显存。CUDA运行时仍启用TF32、高精度矩阵乘策略和cuDNN形状调优。导演阶段额外限制提示词长度并为注意力矩阵预留显存，详见[提示词上限与显存预留](#提示词上限与显存预留)。
 
 > 当前开发电脑没有 NVIDIA 显卡，也没有下载真实模型权重，因此12GB方案是项目的目标下限，并非已经在所有12GB显卡上实测通过的保证。代码、单元测试和无模型渲染链路可以在当前电脑验证；首次部署到GPU电脑时，请先执行 `doctor` 和 `--plan-only` 烟雾测试。若视觉编码出现瞬时显存不足，先把 `vision_batch_size` 降到1。
 
@@ -148,6 +148,7 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `vision_rerank_top_k` | `8` | 每句歌词进入精排的候选数；更高可能改善选镜，但更慢 | `8` |
 | `frame_samples` | `8` | 长视频关键帧覆盖率；更高更容易找到对应画面，但分析更慢 | `8`，长素材可到 `12` |
 | `director_model` | `XHToken/Spark-X2.5-4B` | 统一叙事、色彩弧、母题与章节策略 | 保持4B原始精度 |
+| `director_prompt_tokens` | `2600` | 导演提示词的 token 上限；超长歌曲会自动抽样歌词并裁剪候选表 | 显存紧张时降到 `1600`–`2000` |
 | `director_gpu_memory_gb` | `9.0` | 导演阶段允许使用的显存上限，其余可卸载到内存/磁盘 | 不要直接填满12GB |
 | `director_contact_sheet_assets` | `0` | 仅供可选多模态导演观看联系表；Spark文本导演不会使用 | 保持 `0` |
 | `crf` / `intermediate_crf` | `19` / `14` | 数值越低画质越高、文件越大；中间文件应比最终文件更高质量 | 保持默认 |
@@ -161,7 +162,7 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `image_background_blur` | `26.0` | 原比例图片周围的满屏模糊背景强度 | 人像可用 `22`–`32` |
 | `subtitle_effect` / `subtitle_font` | `auto` / `auto` | AI按旋律、情绪和段落选择字幕动效与字体 | 保持 `auto` |
 
-`vision_batch_size` 只影响编码时的激活显存，不能解决模型权重加载就OOM的问题。`frame_samples` 和 `director_contact_sheet_assets` 主要交换分析时间与选择信息量，并不会让最终视频分辨率变高。
+`vision_batch_size` 只影响编码时的激活显存，不能解决模型权重加载就OOM的问题。`frame_samples` 和 `director_contact_sheet_assets` 主要交换分析时间与选择信息量，并不会让最终视频分辨率变高。`director_gpu_memory_gb` 只是权重上限，导演的注意力矩阵和 KV 缓存会另外占用显存，所以它必须明显低于显卡总容量。
 
 ## 本地 AI 导演
 
@@ -174,13 +175,37 @@ director_model = "XHToken/Spark-X2.5-4B"
 director_backend = "text"
 director_temperature = 0.18
 director_max_new_tokens = 3072
+director_prompt_tokens = 2600
 director_gpu_memory_gb = 9.0
 director_cpu_memory_gb = 20.0
 director_offload = true
 director_contact_sheet_assets = 0
 ```
 
-`director_gpu_memory_gb` 是 Accelerate 的显存上限；12GB 显卡默认只允许导演使用9GB。Spark-X2.5-4B 使用 `AutoModelForCausalLM` 和原始权重直接加载，超出部分在 `director_offload = true` 时卸载到内存和 `.beatforge/director-offload/`。Spark 是文本模型，因此它读取 WeMM/Qwen 精排后的素材描述、候选得分和视频时间点，不直接读取联系表图片；`director_contact_sheet_assets` 对默认导演保持为0。若以后切回多模态导演，需同时设置 `director_backend = "multimodal"`，才会生成并传入联系表。
+`director_gpu_memory_gb` 是 Accelerate 的权重上限；12GB 显卡默认只允许导演使用9GB。Spark-X2.5-4B 使用 `AutoModelForCausalLM` 和原始权重直接加载，超出部分在 `director_offload = true` 时卸载到内存和 `.beatforge/director-offload/`。Spark 是文本模型，因此它读取 WeMM/Qwen 精排后的素材描述、候选得分和视频时间点，不直接读取联系表图片；`director_contact_sheet_assets` 对默认导演保持为0。若以后切回多模态导演，需同时设置 `director_backend = "multimodal"`，才会生成并传入联系表。
+
+### 提示词上限与显存预留
+
+导演是整条链路里唯一会把超长序列喂给语言模型的一步，而 Spark-X2.5 的注意力是手写的 `torch.matmul` + softmax：没有 SDPA 或 flash-attn 后端，滑动窗口层也只是给完整的 `[头数, 提示词, 提示词]` 分数矩阵加掩码，并不切掉 KV；同时 prefill 会对**每一个**提示词位置跑一次语言头。两者都随提示词长度平方增长，因此提示词必须限长，且显存预算必须为它们单独留出空间。
+
+BeatForge 用两道闸门处理：
+
+- `director_prompt_tokens`（默认 `2600`）限制提示词长度。超长歌曲会按阶梯逐级降级——先裁剪逐句候选表，再减少送入的素材条数，最后才对歌词抽样——每一级都用 tokenizer 实测 token 数，直到装进预算为止。被裁掉候选表时，提示词里的字段说明会同步改写，不会指向已经不存在的表。
+- 加载前先按公式估算序列侧开销（注意力分数矩阵、掩码、全量 logits、KV 缓存、激活），再从**当前空闲显存**而不是显卡总容量里扣除，剩下的才是权重预算，并且权重预算不会超过 `director_gpu_memory_gb`。加载和生成期间若仍抛显存不足，会自动用更小的权重预算重试一次。
+
+启动时会打印一行诊断，例如：
+
+```text
+导演提示词约 2581 tokens · 空闲显存 10.0GiB · 权重预算 6.7GiB（其余 3.3GiB 留给注意力矩阵、日志张量和 KV 缓存）
+```
+
+如果这行显示权重预算明显偏低（比如低于 4GiB），说明这首歌的提示词偏长或显卡上还有其他进程占用显存，可以降低 `director_prompt_tokens`，或先关闭占用显存的程序再渲染。`scripts/director_memory_probe.py` 可以在不加载模型的情况下打印不同提示词长度对应的显存预留：
+
+```bash
+uv run python scripts/director_memory_probe.py
+```
+
+按 12GB 显卡、实测空闲 10GiB 计算，提示词从修复前的约 13000 tokens 降到 2581 tokens 后，序列预留从 23.4GiB（远超显卡容量，必然 OOM）降到 3.3GiB，权重预算从「负数被夹到 1.0GiB」变成 6.7GiB。
 
 导演同时接收歌曲统计、逐句歌词和乐段信息，输出经 Pydantic 校验的结构化方案；第一次 JSON 不合法会在同一次模型生命周期内自动修正一次。它不会生成时间码或直接执行 FFmpeg，具体剪辑点仍由节拍模型和确定性规划器控制。
 
@@ -276,6 +301,7 @@ frame_samples = 3
 director_enabled = true
 director_model = "XHToken/Spark-X2.5-4B"
 director_backend = "text"
+director_prompt_tokens = 2000
 director_gpu_memory_gb = 9.0
 ```
 
@@ -295,6 +321,7 @@ frame_samples = 8
 director_enabled = true
 director_model = "XHToken/Spark-X2.5-4B"
 director_backend = "text"
+director_prompt_tokens = 2600
 director_gpu_memory_gb = 9.0
 ```
 
@@ -377,7 +404,8 @@ uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 
 - 如果在视觉编码过程中OOM，先把 `vision_batch_size` 调为 `1`；程序也会自动减半重试。
 - 如果 WeMM 模型刚加载时OOM，改用 WeMM-Embedding-2B；降低批量大小对此无效。
-- 如果导演阶段OOM，降低 `director_gpu_memory_gb` 和 `director_max_new_tokens`，由 Accelerate 把更多权重卸载到内存。
+- 如果导演阶段OOM，先降低 `director_prompt_tokens`（提示词长度是显存占用的平方项），再降低 `director_gpu_memory_gb` 和 `director_max_new_tokens`，由 Accelerate 把更多权重卸载到内存。程序本身也会自动改用更小的权重预算重试一次，日志里会出现「导演阶段显存不足，改用 X GiB 权重预算重试」。
+- 渲染前先关闭其他占用显存的程序：导演的权重预算按**空闲显存**计算，被浏览器或游戏占掉几个 GB 会直接压低预算。
 - 每次只改一个参数并重新运行 `--plan-only`，从日志确认失败发生在哪个模型阶段。
 
 ### 离线模式提示找不到模型
@@ -411,6 +439,12 @@ uv run beatforge run demo/project.toml --no-ai
 
 ```powershell
 uv run python scripts/reuse_probe.py
+```
+
+查看不同提示词长度对应的导演显存预留（不需要显卡，也不加载模型）：
+
+```powershell
+uv run python scripts/director_memory_probe.py
 ```
 
 在你自己的 AI 环境中执行模型烟雾测试：
