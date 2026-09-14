@@ -19,34 +19,38 @@ class RenderConfig(BaseModel):
     max_shot_seconds: float = 5.5
     subtitle_font: str = "auto"
     subtitle_fonts_dir: Path | None = None
-    subtitle_fonts: dict[str, str] = Field(default_factory=lambda: {
-        "energetic": "preset:energetic",
-        "uplifting": "preset:modern",
-        "melancholic": "preset:cinematic",
-        "dreamy": "preset:dreamy",
-        "romantic": "preset:lyrical",
-        "dark": "preset:dark",
-        "cinematic": "preset:cinematic",
-    })
+    subtitle_fonts: dict[str, str] = Field(
+        default_factory=lambda: {
+            "energetic": "preset:energetic",
+            "uplifting": "preset:modern",
+            "melancholic": "preset:cinematic",
+            "dreamy": "preset:dreamy",
+            "romantic": "preset:lyrical",
+            "dark": "preset:dark",
+            "cinematic": "preset:cinematic",
+        }
+    )
     subtitle_size: int = 46
-    subtitle_effect: Literal["auto", "karaoke", "cinematic", "bounce", "float", "glow", "typewriter"] = "auto"
+    subtitle_effect: Literal[
+        "auto", "karaoke", "cinematic", "bounce", "float", "glow", "typewriter"
+    ] = "auto"
     subtitle_margin: int = 72
     subtitle_highlight_color: str = "&H0000D7FF"
     visual_effects: bool = True
     image_composites: bool = True
-    image_composite_ratio: float = Field(default=.24, ge=0, le=1)
+    image_composite_ratio: float = Field(default=0.24, ge=0, le=1)
     max_composite_images: int = Field(default=3, ge=2, le=4)
     avoid_asset_repeats: bool = True
     blurred_image_background: bool = True
     image_background_blur: float = Field(default=26.0, ge=0, le=80)
-    image_foreground_scale: float = Field(default=.92, ge=.55, le=1.0)
+    image_foreground_scale: float = Field(default=0.92, ge=0.55, le=1.0)
     vignette: bool = True
     film_grain: float = Field(default=1.6, ge=0, le=8)
-    look_strength: float = Field(default=.72, ge=0, le=1)
-    shot_match_strength: float = Field(default=.3, ge=0, le=1)
+    look_strength: float = Field(default=0.72, ge=0, le=1)
+    shot_match_strength: float = Field(default=0.3, ge=0, le=1)
     professional_transitions: bool = True
-    transition_min_seconds: float = Field(default=.16, ge=.05, le=1.0)
-    transition_max_seconds: float = Field(default=.55, ge=.1, le=1.5)
+    transition_min_seconds: float = Field(default=0.16, ge=0.05, le=1.0)
+    transition_max_seconds: float = Field(default=0.55, ge=0.1, le=1.5)
 
     @model_validator(mode="after")
     def keep_intermediates_high_quality(self) -> "RenderConfig":
@@ -64,8 +68,10 @@ class AIConfig(BaseModel):
     qwen_aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
     clap_model: str = "laion/clap-htsat-fused"
     music_structure_backend: Literal["librosa", "beat-this", "allin1"] = "allin1"
-    vision_backend: Literal["wemm-embedding", "qwen3-vl-embedding", "siglip2"] = "wemm-embedding"
-    vision_model: str = "tencent/WeMM-Embedding-4B"
+    vision_backend: Literal["wemm-embedding", "qwen3-vl-embedding", "siglip2"] = (
+        "wemm-embedding"
+    )
+    vision_model: str = "tencent/WeMM-Embedding-2B"
     vision_reranker_model: str | None = "Qwen/Qwen3-VL-Reranker-2B"
     vision_batch_size: int = Field(default=4, ge=1, le=32)
     vision_rerank_top_k: int = Field(default=8, ge=0, le=20)
@@ -73,7 +79,7 @@ class AIConfig(BaseModel):
     director_enabled: bool = True
     director_model: str = "XHToken/Spark-X2.5-4B"
     director_backend: Literal["text", "multimodal"] = "text"
-    director_temperature: float = Field(default=.18, ge=0, le=1.5)
+    director_temperature: float = Field(default=0.18, ge=0, le=1.5)
     director_max_new_tokens: int = Field(default=3072, ge=256, le=8192)
     director_gpu_memory_gb: float = Field(default=9.0, ge=1, le=80)
     director_cpu_memory_gb: float = Field(default=20.0, ge=4, le=256)
@@ -98,8 +104,13 @@ class ProjectConfig(BaseModel):
             value = getattr(self, name)
             if value is not None and not value.is_absolute():
                 setattr(self, name, (self.root / value).resolve())
-        if self.render.subtitle_fonts_dir and not self.render.subtitle_fonts_dir.is_absolute():
-            self.render.subtitle_fonts_dir = (self.root / self.render.subtitle_fonts_dir).resolve()
+        if (
+            self.render.subtitle_fonts_dir
+            and not self.render.subtitle_fonts_dir.is_absolute()
+        ):
+            self.render.subtitle_fonts_dir = (
+                self.root / self.render.subtitle_fonts_dir
+            ).resolve()
         return self
 
 
@@ -112,7 +123,7 @@ def load_project(file: Path) -> ProjectConfig:
     return ProjectConfig.model_validate(data)
 
 
-PROJECT_TEMPLATE = '''music = "music.mp3"
+PROJECT_TEMPLATE = """music = "music.mp3"
 lyrics = "lyrics.lrc" # 可删除；缺失时由 Qwen3-ASR 自动转写
 media_dir = "media"
 output = "output.mp4"
@@ -127,7 +138,7 @@ qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 clap_model = "laion/clap-htsat-fused"
 music_structure_backend = "allin1" # 需要 music-ai extra；也可用 beat-this 或 librosa
 vision_backend = "wemm-embedding"
-vision_model = "tencent/WeMM-Embedding-4B"
+vision_model = "tencent/WeMM-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 vision_batch_size = 4 # 更大显存可提高到 8
 vision_rerank_top_k = 8
@@ -183,4 +194,4 @@ dreamy = "preset:dreamy"
 romantic = "preset:lyrical"
 dark = "preset:dark"
 cinematic = "preset:cinematic"
-'''
+"""

@@ -16,7 +16,7 @@ music_structure_backend = "allin1"
 # 12GB 显存质量优先：WeMM 负责跨模态召回，Qwen3-VL Reranker 精排。
 # 使用原生 BF16，两个模型严格按阶段加载，不同时驻留显存。
 vision_backend = "wemm-embedding"
-vision_model = "tencent/WeMM-Embedding-4B"
+vision_model = "tencent/WeMM-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 vision_batch_size = 4 # 显存不足会自动降为 2/1
 vision_rerank_top_k = 8

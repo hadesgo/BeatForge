@@ -7,13 +7,11 @@ from typing import Callable, Literal
 
 from beatforge.config import AIConfig
 
-
 # ModelScope mirrors do not always use the same namespace as Hugging Face.
 # Keep the configured repository ID canonical so the manifest can still map it
 # to a local directory regardless of which provider supplied the snapshot.
 MODELSCOPE_REPO_ALIASES = {
-    "tencent/WeMM-Embedding-9B": "tencent-community/WeMM-Embedding-9B",
-    "tencent/WeMM-Embedding-4B": "tencent-community/WeMM-Embedding-4B",
+    "tencent/WeMM-Embedding-2B": "tencent-community/WeMM-Embedding-2B",
 }
 
 
@@ -32,7 +30,11 @@ class DownloadedModel:
 
 
 class ModelDownloadError(RuntimeError):
-    def __init__(self, completed: list[DownloadedModel], failures: list[tuple[ModelRequirement, Exception]]) -> None:
+    def __init__(
+        self,
+        completed: list[DownloadedModel],
+        failures: list[tuple[ModelRequirement, Exception]],
+    ) -> None:
         self.completed = completed
         self.failures = failures
         details = "; ".join(f"{item.repo_id}: {error}" for item, error in failures)
@@ -47,10 +49,12 @@ def required_models(config: AIConfig) -> list[ModelRequirement]:
         ModelRequirement("歌词识别", config.qwen_asr_model),
         ModelRequirement("歌词强制对齐", config.qwen_aligner_model),
     ]
-    items.extend([
-        ModelRequirement("音乐情绪分析", config.clap_model),
-        ModelRequirement("视觉语义检索", config.vision_model),
-    ])
+    items.extend(
+        [
+            ModelRequirement("音乐情绪分析", config.clap_model),
+            ModelRequirement("视觉语义检索", config.vision_model),
+        ]
+    )
     if config.vision_reranker_model:
         items.append(ModelRequirement("视觉语义精排", config.vision_reranker_model))
     if config.director_enabled:
@@ -75,25 +79,33 @@ def download_required_models(
     """Download configured models, preferring ModelScope for mainland China."""
     hf_download = snapshot_download_fn
     ms_download = modelscope_snapshot_download_fn
-    needs_hf = source in {"auto", "huggingface"} or (source == "modelscope" and fallback_to_huggingface)
+    needs_hf = source in {"auto", "huggingface"} or (
+        source == "modelscope" and fallback_to_huggingface
+    )
     if needs_hf and hf_download is None:
         try:
             from huggingface_hub import snapshot_download
         except ImportError as exc:
-            raise RuntimeError("缺少 huggingface-hub，请先安装 BeatForge 的 ai extra") from exc
+            raise RuntimeError(
+                "缺少 huggingface-hub，请先安装 BeatForge 的 ai extra"
+            ) from exc
         hf_download = snapshot_download
     if source in {"auto", "modelscope"} and ms_download is None:
         try:
             from modelscope import snapshot_download as modelscope_snapshot_download
         except ImportError as exc:
-            raise RuntimeError("缺少 modelscope，请先安装 BeatForge 的 ai extra") from exc
+            raise RuntimeError(
+                "缺少 modelscope，请先安装 BeatForge 的 ai extra"
+            ) from exc
         ms_download = modelscope_snapshot_download
 
     providers: list[tuple[str, Callable[..., str]]] = []
     if source in {"auto", "modelscope"}:
         assert ms_download is not None
         providers.append(("modelscope", ms_download))
-    if source == "huggingface" or (source in {"auto", "modelscope"} and fallback_to_huggingface):
+    if source == "huggingface" or (
+        source in {"auto", "modelscope"} and fallback_to_huggingface
+    ):
         assert hf_download is not None
         providers.append(("huggingface", hf_download))
 
@@ -106,7 +118,9 @@ def download_required_models(
         for provider, download in providers:
             options: dict[str, object]
             if provider == "modelscope":
-                provider_repo_id = MODELSCOPE_REPO_ALIASES.get(item.repo_id, item.repo_id)
+                provider_repo_id = MODELSCOPE_REPO_ALIASES.get(
+                    item.repo_id, item.repo_id
+                )
                 options = {"model_id": provider_repo_id}
                 if cache_dir is not None:
                     target = cache_dir / "modelscope" / provider_repo_id
@@ -119,7 +133,9 @@ def download_required_models(
                     options["cache_dir"] = str(cache_dir / "huggingface")
             try:
                 local_path = str(download(**options))
-                result = DownloadedModel(item.component, item.repo_id, local_path, provider)
+                result = DownloadedModel(
+                    item.component, item.repo_id, local_path, provider
+                )
                 completed.append(result)
                 if progress:
                     progress("complete", item, f"{provider}: {local_path}")
@@ -138,7 +154,10 @@ def download_required_models(
 
 def write_download_manifest(models: list[DownloadedModel], target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps([asdict(item) for item in models], ensure_ascii=False, indent=2), "utf-8")
+    target.write_text(
+        json.dumps([asdict(item) for item in models], ensure_ascii=False, indent=2),
+        "utf-8",
+    )
     return target
 
 
@@ -155,6 +174,10 @@ def load_download_manifest(target: Path) -> dict[str, str]:
         if not isinstance(entry, dict):
             continue
         repo_id, local_path = entry.get("repo_id"), entry.get("local_path")
-        if isinstance(repo_id, str) and isinstance(local_path, str) and Path(local_path).exists():
+        if (
+            isinstance(repo_id, str)
+            and isinstance(local_path, str)
+            and Path(local_path).exists()
+        ):
             resolved[repo_id] = str(Path(local_path).resolve())
     return resolved

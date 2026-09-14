@@ -19,7 +19,7 @@ def test_default_manifest_contains_every_configured_huggingface_model_once() -> 
         "Qwen/Qwen3-ASR-1.7B-hf",
         "Qwen/Qwen3-ForcedAligner-0.6B-hf",
         "laion/clap-htsat-fused",
-        "tencent/WeMM-Embedding-4B",
+        "tencent/WeMM-Embedding-2B",
         "Qwen/Qwen3-VL-Reranker-2B",
         "XHToken/Spark-X2.5-4B",
     ]
@@ -41,18 +41,25 @@ def test_downloader_uses_one_cache_and_writes_manifest(tmp_path: Path) -> None:
 
     config = AIConfig(vision_reranker_model=None, director_enabled=False)
     models = download_required_models(
-        config, cache_dir=tmp_path / "hf", max_workers=3,
-        source="huggingface", snapshot_download_fn=fake_download,
+        config,
+        cache_dir=tmp_path / "hf",
+        max_workers=3,
+        source="huggingface",
+        snapshot_download_fn=fake_download,
     )
     manifest = write_download_manifest(models, tmp_path / "project" / "models.json")
 
     assert len(models) == 4
-    assert all(call["cache_dir"] == str(tmp_path / "hf" / "huggingface") for call in calls)
+    assert all(
+        call["cache_dir"] == str(tmp_path / "hf" / "huggingface") for call in calls
+    )
     assert all(call["max_workers"] == 3 for call in calls)
     assert json.loads(manifest.read_text("utf-8"))[0]["component"] == "歌词识别"
 
 
-def test_downloader_reports_failures_after_attempting_remaining_models(tmp_path: Path) -> None:
+def test_downloader_reports_failures_after_attempting_remaining_models(
+    tmp_path: Path,
+) -> None:
     attempted = []
 
     def fake_download(**options):
@@ -63,14 +70,18 @@ def test_downloader_reports_failures_after_attempting_remaining_models(tmp_path:
 
     config = AIConfig(vision_reranker_model=None, director_enabled=False)
     with pytest.raises(ModelDownloadError) as captured:
-        download_required_models(config, source="huggingface", snapshot_download_fn=fake_download)
+        download_required_models(
+            config, source="huggingface", snapshot_download_fn=fake_download
+        )
 
     assert len(attempted) == 4
     assert len(captured.value.completed) == 3
     assert captured.value.failures[0][0].component == "歌词强制对齐"
 
 
-def test_modelscope_is_preferred_and_manifest_resolves_local_paths(tmp_path: Path) -> None:
+def test_modelscope_is_preferred_and_manifest_resolves_local_paths(
+    tmp_path: Path,
+) -> None:
     calls = []
 
     def fake_modelscope_download(**options):
@@ -82,7 +93,9 @@ def test_modelscope_is_preferred_and_manifest_resolves_local_paths(tmp_path: Pat
 
     config = AIConfig(vision_reranker_model=None, director_enabled=False)
     models = download_required_models(
-        config, cache_dir=tmp_path / "models", source="modelscope",
+        config,
+        cache_dir=tmp_path / "models",
+        source="modelscope",
         fallback_to_huggingface=False,
         modelscope_snapshot_download_fn=fake_modelscope_download,
     )
@@ -91,9 +104,9 @@ def test_modelscope_is_preferred_and_manifest_resolves_local_paths(tmp_path: Pat
 
     assert len(calls) == 4
     assert all("model_id" in call and "repo_id" not in call for call in calls)
-    assert calls[3]["model_id"] == "tencent-community/WeMM-Embedding-4B"
+    assert calls[3]["model_id"] == "tencent-community/WeMM-Embedding-2B"
     assert all(model.source == "modelscope" for model in models)
-    assert models[3].repo_id == "tencent/WeMM-Embedding-4B"
+    assert models[3].repo_id == "tencent/WeMM-Embedding-2B"
     assert resolved[config.qwen_asr_model] == str(Path(models[0].local_path).resolve())
     assert resolved[config.vision_model] == str(Path(models[3].local_path).resolve())
 
@@ -107,7 +120,9 @@ def test_auto_source_falls_back_to_huggingface(tmp_path: Path) -> None:
 
     config = AIConfig(vision_reranker_model=None, director_enabled=False)
     models = download_required_models(
-        config, source="auto", snapshot_download_fn=working_huggingface,
+        config,
+        source="auto",
+        snapshot_download_fn=working_huggingface,
         modelscope_snapshot_download_fn=failed_modelscope,
     )
     assert len(models) == 4

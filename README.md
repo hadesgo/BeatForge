@@ -14,7 +14,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `Qwen/Qwen3-ASR-1.7B-hf`：Transformers 原生歌曲识别模型；
 - `Qwen/Qwen3-ForcedAligner-0.6B-hf`：Transformers 原生字符/单词级演唱时间对齐；
 - `laion/clap-htsat-fused`：音乐情绪、质感和强度的零样本分类；
-- `tencent/WeMM-Embedding-4B`：文本、图片和视频统一向量检索；
+- `tencent/WeMM-Embedding-2B`：文本、图片和视频统一向量检索；
 - `Qwen/Qwen3-VL-Reranker-2B`：对初选画面进行歌词意境、构图和叙事适配精排；
 - `All-In-One-Infer`：识别 intro、verse、chorus、bridge、solo、outro 和强拍；
 - `Beat This!`：可选的高精度 beat/downbeat 后备；
@@ -24,7 +24,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 
 模型分阶段加载并释放，不会同时占用显存。完整 AI 流程以 **12GB 显存的 NVIDIA 显卡**作为最低目标规格，不限定具体型号；基准环境为 Python 3.13、PyTorch 2.14.0 + CUDA 13.0。无 NVIDIA 显卡的电脑仍可完成开发、单元测试和 `--no-ai` 渲染验证，但完整模型推理速度不作为支持目标。
 
-默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B、WeMM-Embedding-4B、Qwen3-VL-Reranker-2B 和 Spark-X2.5-4B 均使用原生 BF16/模型原始精度，不依赖 bitsandbytes 等运行时量化库。视觉召回完成后会先删除 WeMM 并释放 CUDA 缓存，再加载精排模型；导演又在整个视觉索引释放后加载，因此三个大模型不会同时驻留显存。CUDA运行时仍启用TF32、高精度矩阵乘策略和cuDNN形状调优。导演阶段额外限制提示词长度并为注意力矩阵预留显存，详见[提示词上限与显存预留](#提示词上限与显存预留)。
+默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B、WeMM-Embedding-2B、Qwen3-VL-Reranker-2B 和 Spark-X2.5-4B 均使用原生 BF16/模型原始精度，不依赖 bitsandbytes 等运行时量化库。视觉召回完成后会先删除 WeMM 并释放 CUDA 缓存，再加载精排模型；导演又在整个视觉索引释放后加载，因此三个大模型不会同时驻留显存。CUDA运行时仍启用TF32、高精度矩阵乘策略和cuDNN形状调优。导演阶段额外限制提示词长度并为注意力矩阵预留显存，详见[提示词上限与显存预留](#提示词上限与显存预留)。
 
 > 当前开发电脑没有 NVIDIA 显卡，也没有下载真实模型权重，因此12GB方案是项目的目标下限，并非已经在所有12GB显卡上实测通过的保证。代码、单元测试和无模型渲染链路可以在当前电脑验证；首次部署到GPU电脑时，请先执行 `doctor` 和 `--plan-only` 烟雾测试。若视觉编码出现瞬时显存不足，先把 `vision_batch_size` 降到1。
 
@@ -68,7 +68,7 @@ uv run beatforge download-models my-mv/project.toml
 
 默认 `auto` 模式优先从 ModelScope（魔搭社区）下载，适合中国大陆网络；某个仓库在魔搭不存在时才回退到 Hugging Face。Spark-X2.5 若魔搭没有同名仓库，会自动回退 Hugging Face。
 
-下载器会把 Hugging Face 配置 ID `tencent/WeMM-Embedding-4B` 映射为魔搭命名空间 `tencent-community/WeMM-Embedding-4B`。若该镜像暂时不可用，默认 `auto` 会回退到 Hugging Face；不要对整套默认模型使用 `--source modelscope --no-fallback`，除非已确认每个仓库都存在。
+下载器会把 Hugging Face 配置 ID `tencent/WeMM-Embedding-2B` 映射为魔搭命名空间 `tencent-community/WeMM-Embedding-2B`。若该镜像暂时不可用，默认 `auto` 会回退到 Hugging Face；不要对整套默认模型使用 `--source modelscope --no-fallback`，除非已确认每个仓库都存在。
 
 指定独立缓存目录和单模型下载并发数：
 
@@ -143,7 +143,7 @@ uv run beatforge run my-mv/project.toml --no-ai
 | --- | --- | --- | --- |
 | `device` | `auto` | 自动选择CUDA或CPU；正式GPU运行可设为 `cuda` 以尽早暴露环境问题 | `cuda` |
 | `offline` | `false` | 为 `true` 时仅使用模型清单和本地缓存 | 下载完成后设为 `true` |
-| `vision_model` | `tencent/WeMM-Embedding-4B` | 决定歌词与画面的语义召回质量，也是视觉阶段主要显存占用 | 保持4B原始精度 |
+| `vision_model` | `tencent/WeMM-Embedding-2B` | 决定歌词与画面的语义召回质量，也是视觉阶段主要显存占用 | 保持4B原始精度 |
 | `vision_batch_size` | `4` | 影响视觉编码吞吐和激活显存；OOM会自动按4→2→1重试 | `4`，仍OOM时设 `1` |
 | `vision_rerank_top_k` | `8` | 每句歌词进入精排的候选数；更高可能改善选镜，但更慢 | `8` |
 | `frame_samples` | `8` | 长视频关键帧覆盖率；更高更容易找到对应画面，但分析更慢 | `8`，长素材可到 `12` |
@@ -315,7 +315,7 @@ device = "cuda"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 vision_backend = "wemm-embedding"
-vision_model = "tencent/WeMM-Embedding-4B"
+vision_model = "tencent/WeMM-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 vision_batch_size = 4
 music_structure_backend = "allin1"
@@ -386,7 +386,7 @@ uv run python -c "import torch, torchvision, torchaudio, torchcodec; print(torch
 
 ### ModelScope 下载 WeMM 失败
 
-BeatForge 会把 `tencent/WeMM-Embedding-4B` 自动映射为魔搭命名空间的 `tencent-community/WeMM-Embedding-4B`。先检查网络、磁盘空间和 ModelScope 登录或访问限制。默认 `--source auto` 会在魔搭下载失败后回退到 Hugging Face；成功下载后检查 `.beatforge/models.json`，并启用 `offline = true`。
+BeatForge 会把 `tencent/WeMM-Embedding-2B` 自动映射为魔搭命名空间的 `tencent-community/WeMM-Embedding-2B`。先检查网络、磁盘空间和 ModelScope 登录或访问限制。默认 `--source auto` 会在魔搭下载失败后回退到 Hugging Face；成功下载后检查 `.beatforge/models.json`，并启用 `offline = true`。
 
 ### Qwen3-VL-Reranker 提示缺少 `true_token_id`
 
