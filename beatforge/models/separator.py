@@ -16,13 +16,36 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import shutil
 from pathlib import Path
 
 from beatforge.runtime import release_gpu
 
 #: What the separation model is asked to call the stem we want.
-_VOCAL_HINTS = ("vocals", "vocal")
+#:
+#: The package names its outputs ``<input>_(<stem>)_<model>.wav``, so the match has to
+#: be on the parenthesised **stem marker** and not on the filename as a whole. The
+#: checkpoint here is called ``vocals_mel_band_roformer``, which means every output file
+#: contains the word "vocals" - including the instrumental. Matching loosely picked the
+#: accompaniment and fed it to the recogniser, which is a failure that looks like an
+#: empty transcript rather than like a bug.
+_STEM_MARKER = re.compile(r"_\(([^)]+)\)_")
+_VOCAL_STEMS = frozenset({"vocals", "vocal", "voice", "lead"})
+_ACCOMPANIMENT_STEMS = frozenset({
+    "instrumental", "inst", "accompaniment", "karaoke", "no_vocals", "other", "music",
+})
+
+#: Where the checkpoints live under a project's cache directory. Shared with the
+#: download step, because two different directories would mean a pre-downloaded
+#: checkpoint is never found and the model is fetched a second time on first use - the
+#: download step silently not helping, which is the worst version of it failing.
+SEPARATOR_SUBDIR = ("models", "separator")
+
+
+def separator_model_dir(project_cache_dir: Path) -> Path:
+    """The directory ``audio-separator`` keeps its checkpoints in."""
+    return project_cache_dir.joinpath(*SEPARATOR_SUBDIR)
 
 
 class SeparationUnavailable(RuntimeError):
@@ -51,7 +74,7 @@ def separate_vocals(
 
     work = cache_dir / "separation"
     work.mkdir(parents=True, exist_ok=True)
-    models = cache_dir / "separator-models"
+    models = separator_model_dir(cache_dir)
     models.mkdir(parents=True, exist_ok=True)
     separator = Separator(
         log_level=logging.ERROR,
@@ -100,16 +123,27 @@ def _pick_vocal_stem(work: Path, produced: list[str]) -> Path | None:
     """Find the vocal file among what the separator wrote.
 
     The package returns fully written paths, but a bare filename is a reasonable thing
-    for a version to hand back and the stem naming depends on the checkpoint, so resolve
-    both and match on the conventional stem words rather than trusting a position in the
-    list - a model that names its stems the other way round would otherwise hand the ASR
-    model the instrumental, which transcribes to nothing at all.
+    for a version to hand back, so both are resolved. Selection is by the stem marker
+    the package puts in the name - never by position in the list, and never by a loose
+    substring search, because the checkpoint's own name contains "vocals" and would make
+    the accompaniment match too.
     """
+    resolved: list[tuple[Path, str]] = []
     for name in produced:
         path = Path(name)
         if not path.is_absolute():
             path = work / path
-        if path.is_file() and any(hint in path.name.casefold() for hint in _VOCAL_HINTS):
+        if not path.is_file():
+            continue
+        match = _STEM_MARKER.search(path.name)
+        resolved.append((path, match.group(1).casefold() if match else ""))
+    for path, stem in resolved:
+        if stem in _VOCAL_STEMS:
+            return path
+    # No recognised marker: take anything that is not explicitly the accompaniment,
+    # which still beats guessing by position.
+    for path, stem in resolved:
+        if stem not in _ACCOMPANIMENT_STEMS:
             return path
     return None
 

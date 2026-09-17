@@ -47,11 +47,12 @@ def test_pytorch_profiles_are_pairwise_exclusive() -> None:
 
 
 def test_vocal_separation_is_its_own_extra() -> None:
-    """Separation is PyTorch-only and heavy, so it must not ride along with ``ai``.
+    """Separation is heavy, so it must not ride along with ``ai``.
 
     A machine that only needs ASR should not have to install a separator it will never
-    run, and the RoFormer checkpoints go through torch rather than ONNX - pulling in
-    onnxruntime would be paying for a runtime nothing here uses.
+    run. onnxruntime does have to be declared here even though the RoFormer checkpoints
+    run on torch: the package imports it at module scope, so leaving it out produces an
+    extra that installs cleanly and then fails on import.
     """
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = project["project"]["optional-dependencies"]
@@ -59,5 +60,5 @@ def test_vocal_separation_is_its_own_extra() -> None:
     assert "separation" in extras
     separation = " ".join(extras["separation"]).casefold()
     assert "audio-separator" in separation
-    assert "onnxruntime" not in separation
+    assert "onnxruntime" in separation, "audio-separator imports it at module scope"
     assert "separation" not in " ".join(extras["ai"]).casefold()

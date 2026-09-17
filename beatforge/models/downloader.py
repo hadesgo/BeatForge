@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
 from beatforge.config import AIConfig
+from beatforge.models.separator import SeparationUnavailable
 
 # ModelScope mirrors do not always use the same namespace as Hugging Face.
 # Keep the configured repository ID canonical so the manifest can still map it
@@ -17,8 +19,16 @@ MODELSCOPE_REPO_ALIASES = {
 
 @dataclass(frozen=True, slots=True)
 class ModelRequirement:
+    """One thing to fetch, and how to fetch it.
+
+    ``repo_id`` is a Hugging Face / ModelScope repository for the ``snapshot`` provider
+    and a checkpoint filename for ``audio-separator``, which keeps its own catalogue and
+    downloads single files rather than repository snapshots.
+    """
+
     component: str
     repo_id: str
+    provider: str = "snapshot"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +69,12 @@ def required_models(config: AIConfig) -> list[ModelRequirement]:
         items.append(ModelRequirement("视觉语义精排", config.vision_reranker_model))
     if config.director_enabled:
         items.append(ModelRequirement("AI 导演", config.director_model))
+    if config.separate_vocals and config.separation_model:
+        # Not a repository snapshot: audio-separator keeps its own catalogue and fetches
+        # the checkpoint plus its config YAML itself.
+        items.append(ModelRequirement(
+            "人声分离", config.separation_model, provider="audio-separator",
+        ))
     unique: dict[str, ModelRequirement] = {}
     for item in items:
         unique.setdefault(item.repo_id, item)
@@ -75,6 +91,7 @@ def download_required_models(
     progress: Callable[[str, ModelRequirement, str | None], None] | None = None,
     snapshot_download_fn: Callable[..., str] | None = None,
     modelscope_snapshot_download_fn: Callable[..., str] | None = None,
+    separator_download_fn: Callable[[ModelRequirement, Path | None], DownloadedModel] | None = None,
 ) -> list[DownloadedModel]:
     """Download configured models, preferring ModelScope for mainland China."""
     hf_download = snapshot_download_fn
@@ -114,6 +131,26 @@ def download_required_models(
     for item in required_models(config):
         if progress:
             progress("start", item, None)
+        if item.provider == "audio-separator":
+            fetch = separator_download_fn or _download_separator_model
+            try:
+                result = fetch(item, cache_dir)
+            except SeparationUnavailable as exc:
+                # A missing optional extra is a configuration choice, not a failure.
+                # Failing the whole command here would break the default experience for
+                # anyone who has not installed the separation extra, while saying nothing
+                # would leave them wondering later why separation never happens.
+                if progress:
+                    progress("skipped", item, str(exc))
+            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+                failures.append((item, exc))
+                if progress:
+                    progress("failed", item, str(exc))
+            else:
+                completed.append(result)
+                if progress:
+                    progress("complete", item, f"audio-separator: {result.local_path}")
+            continue
         provider_errors: list[str] = []
         for provider, download in providers:
             options: dict[str, object]
@@ -150,6 +187,40 @@ def download_required_models(
     if failures:
         raise ModelDownloadError(completed, failures)
     return completed
+
+
+def _download_separator_model(
+    item: ModelRequirement, cache_dir: Path | None,
+) -> DownloadedModel:
+    """Fetch one audio-separator checkpoint, without loading it.
+
+    ``download_model_files`` is the package's download-only entry point, so this does not
+    need the model in memory or a GPU - but it does need the package, and it reads its
+    catalogue from the network, so it cannot work offline.
+    """
+    from beatforge.models.separator import SEPARATOR_SUBDIR, SeparationUnavailable
+
+    try:
+        from audio_separator.separator import Separator
+    except ImportError as exc:
+        raise SeparationUnavailable(
+            "未安装 audio-separator；跳过。需要时运行 uv sync --extra ai --extra separation"
+        ) from exc
+    if cache_dir is None:
+        raise RuntimeError("下载人声分离模型需要指定 cache_dir")
+    # ``cache_dir`` here is the models directory, so the checkpoint lands where the
+    # runtime looks for it: <project cache>/models/separator.
+    model_dir = cache_dir / SEPARATOR_SUBDIR[-1]
+    model_dir.mkdir(parents=True, exist_ok=True)
+    separator = Separator(log_level=logging.ERROR, model_file_dir=str(model_dir))
+    try:
+        separator.download_model_files(item.repo_id)
+    finally:
+        del separator
+    path = model_dir / item.repo_id
+    if not path.is_file():
+        raise RuntimeError(f"下载后仍找不到检查点：{path}")
+    return DownloadedModel(item.component, item.repo_id, str(path), "audio-separator")
 
 
 def write_download_manifest(models: list[DownloadedModel], target: Path) -> Path:

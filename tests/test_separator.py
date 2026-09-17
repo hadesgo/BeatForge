@@ -73,18 +73,27 @@ def test_a_cached_stem_is_returned_without_running_the_model(tmp_path: Path, mon
 # ------------------------------------------------------------------ picking the stem
 
 
-def test_the_vocal_stem_is_picked_by_name_not_by_position(tmp_path: Path) -> None:
-    """A checkpoint that names its stems the other way round must not fool us.
+#: The names a real run produces. The checkpoint is called ``vocals_mel_band_roformer``,
+#: so *every* output filename contains the word "vocals" - including the instrumental.
+_REAL_NAMES = (
+    "clip_(instrumental)_vocals_mel_band_roformer.wav",
+    "clip_(vocals)_vocals_mel_band_roformer.wav",
+)
 
-    Handing the recogniser the instrumental would produce a transcript of nothing, and
-    the list order is not part of the package's contract.
+
+def test_the_vocal_stem_is_picked_by_its_marker_not_by_position(tmp_path: Path) -> None:
+    """The instrumental's filename contains "vocals" too, and that is the whole trap.
+
+    A loose substring match picks whichever file the package happens to list first, so
+    half the time the recogniser is handed the accompaniment - which transcribes to
+    nothing at all, and looks like a broken model rather than a broken picker. This was
+    a real bug: the first end-to-end run cached the instrumental as the vocal stem.
     """
-    for name in ("song_(Vocals)_model.wav", "song_(Instrumental)_model.wav"):
+    for name in _REAL_NAMES:
         (tmp_path / name).write_bytes(b"x")
 
-    assert _pick_vocal_stem(
-        tmp_path, ["song_(Instrumental)_model.wav", "song_(Vocals)_model.wav"],
-    ) == tmp_path / "song_(Vocals)_model.wav"
+    for order in (_REAL_NAMES, tuple(reversed(_REAL_NAMES))):
+        assert _pick_vocal_stem(tmp_path, list(order)) == tmp_path / _REAL_NAMES[1]
 
 
 def test_the_vocal_stem_is_found_when_the_package_returns_full_paths(tmp_path: Path) -> None:
@@ -93,19 +102,19 @@ def test_the_vocal_stem_is_found_when_the_package_returns_full_paths(tmp_path: P
     Both have to resolve, or the run fails with "no vocal stem" against a separator that
     worked perfectly.
     """
-    for name in ("song_(Vocals)_model.wav", "song_(Instrumental)_model.wav"):
+    for name in _REAL_NAMES:
         (tmp_path / name).write_bytes(b"x")
 
     assert _pick_vocal_stem(
-        tmp_path,
-        [str(tmp_path / "song_(Instrumental)_model.wav"), str(tmp_path / "song_(Vocals)_model.wav")],
-    ) == tmp_path / "song_(Vocals)_model.wav"
+        tmp_path, [str(tmp_path / name) for name in _REAL_NAMES],
+    ) == tmp_path / _REAL_NAMES[1]
 
 
 def test_no_vocal_stem_is_reported_rather_than_guessed(tmp_path: Path) -> None:
-    (tmp_path / "song_(Instrumental)_model.wav").write_bytes(b"x")
+    """If only the accompaniment came back, saying so beats transcribing silence."""
+    (tmp_path / _REAL_NAMES[0]).write_bytes(b"x")
 
-    assert _pick_vocal_stem(tmp_path, ["song_(Instrumental)_model.wav"]) is None
+    assert _pick_vocal_stem(tmp_path, [_REAL_NAMES[0]]) is None
 
 
 # ------------------------------------------------------------------ the run itself

@@ -50,7 +50,7 @@ uv sync --extra ai --extra ai-cpu --extra qwen --extra music-ai
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 ```
 
-人声分离是独立的可选 extra：`uv sync --extra ai --extra ai-cpu --extra separation`（CUDA 机器把 `ai-cpu` 换成 `ai-cuda`）。它只依赖 PyTorch——RoFormer 检查点走 torch 而不是 ONNX，所以不需要 `onnxruntime`。
+人声分离是独立的可选 extra：`uv sync --extra ai --extra ai-cpu --extra separation`（CUDA 机器把 `ai-cpu` 换成 `ai-cuda`）。它需要 PyTorch，并且**绕不开两个未声明的依赖**：`audio-separator` 在模块顶层就 import `onnxruntime`（即使 RoFormer 检查点本身走 torch 推理），`uvr_lib_v5/spec_utils` 又在顶层 import `audioread`——后者根本没写进它的依赖表。两个都已在 extra 里显式声明，CPU 版就够。
 
 `ai-cpu` 和 `ai-cuda` 两个 profile 互斥，uv 会阻止混装。`ai-cuda` 从 CUDA 13.0 源安装 `torch 2.14.0+cu130`、`torchvision 0.29.0+cu130`、`torchaudio 2.11.0+cu130` 和 `torchcodec 0.16.0+cu130`。以上包均提供 Python 3.13 轮子。不要再单独覆盖其中任何一个包。模型权重不会在 `uv sync` 时下载。
 
@@ -68,7 +68,15 @@ ASR 模型被要求从**整轨混音**里听人声，等于要求它隔着鼓组
 - 结果按「源文件 + 模型」缓存，重渲染不会重复付分离的代价。**换分离模型会让缓存失效**——两个检查点给出两条不同的人声轨，而混用它们在下游完全看不出来，只会表现成歌词略有不同；
 - 分离是可选依赖，**装不上时会退回整轨并明确说明**。降级本身没问题，悄悄降级才是问题：整轨转录出来的是另一份、更差的歌词，而下游没有任何环节能分辨。
 
-分离用的检查点由 `separation_model` 指定，默认 `vocals_mel_band_roformer.ckpt`。`audio-separator` 自带一份各模型的实测基准（`models-scores.json`），按人声 SDR 排下来：
+**选轨必须按文件名里的分句标记，不能按子串匹配。** 该包的输出命名是 `<输入>_(<分句>)_<模型>.wav`，而默认检查点就叫 `vocals_mel_band_roformer`——于是**每个输出文件名都含 "vocals"，包括伴奏**。按子串匹配会选中伴奏轨喂给识别器，症状是转录出一片空白，看起来像模型坏了而不是选轨错了。这个坑是在第一次端到端实跑时抓到的（缓存下来的"人声轨"低频占 52.5%，比原始混音还高）。
+
+CPU 推理速度约 **204 秒 / 分钟音频**（45 秒音频实测 153 秒），一首 3.5 分钟的歌约 12 分钟。结果有缓存，重渲染不会重复付这个代价。
+
+分离用的检查点由 `separation_model` 指定，默认 `vocals_mel_band_roformer.ckpt`。`beatforge download-models` 会把它一起下载——它不是 Hugging Face / ModelScope 的仓库快照，而是 `audio-separator` 自己目录里的单个检查点，所以走一条单独的下载路径（该包的 `download_model_files()`，只下载不加载，不需要显存）。下载目录与运行时查找目录由同一个常量派生，否则下载步骤会静默失效、模型在首次使用时被重新拉一遍。
+
+没装 `separation` extra 时，下载步骤会**跳过并说明缺哪个 extra**，而不是让整条命令失败——`separate_vocals` 默认为 `true`，如果这里直接报错，默认配置就会在没装 extra 的机器上整体跑不通。
+
+`audio-separator` 自带一份各模型的实测基准（`models-scores.json`），按人声 SDR 排下来：
 
 | 平均 SDR | 最高 SDR | 检查点 |
 | --- | --- | --- |
@@ -87,13 +95,13 @@ ASR 模型被要求从**整轨混音**里听人声，等于要求它隔着鼓组
 
 ### 统一下载模型
 
-统一下载项目配置中启用的 ASR、强制对齐、音乐情绪、视觉检索、视觉精排和 AI 导演模型：
+统一下载项目配置中启用的 ASR、强制对齐、音乐情绪、视觉检索、视觉精排、AI 导演和人声分离模型：
 
 ```powershell
 uv run beatforge download-models my-mv/project.toml
 ```
 
-默认 `auto` 模式优先从 ModelScope（魔搭社区）下载，适合中国大陆网络；某个仓库在魔搭不存在时才回退到 Hugging Face。Spark-X2.5 若魔搭没有同名仓库，会自动回退 Hugging Face。
+默认 `auto` 模式优先从 ModelScope（魔搭社区）下载，适合中国大陆网络；某个仓库在魔搭不存在时才回退到 Hugging Face。Spark-X2.5 若魔搭没有同名仓库，会自动回退 Hugging Face。人声分离检查点来自 `audio-separator` 自己的目录，走单独路径，不受 `--source` 影响；未安装 `separation` extra 时会显示"跳过"并说明缺哪个 extra，其余模型照常下载。
 
 下载器会把 Hugging Face 配置 ID `tencent/WeMM-Embedding-2B` 映射为魔搭命名空间 `tencent-community/WeMM-Embedding-2B`。若该镜像暂时不可用，默认 `auto` 会回退到 Hugging Face；不要对整套默认模型使用 `--source modelscope --no-fallback`，除非已确认每个仓库都存在。
 

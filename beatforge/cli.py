@@ -64,6 +64,7 @@ def doctor() -> None:
     for binary in ("ffmpeg", "ffprobe"):
         found = shutil.which(binary)
         table.add_row(binary, "OK" if found else "缺失", found or "请加入 PATH")
+    torch_ready = True
     try:
         import torch
         cuda = torch.cuda.is_available()
@@ -78,11 +79,13 @@ def doctor() -> None:
         if cuda:
             table.add_row("12GB 显存", "OK" if enough_vram else "不足", f"检测到 {vram:.1f} GB")
     except ImportError:
+        torch_ready = False
         table.add_row("AI 依赖", "缺失", "uv sync --extra ai --extra ai-cpu")
     except (AttributeError, RuntimeError, OSError) as exc:
         # torch is importable but unusable: an interrupted install leaves a namespace
         # package behind, and a driver can refuse to initialise. That is precisely the
         # state this command exists to report, so it must not be the state that breaks it.
+        torch_ready = False
         table.add_row("PyTorch", "损坏", f"{type(exc).__name__}: {exc} · 重新 uv sync")
     try:
         import torchaudio
@@ -101,10 +104,16 @@ def doctor() -> None:
         f"Transformers {transformers_version or '未安装'}",
     )
     separation = importlib.util.find_spec("audio_separator")
-    table.add_row(
-        "人声分离", "OK" if separation else "未安装",
-        "separation extra（MelBand-RoFormer，转录前分离人声）",
-    )
+    if separation and not torch_ready:
+        # The package is installed but has nothing to run on - a state an interrupted
+        # sync leaves behind, and one that reads as "fine" if the row only checks the
+        # extra. Separation needs both.
+        table.add_row("人声分离", "不完整", "已装 audio-separator，但 PyTorch 不可用")
+    else:
+        table.add_row(
+            "人声分离", "OK" if separation else "未安装",
+            "separation extra（MelBand-RoFormer，转录前分离人声）",
+        )
     sentence_transformers = importlib.util.find_spec("sentence_transformers")
     table.add_row("WeMM / 视觉精排", "OK" if sentence_transformers else "未安装", "sentence-transformers>=5.7")
     table.add_row(
@@ -138,6 +147,8 @@ def download_models(
                 console.print(f"[cyan]下载[/cyan] {item.component} · {item.repo_id}")
             elif state == "complete":
                 console.print(f"[green]完成[/green] {item.repo_id}")
+            elif state == "skipped":
+                console.print(f"[yellow]跳过[/yellow] {item.component} · {detail}")
             else:
                 console.print(f"[red]失败[/red] {item.repo_id} · {detail}")
 

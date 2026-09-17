@@ -152,13 +152,28 @@ BatchEncoding / 张量 / 列表 / 嵌套列表四种形态（测试在 `tests/te
   拍点/能量/段落分析仍跑整轨混音（那些要的就是鼓，人声轨里没有鼓）。
 - **模型名必须进缓存 key**（`cache/<stem>-<digest>-vocals.wav`）：两个检查点给出两条不同的人声轨，
   混用在下游完全看不出来，只会表现成歌词略有不同。
-- **选轨按名字匹配 `vocals`，不能按列表位置**。`Separator.separate()` 返回的是**完整路径**
+- **选轨按文件名里的分句标记 `_\(([^)]+)\)_`，绝不能按子串匹配**。输出命名是
+  `<输入>_(<分句>)_<模型>.wav`，而默认检查点就叫 `vocals_mel_band_roformer`——**每个输出文件名都含
+  "vocals"，包括伴奏**。子串匹配会选中伴奏喂给识别器，症状是转录出一片空白，看起来像模型坏了。
+  第一次实跑就中了：缓存下来的"人声轨"低频占 52.5%，比原始混音还高。测试必须用**真实文件名**，
+  用 `song_(Vocals)_model.wav` 这种模型名不含 vocals 的假名字会一路绿灯。
+- **别按架构推测依赖，读源码或直接 import 一遍**。曾断言"RoFormer 走 torch 所以不需要 onnxruntime"——
+  实际 `audio_separator/separator/separator.py` 顶层无条件 `import onnxruntime`；
+  `uvr_lib_v5/spec_utils.py` 顶层 `import audioread`，而 audioread 根本没写进它的依赖表。
+- CPU 推理约 **204 秒 / 分钟音频**（45 秒实测 153 秒）。`Separator.separate()` 返回的是**完整路径**
   而不是裸文件名（文档措辞是 "Fully written output paths"），解析时要显式判断 `is_absolute()`。
 - 装不上时**退回整轨并明确说明**；`plan.json` 的 `models.separation` 记录是否做了分离。
   降级本身没问题，悄悄降级才是问题——整轨转录是另一份更差的歌词，下游分辨不出来。
 - 选模型的依据是包自带的 `audio-separator/models-scores.json`（115 个模型的实测 SDR），
   不是猜。默认 `vocals_mel_band_roformer.ckpt`（均 SDR 11.49，与最高的 11.53 持平）。
   卡拉 OK 模型主轨是伴奏，不要拿来当人声分离用。
+- **下载步骤与运行时必须用同一个模型目录**。分离检查点不是 HF/ModelScope 的仓库快照，
+  而是 `audio-separator` 自己目录里的单个 `.ckpt`，走它提供的**只下载不加载**入口
+  `Separator.download_model_files(filename)`。两边目录都从 `separator.SEPARATOR_SUBDIR` 派生，
+  并有测试专门断言这条等式——不一致的后果是静默的：下载看起来成功，运行时找不到、首次使用重拉一遍。
+- **可选 extra 缺失时下载步骤要"跳过"而不是"失败"**：`separate_vocals` 默认为 true，
+  让下载失败就会让默认配置在所有没装 separation extra 的机器上跑不通。区分"没装包"（跳过 + 说明缺哪个）
+  与"真的下载失败"（进 failures 抛 ModelDownloadError）。
 - `release_gpu()` 只 `except ImportError` 是不够的：torch 存在但不可用（半装完、没有 `cuda` 属性、
   驱动拒绝初始化）会抛 `AttributeError` 把调用它的阶段带崩。它是**尽力而为的清理**，
   已放宽到 `(ImportError, AttributeError, RuntimeError, OSError)`。
