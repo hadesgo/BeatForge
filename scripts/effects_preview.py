@@ -84,7 +84,7 @@ def _render(effect: str, media: list[Path], cfg: RenderConfig, seconds: float, o
 def _grab(clip: Path, frame: int, target: Path) -> Image.Image:
     command([
         "ffmpeg", "-y", "-v", "error", "-i", str(clip),
-        "-vf", rf"select=eq(n\,{frame})", "-vsync", "0", "-frames:v", "1", str(target),
+        "-vf", rf"select=eq(n\,{frame})", "-fps_mode", "passthrough", "-frames:v", "1", str(target),
     ])
     return Image.open(target).convert("RGB")
 

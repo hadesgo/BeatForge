@@ -14,6 +14,8 @@ This probe shrinks the published config to a few million parameters and runs the
   * causality     - a prefix forward must reproduce the matching logits slice
   * sliding window- a token older than ``sliding_window`` must be invisible
   * cache agreement - cached and cache-free greedy decoding must agree
+  * per-layer RoPE - the two layer types must really get different position
+                    embeddings, not just a warning about unrecognized keys
 
 Run: uv run python scripts/director_model_probe.py [model_dir]
 """
@@ -106,6 +108,9 @@ def main() -> int:
     config = transformers.AutoConfig.from_pretrained(
         model_dir, trust_remote_code=True, local_files_only=True,
     )
+    # Read this before `_shrink`, which replaces `rope_parameters` with the synthetic
+    # nested dict below and drops the flat keys transformers injects.
+    flat_rope_type = config.rope_parameters.get("rope_type")
     _shrink(config, LAYER_TYPES)
     model = transformers.AutoModelForCausalLM.from_config(config, trust_remote_code=True)
     model.eval()
@@ -164,6 +169,29 @@ def main() -> int:
     print(f"缓存一致性  带缓存 {cached} · 无缓存 {uncached}")
     if cached != uncached:
         failures.append("带缓存与无缓存的贪心解码结果不一致")
+
+    # 4. Spark stores its RoPE per layer type in a *nested* `rope_parameters`, which
+    #    transformers' own validator does not understand: it injects a flat
+    #    `rope_type`/`rope_theta` alongside the nested keys and then warns that
+    #    `full_attention`/`sliding_attention` are unrecognized. That warning is
+    #    harmless only because the remote config reads the sub-dicts itself, through
+    #    `get_rope_theta`/`get_partial_rotary_factor`. If a release ever stopped
+    #    carrying them through, every layer would silently fall back to theta=10000
+    #    with full rotation - the model would still run, just worse. Assert the two
+    #    types really get different position embeddings rather than trusting the
+    #    warning to be noise.
+    rope = {
+        layer_type: (config.get_rope_theta(layer_type), config.get_partial_rotary_factor(layer_type))
+        for layer_type in set(LAYER_TYPES)
+    }
+    print("分层 RoPE    " + " · ".join(
+        f"{layer_type} θ={theta:g} 旋转 {factor:.0%}"
+        for layer_type, (theta, factor) in sorted(rope.items())
+    ))
+    if rope["full_attention"] == rope["sliding_attention"]:
+        failures.append("两种层拿到了同一套 RoPE（分层 rope_parameters 没生效）")
+    if flat_rope_type != "default":
+        failures.append(f"rope_type 是 {flat_rope_type!r} 而不是 'default'，远程代码的 RoPE 假设可能已变")
 
     print()
     if failures:

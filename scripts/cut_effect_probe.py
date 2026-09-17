@@ -53,7 +53,7 @@ def frame_stats(clip: Path, frame: int, tmp: Path) -> tuple[float, float, float]
     target = tmp / f"g{frame:04d}.png"
     command([
         "ffmpeg", "-y", "-v", "error", "-i", str(clip),
-        "-vf", rf"select=eq(n\,{frame})", "-vsync", "0", "-frames:v", "1", str(target),
+        "-vf", rf"select=eq(n\,{frame})", "-fps_mode", "passthrough", "-frames:v", "1", str(target),
     ])
     pixels = np.asarray(Image.open(target).convert("RGB"), dtype=float)
     grey = pixels.mean(axis=2)

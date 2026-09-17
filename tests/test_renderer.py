@@ -21,8 +21,10 @@ from beatforge.renderer import (
     _KNOCKOUT_LIFT,
     _MIN_ZOOM,
     _TRANSITION_LIBRARY,
+    _camera_quad,
     _image_filter_graph,
     _knockout_graph,
+    _perspective_filter,
     _render_shot,
     _section_color_filter,
     _shot_match_filter,
@@ -371,6 +373,121 @@ def test_every_camera_move_crops_the_full_frame_without_quantising(effect: str) 
 
 
 @pytest.mark.parametrize("effect", sorted(_CAMERA_MOVES))
+def test_every_camera_move_stays_in_frame_at_every_camera_intensity(effect: str) -> None:
+    """``amount`` scales zoom, roll and keystone alike, so the check has to sweep it.
+
+    The zoom lift is sized from the *scaled* strengths, and the generated quad used to
+    apply ``amount`` to the zoom and the roll but not to the keystone. The estimate was
+    therefore up to 14% smaller than the quad it was meant to bound, so any shot with
+    ``amount < 1`` was lifted too little and its corners left the frame. That is not an
+    edge case: ``amount`` is
+    ``max(.35, art.camera_intensity) * (1 + melody*.18) * {"dynamic": 1.35, "gentle": .7}``,
+    which spans roughly 0.25 to 3.2 across real shots, and it fell below 1 on a
+    ``tilt3d_front`` shot that killed the render with ffmpeg's EINVAL at frame 218 of 253.
+
+    Checking a single amount is what let this through, so the bounds are asserted over
+    the whole range, on the quad the filter will actually evaluate.
+    """
+    cfg = RenderConfig(width=1920, height=1080, fps=30, film_grain=0, vignette=False)
+    move = _CAMERA_MOVES[effect]
+    frames = 47
+    for amount in (0.2, 0.245, 0.35, 0.5, 0.7, 0.8714, 1.0, 1.35, 2.0, 2.5, 3.2):
+        filter_string = _perspective_filter(
+            _camera_quad(move, amount, 1, frames, cfg.fps, cfg.height / cfg.width)
+        )
+        # One frame past the end as well: the still comes from `-loop 1`, so filters
+        # further down the chain do pull frames beyond the shot.
+        for frame in range(1, frames + 2):
+            quad = _evaluate_quad(filter_string, cfg, frame)
+            for x, y in _corners(quad):
+                assert -1e-6 <= x <= cfg.width + 1e-6, (
+                    f"{effect} @ amount={amount} frame={frame} samples x={x:.2f} outside the frame"
+                )
+                assert -1e-6 <= y <= cfg.height + 1e-6, (
+                    f"{effect} @ amount={amount} frame={frame} samples y={y:.2f} outside the frame"
+                )
+
+
+def test_a_long_edit_keeps_the_filter_graph_off_the_command_line(monkeypatch, tmp_path: Path) -> None:
+    """Windows caps one command line at 32,767 characters, and a beat-cut edit is long.
+
+    253 shots put roughly 27k characters of filter graph plus 9k of ``-i`` paths on a
+    single line, which dies with ``FileNotFoundError: [WinError 206]`` before ffmpeg is
+    even started - the whole render succeeds and then the join fails. The graph has to be
+    handed over in a file instead of inline. It goes in through the generic
+    ``-/opt file`` form: the dedicated ``-filter_complex_script`` was removed in ffmpeg 9.
+    """
+    from beatforge.renderer import _Transition, _compose_transitions
+
+    shots = [
+        Shot(index, index, index + 1, 1.0, index, "clip.jpg", "image", 0, "", .5,
+             "steady", "cut", .8)
+        for index in range(253)
+    ]
+    transitions = [
+        _Transition("xfade", "dissolve", .3) if index % 2 else _Transition("cut", "cut", 0.0)
+        for index in range(len(shots) - 1)
+    ]
+    captured: list[list[str]] = []
+    monkeypatch.setattr("beatforge.renderer.duration", lambda _path: 1.0)
+    monkeypatch.setattr("beatforge.renderer.command", captured.append)
+
+    _compose_transitions(
+        shots, tmp_path / "clips", tmp_path / "picture.mp4", transitions,
+        RenderConfig(width=320, height=180, fps=12),
+    )
+
+    (args,) = captured
+    script = tmp_path / "picture.filter"
+    assert script.exists()
+    assert args[args.index("-/filter_complex") + 1] == str(script)
+    assert "-filter_complex" not in args, "the graph must not be inlined"
+    # No single argument may hold the graph, and the whole line has to stay under the cap.
+    assert max(len(arg) for arg in args) < 1000
+    assert len(" ".join(args)) < 32767
+
+
+def test_a_fade_is_paid_for_by_the_incoming_shot(monkeypatch, tmp_path: Path) -> None:
+    """The extra footage has to cover the *incoming* transition, not the outgoing one.
+
+    Every fade is one ``xfade`` whose first input is everything joined so far and whose
+    second is the incoming clip, which the blend shows from its own frame 0. That shot's
+    frames therefore have to fill the incoming overlap as well as its own duration.
+    Rendering the outgoing overlap instead left each clip short of the fade it was entered
+    through, and put the slack at the end of the previous clip where the next ``xfade``
+    then discarded it - over a 253-shot edit the join ran 0.58s past the plan and
+    ``-shortest`` cut the difference off the end of the film.
+    """
+    cfg = RenderConfig(width=160, height=90, fps=10, film_grain=0, vignette=False)
+    shots = [
+        Shot(0, 0, 1, 1.0, 0, "a.jpg", "image", 0, "", .5, "steady", "dissolve", .8),
+        Shot(1, 1, 2, 1.0, 1, "b.jpg", "image", 0, "", .5, "steady", "cut", .8),
+        Shot(2, 2, 3, 1.0, 2, "c.jpg", "image", 0, "", .5, "steady", "cut", .8),
+    ]
+    analysis = AudioAnalysis(
+        duration=3, bpm=100, beats=[0, 1, 2, 3], sections=[0, 3], energy_times=[0],
+        energy_values=[.5], average_energy=.5, brightness=.5,
+        mood="cinematic", mood_scores={"cinematic": 1},
+    )
+    art = create_art_direction(analysis, [], cfg)
+    handles = [_transition_spec(shots[i], shots[i + 1], art, cfg).handle for i in range(2)]
+    assert handles[0] > 0 and handles[1] == 0, "the fixture has to fade in and cut out"
+
+    durations: list[float] = []
+    monkeypatch.setattr(
+        "beatforge.renderer._render_shot",
+        lambda shot, out, cfg, art, duration, count, **kw: durations.append(duration),
+    )
+    monkeypatch.setattr("beatforge.renderer._compose_transitions", lambda *a, **k: None)
+    monkeypatch.setattr("beatforge.renderer.write_ass", lambda *a, **k: None)
+    monkeypatch.setattr("beatforge.renderer.command", lambda *a, **k: None)
+
+    render(shots, [], tmp_path / "music.wav", tmp_path / "out.mp4", tmp_path / "cache", cfg, art)
+
+    assert durations == pytest.approx([1.0, 1.0 + handles[0], 1.0])
+
+
+@pytest.mark.parametrize("effect", sorted(_CAMERA_MOVES))
 def test_every_camera_move_is_smooth(effect: str) -> None:
     """Adjacent frames must move by a small, smooth amount.
 
@@ -468,7 +585,7 @@ def _frame_brightness(video: Path, frame: int, tmp_path: Path) -> float:
     target = tmp_path / f"grab-{frame:04d}.png"
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", str(video),
-         "-vf", rf"select=eq(n\,{frame})", "-vsync", "0", "-frames:v", "1", str(target)],
+         "-vf", rf"select=eq(n\,{frame})", "-fps_mode", "passthrough", "-frames:v", "1", str(target)],
         check=True, capture_output=True,
     )
     return float(np.asarray(Image.open(target).convert("L"), dtype=float).mean())
@@ -630,7 +747,7 @@ def _frame_stats(clip: Path, frame: int, tmp_path: Path) -> tuple[float, float, 
     target = tmp_path / f"stat-{frame:04d}.png"
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", str(clip),
-         "-vf", rf"select=eq(n\,{frame})", "-vsync", "0", "-frames:v", "1", str(target)],
+         "-vf", rf"select=eq(n\,{frame})", "-fps_mode", "passthrough", "-frames:v", "1", str(target)],
         check=True, capture_output=True,
     )
     pixels = np.asarray(Image.open(target).convert("RGB"), dtype=float)

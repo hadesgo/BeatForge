@@ -37,9 +37,17 @@ def render(
         print(f"\r渲染镜头 {index + 1}/{len(shots)}", end="", flush=True)
         outgoing = transitions[index] if index < len(transitions) else None
         incoming = transitions[index - 1] if index > 0 else None
+        # The extra footage has to cover the *incoming* transition, not the outgoing one.
+        # Each fade is one `xfade` whose first input is everything joined so far, so the
+        # blend shows this shot from its own frame 0: the shot's frames therefore have to
+        # fill the incoming overlap as well as its own duration, and the stream it feeds
+        # is exhausted at `offset + seconds`. Rendering the outgoing overlap instead put
+        # the slack on the wrong end - the accumulated stream ran longer than the plan and
+        # every later cut drifted with it (0.58s by the end of a 253-shot edit), while the
+        # clip was still short of what its own incoming fade needed.
         _render_shot(
             shot, clips / f"{index:05}.mp4", config, art,
-            shot.duration + (outgoing.handle if outgoing else 0.0), section_count,
+            shot.duration + (incoming.handle if incoming else 0.0), section_count,
             incoming=incoming, outgoing=outgoing,
         )
     print()
@@ -501,8 +509,14 @@ def _camera_quad(
     # A keystone makes one edge wider (or taller) than its opposite, which is what a
     # flat plane looks like when it turns in space. ``keystone`` splits the top and
     # bottom widths, ``keystone_v`` the left and right heights.
-    top_bottom = f"({move.keystone:.5f}*{unit})" if move.keystone else None
-    left_right = f"({move.keystone_v:.5f}*{unit})" if move.keystone_v else None
+    #
+    # ``amount`` scales every one of these fields - zoom, roll, shake and keystone
+    # alike - and ``_quad_spread`` sizes the zoom lift from the *scaled* strength.
+    # Leaving it out here made the quad up to 14% wider than the estimate, so a shot
+    # with ``amount < 1`` was lifted too little and its corners left the frame
+    # (ffmpeg rejects such a frame with EINVAL halfway through the render).
+    top_bottom = f"({move.keystone * amount:.5f}*{unit})" if move.keystone else None
+    left_right = f"({move.keystone_v * amount:.5f}*{unit})" if move.keystone_v else None
     wide_half = f"({half_width}*(1+abs({top_bottom})))" if top_bottom else half_width
     tall_half = f"({half_height}*(1+abs({left_right})))" if left_right else half_height
 
@@ -899,9 +913,11 @@ _TRANSITION_PACE: dict[str, float] = {
 class _Transition:
     """One cut in the timeline, and how it should be realised.
 
-    ``xfade`` needs the outgoing shot to render extra footage - the overlap has to
-    come from somewhere. A ``cut`` and an ``effect`` transition both need none: the
-    effect lives inside the frames each shot already has.
+    ``xfade`` needs the *incoming* shot to render extra footage: the fade's first input
+    is everything joined so far and its second is the incoming clip, which the blend
+    shows from its own frame 0 - so the incoming clip has to fill the overlap as well as
+    its own duration. A ``cut`` and an ``effect`` transition both need none: the effect
+    lives inside the frames each shot already has.
     """
 
     kind: str
@@ -1040,26 +1056,54 @@ def _compose_transitions(
     actual = [duration(clips / f"{index:05}.mp4") for index in range(len(shots))]
     current = "[v0]"
     timeline = actual[0]
+    # `shots[i].start` is the edit's own timeline, so every transition is anchored to it
+    # rather than to the running total of measured clip lengths. A clip is a whole number
+    # of frames and `trim=duration` rounds *up*, so each one came out up to a frame longer
+    # than the shot it stands for; summed over 253 shots that pushed the picture 0.65s
+    # past the plan, and `-shortest` quietly cut the difference off the end of the film
+    # (the last shot lost a third of its length). Anchoring keeps each shot's rounding
+    # error to itself instead of letting it accumulate.
     for index, transition in enumerate(transitions):
         label = f"[x{index + 1}]"
+        start = shots[index + 1].start
         if transition.kind == "xfade" and transition.seconds > 0:
-            offset = max(0.0, timeline - transition.seconds - .001)
+            # xfade discards whatever the accumulated stream holds past
+            # `offset + seconds`, so moving the offset back to the plan's position needs
+            # no trim. The upper bound is what the real stream can offer - an offset past
+            # it is exactly what xfade rejects as invalid.
+            latest = timeline - transition.seconds - .001
+            offset = max(0.0, min(start - transition.seconds, latest))
             filters.append(
                 f"{current}[v{index + 1}]xfade=transition={transition.name}"
                 f":duration={transition.seconds}:offset={round(offset, 3)}{label}"
             )
             timeline = offset + actual[index + 1]
         else:
-            # A cut, and every effect transition: the flash, glitch or leak was
-            # already burned into the two shots' own frames, so the timeline just
-            # butts them together.
+            # A cut, and every effect transition: the flash, glitch or leak was already
+            # burned into the two shots' own frames, so the timeline just butts them
+            # together. A concat cannot shift a stream, so an accumulated stream that
+            # frame rounding has pushed past the plan's position is trimmed back to it
+            # first.
+            if timeline > start + 1e-6:
+                filters.append(f"{current}trim=end={start:.3f},setpts=PTS-STARTPTS[c{index}]")
+                current = f"[c{index}]"
+                timeline = start
             filters.append(f"{current}[v{index + 1}]concat=n=2:v=1:a=0{label}")
             timeline += actual[index + 1]
         current = label
     end_fade = min(.5, shots[-1].duration / 3)
     filters.append(f"{current}fade=t=in:st=0:d=0.25,fade=t=out:st={max(0, timeline - end_fade):.3f}:d={end_fade:.3f}[vout]")
+    # Windows caps a single command line at 32,767 characters, and a beat-cut edit runs
+    # long: 253 shots put ~27k characters of filter graph and ~9k of `-i` paths on one
+    # line, which fails with `FileNotFoundError: [WinError 206]` before ffmpeg is even
+    # started. The graph therefore goes into a file and is pulled in with the generic
+    # "read this option's value from a file" form, ``-/opt file``. The dedicated
+    # ``-filter_complex_script`` that used to do this is gone in ffmpeg 9, and the input
+    # list stays inline because it is a third of the size and a few hundred shots fit.
+    script = output.with_suffix(".filter")
+    script.write_text(";\n".join(filters), encoding="utf-8")
     args += [
-        "-filter_complex", ";".join(filters), "-map", "[vout]", "-an",
+        "-/filter_complex", str(script), "-map", "[vout]", "-an",
         "-r", str(cfg.fps), *_video_encode_args(cfg, intermediate=True), str(output),
     ]
     command(args)

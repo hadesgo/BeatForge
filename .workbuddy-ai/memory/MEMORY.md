@@ -1,279 +1,173 @@
 # BeatForge 项目长期记忆
 
-## 设计约定
-- 选镜（`beatforge/planner.py`）的素材复用策略：按"已出现次数"分层，优先最少使用层；
-  素材够用（最少使用层数量 ≥ 剩余镜头数）时保证零复用。多图合成属于"奢侈品"，
-  只在 `富余素材 = 最少使用层数量 - 剩余镜头数 >= 0` 时消耗富余素材。
-  开关为 `render.avoid_asset_repeats`（默认 true）。细节见 README「素材复用规则」。
-- 规划器保持确定性：不使用随机数，平票靠素材发现顺序（列表顺序）决出，便于测试与复现。
-- 所有剪辑决策都要写进 `.beatforge/plan.json`，方便人工复核；新增 render 配置会自动出现在其中。
+> 只放高频规则与坑。**保持当前量级（约 15k 字符）**——再长会在注入时被截断，后半部分等于不存在。
+> 长尾细节（人声分离、视觉检索预算、剪辑风格、字幕版式/镂空、抖动测量、素材复用推导、
+> 效果型转场与合成平面、字幕特效明细、提示词实测值）在 **`MEMORY-details.md`**，
+> 改对应模块前先读那一节。
 
-## AI 导演（`beatforge/models/ai_director.py`）的显存设计
-Spark-X2.5-4B 的 remote code 有两个必须靠外部兜住的特性，任何"把长序列喂给它"的改动都要重新核对：
-1. 注意力是手写 `torch.matmul` + softmax，**没有 SDPA / flash-attn 后端**；滑动窗口层
-   （27/36 层，window=512）是给完整的 `[heads, n, n]` 分数矩阵加掩码，**不切 KV**。
-   分数矩阵峰值按 `heads * n² * 6 字节`（bf16 矩阵 + fp32 softmax 副本）估算。
-2. `logits_to_keep` **不是**瓶颈：remote `forward` 的默认值确实是 0，但 transformers 5.16 的
-   `generate` 会在 `_supports_logits_to_keep()` 为真时显式传 `logits_to_keep=1`（已实测 spy 到
-   `[1, 1]`），prefill 只对最后一个位置跑 lm_head。`_sequence_reserve_gb` 里的
-   `prefill * vocab * dtype_bytes` 现在是**刻意的保守余量**（≈0.66GiB @2600 tokens），
-   不是真实开销；不要因为"省显存"就删掉它，删除只会在 transformers 改行为时换来一次 OOM 重载。
-   旧结论"prefill 对每个 prompt 位置跑 lm_head"已作废（README 与注释同步改过）。
+## 本机环境
+- `uv run pytest` 需 `--basetemp=<可写目录> -p no:cacheprovider`（默认临时目录无权限）。
+- **有可用 CUDA 显卡**：RTX 5070 12GB，空闲约 10.8GiB。`nvidia-smi` 报 NVML 初始化失败，
+  判断显存要用 `torch.cuda.mem_get_info()`。AI 链路可真机验证。
+- **ffmpeg 9.0.1 删了老选项**：`-vsync`（改 `-fps_mode passthrough`）和 `-filter_complex_script`
+  都报 `Unrecognized option`，退出码 `2880417800`（这个怪数字 = 选项不存在）。
+  从文件读滤镜图用通用的 **`-/filter_complex <文件>`**。
+- **不要用 `git stash` 做"临时还原代码验证 bug"**：命令被信号打断后 `.git/refs` 整个目录消失，
+  git 报 `not a git repository`（`packed-refs`/`HEAD` 还在）。恢复：按 `.git/logs/HEAD` 与
+  `.git/logs/refs/**` 的 reflog 末尾哈希用 `printf` 重建 `refs/heads/*`、`refs/remotes/origin/*`。
+  临时验证改用**运行时替换函数**，别碰 git 索引。
+- `AIConfig.device` 只允许 `auto|cuda|cpu`；但 `transcriber.py`、`vision_index.py`、
+  `audio_semantics.py` 仍用 `device == "cuda"` 判断，放开 `cuda:N` 会静默退回 fp32/CPU
+  （导演模块已改 `_is_cuda()` 前缀匹配）。
+- All-In-One-Infer 在 **CWD** 建 `demix/`、`spec/`（正常结束自清，中断则留下），已 gitignore。
+  它批量生成/删临时文件，**在 agent 会话里会被安全钩子按 turn 统计删除数后中止**
+  （`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）——用户自己终端不受影响。所以本会话验证流水线时，
+  改为从现有 `plan.json` 直接驱动渲染阶段。
 
-真正随提示词长度**平方**增长的是 1，所以提示词必须限长。
+## 规划器（`beatforge/planner.py`）
+- **确定性**：不用随机数，平票靠素材发现顺序（列表顺序）决出。
+- **素材复用**按"已出现次数"分层，优先最少使用层；最少使用层数量 ≥ 剩余镜头数时零复用。
+  开关 `render.avoid_asset_repeats`（默认 true）。推导与示例见 `MEMORY-details.md`。
+- 决策全写进 `.beatforge/plan.json`；**`shots[i].start` 是权威时间轴**，渲染必须对齐它。
+- **选择器必须用独立计数器，否则槽位被"饿死"**：
+  - 运镜轮转按**已选出的单图镜头数**（`single_image_cursor`，`_choose_image_effect` 返回
+    `layer_count == 0` 时递增），不是镜头总序号（多图合成会吃掉序号）。共用 `index` 时实测
+    只用到 13/21 种运镜。
+  - 转场轮转同理但成因不同：`_transition_family` 收**两个**关键字计数器——`index`（密度门控用）
+    与 `visible`（已分配的可见转场数，轮转用）。分支很窄（`open` 只在 dreamy 的段落切换处出现，
+    一首歌两三次），按 `index` 轮转会全落同一余数上，`close`/`open`/`radial` 出现 0 次。
+- 这类"饿死"单曲测不出来。守门测试 `test_every_camera_move_is_reachable_from_some_song`（28 首）、
+  `test_every_transition_family_is_reachable_from_some_song`（8 组，脚本穷举的最小覆盖面）——
+  **加新选择分支要一起扩充**。
+- "某族扫不到"未必是 bug：固定段落布局下副歌边界能量恒 >.78 会被 `flash` 抢占。先换布局再下结论。
 
-- `AIConfig.director_prompt_tokens`（默认 2600）限制提示词长度；`PROMPT_LADDER` 逐级降级
-  （先裁候选表 → 再减素材数 → 最后才对歌词抽样），每级用 tokenizer 实测。
-  裁掉候选表时 `_trim_context` 会同步改写 `instruction`，不能指向已删除的表。
-- `_sequence_reserve_gb` 按上面两个公式 + KV + 激活估算序列侧开销；
-  `_gpu_budgets` 用 **`torch.cuda.mem_get_info` 的空闲显存**减预留，再与
+## AI 导演：显存（`beatforge/models/ai_director.py`）
+remote code 有两个必须外部兜住的特性：
+1. 注意力是手写 `torch.matmul` + softmax，**无 SDPA / flash-attn**；滑动窗口层（27/36 层，
+   window=512）给完整 `[heads, n, n]` 矩阵加掩码，**不切 KV**。峰值按 `heads * n² * 6 字节` 估。
+2. `logits_to_keep` **不是**瓶颈：remote `forward` 默认 0，但 transformers 5.16 的 `generate` 在
+   `_supports_logits_to_keep()` 为真时显式传 `1`（已 spy 到 `[1,1]`）。`_sequence_reserve_gb` 里的
+   `prefill * vocab * dtype_bytes` 是**刻意的保守余量**（≈0.66GiB @2600 tokens），别为省显存删掉。
+
+真正平方增长的是 1，所以提示词必须限长。
+- `director_prompt_tokens`（2600）+ `PROMPT_LADDER` 逐级降级（先裁候选表 → 再减素材 → 最后才抽样），
+  每级用 tokenizer 实测。裁掉候选表时 `_trim_context` 必须同步改写 `instruction`。
+  实测值见 `MEMORY-details.md`。
+- `_gpu_budgets` 用 **`torch.cuda.mem_get_info` 的空闲显存**减 `_sequence_reserve_gb`，再与
   `director_gpu_memory_gb` 取小。Accelerate 的 `max_memory` 只预算权重，不能替代这一步。
-- OOM 时自动用 `RETRY_BUDGET_SCALE`（0.65）更小的权重预算重试一次。
-- `scripts/director_memory_probe.py` 可在无显卡、不加载模型的情况下打印各提示词长度的预留量。
+- OOM 时用 `RETRY_BUDGET_SCALE`（0.65）重试一次。`scripts/director_memory_probe.py` 是纯算术探针。
+- `_dtype_bytes` 要**先读 `dtype`**：`config.torch_dtype` 在 5.x 是弃用属性，一读就告警
+  （而 `from_pretrained(torch_dtype=...)` 不告警）。
 
-## 远程代码兼容层（`_repair_remote_model_code`）
-Spark-X2.5 自带的 `modeling_spark.py` 是按 `transformers==4.57` 写的（`config.json` 里
-`transformers_version: 4.57.1`），而项目锁 `transformers>=5.16.1`。加载前必须就地改写本地模型目录里
-的这份文件，目前两处：
-1. `_tied_weights_keys` 旧列表写法 → `{target: source}` 映射（否则权重加载就炸）。
-2. `mask_kwargs` 里 `create_causal_mask(input_embeds=..., cache_position=...)` → 5.16 已改名为
-   `inputs_embeds` 并删掉 `cache_position`，否则首次前向报
-   `TypeError: create_causal_mask() got an unexpected keyword argument 'input_embeds'`。
+## AI 导演：远程代码兼容层（`_repair_remote_model_code`）
+`modeling_spark.py` 按 `transformers==4.57` 写（config 里 `transformers_version: 4.57.1`），
+项目锁 `>=5.16.1`。加载前必须就地改写**本地模型目录**里的这份文件，两处：
+1. `_tied_weights_keys` 列表 → `{target: source}` 映射（否则权重加载就炸）。
+2. `create_causal_mask(input_embeds=..., cache_position=...)` → 5.16 改名 `inputs_embeds` 且删了
+   `cache_position`，否则首次前向报 `TypeError: ... unexpected keyword argument 'input_embeds'`。
+- 改写依据**已安装**签名（`inspect.signature` 过滤 + `MASK_KWARG_ALIASES` 别名），新旧都对且幂等；
+  签名带 `**kwargs` 时不动。`mask_kwargs` 同时喂给 `create_causal_mask` 与
+  `create_sliding_window_causal_mask`，所以取两者签名的**交集**。
+- 只补到 HF modules 缓存目录没用：缓存目录名是源码哈希，改本地文件就换目录重建。
+- **`config._attn_implementation` 必须是 `eager`**：remote 手工加 4D float 掩码，落到 sdpa 时
+  `create_causal_mask` 返回 `None`，注意力**静默失去掩码**。`Spark2_5PreTrainedModel` 没声明
+  `_supports_sdpa`，所以现在默认就是 eager；改模型/改 transformers 后用探针复核。
+- `scripts/director_model_probe.py`：config 缩到几百万参数在 **CPU** 跑同一份远程代码，无需 7.7GB
+  权重即可验：注意力实现、因果性（前缀一致）、滑动窗口、带缓存/无缓存贪心一致、**分层 RoPE**。
+  滑动窗口那项**必须用单层**（感受野 = 层数 × window，多层会掩盖窗口外 token）。
+- 日志里的 `Unrecognized keys in rope_parameters ... {'full_attention','sliding_attention'}`
+  **是噪音但值得理解**（分层 RoPE 的嵌套 schema 与 transformers 的扁平 schema 不匹配）——
+  含义、为什么无害、以及它掩盖的静默失效风险见 `MEMORY-details.md`。
 
-- 改写依据是**已安装**的 `create_causal_mask` 签名（`inspect.signature` 逐项过滤 + `MASK_KWARG_ALIASES`
-  别名映射），所以新旧 transformers 都对，且幂等；签名里有 `**kwargs` 时一律不动（无法验证就别乱删参数）。
-- 只打补丁到 HF 的 modules 缓存目录是没用的：缓存目录名是源码哈希，改了本地文件就会换目录重建。
-- **`config._attn_implementation` 必须是 `eager`**。remote 注意力手工加 4D float 掩码，若落到 sdpa，
-  `create_causal_mask` 会返回 `None`，注意力**静默失去掩码**。`Spark2_5PreTrainedModel` 没声明
-  `_supports_sdpa`，所以现在默认就是 eager；改模型/改 transformers 后要用探针复核这一条。
-- `scripts/director_model_probe.py`：把 config 缩到几百万参数后在 **CPU** 上跑同一份远程代码，
-  不需要 7.7GB 权重就能验四件事：注意力实现、因果性（前缀一致）、滑动窗口、带缓存/无缓存贪心一致。
-  滑动窗口那一项**必须用单层**——感受野 = 层数 × window，多层会掩盖窗口外的 token。
+## AI 导演：提示词长度测量
+`processor.apply_chat_template(..., tokenize=True)` 返回含 `input_ids`/`attention_mask` 的
+`BatchEncoding`，`len()` 是**键的个数（2）**不是 token 数。曾把 `_prompt_tokens` 写成
+`len(rendered)`：提示词上限全程失效（`_fit_prompt` 每级都判"装得下"）、预留按 2 tokens 算成
+1.5GiB 下限（日志「约 2 tokens · 预算 9.0GiB」）。修复后同场景「2848 tokens · 预留 3.5GiB ·
+预算 7.3GiB」。`_rendered_token_count` 要覆盖 BatchEncoding / 张量 / 列表 / 嵌套列表四种形态。
 
-## 提示词长度必须用 `_rendered_token_count` 量
-`processor.apply_chat_template(..., tokenize=True)` 返回的是含 `input_ids`/`attention_mask` 的
-`BatchEncoding`，`len()` 是**键的个数（2）**，不是 token 数。曾因此把 `_prompt_tokens` 写成
-`len(rendered)`，导致：提示词上限全程失效（`_fit_prompt` 每级都判"装得下"，从没裁过）、
-序列预留按 2 tokens 算成 1.5GiB 下限，日志打印「导演提示词约 2 tokens · 权重预算 9.0GiB」。
-修复后同一场景是「2848 tokens · 预留 3.5GiB · 预算 7.3GiB」。改任何长度测量都要覆盖
-BatchEncoding / 张量 / 列表 / 嵌套列表四种形态（测试在 `tests/test_ai_director.py`）。
+## 图片运镜：四边形与 `perspective`
+- **禁止 `zoompan`**：它把 `x`/`y` 截断到整数像素，而本项目运镜只有 0.03–0.1 px/帧 → "多帧静止 +
+  突然跳 1 像素"。改用 `perspective=...:interpolation=cubic:sense=source:eval=frame` 逐帧求值四边形。
+- 几何量别写反：**裁剪框宽 = `W/zoom`**，**可平移量程 = `W - W/zoom`**。
+- **可平移量程正比于 zoom**：位移 = `(W - W/zoom) × 比例`。`whip_pan` 因此把 zoom_to 设到 0.42
+  （46px @640）；曾写 0.045 只得 8px，读起来像慢漂移。
+- 参数在 `_CameraMove`（冻结 dataclass）+ `_CAMERA_MOVES`（21 种）：`zoom_from/to` 是**增量倍率**，
+  `x_from..y_to` 是**平移量程比例**（±0.15 内，避免撞 `clip()` 边界而中途停住）；
+  `curve`(ramp/breathe/pulse)、`roll`、`keystone`/`keystone_v`、`shake`、`drag`。
+- 四边形由 `_camera_quad` 统一构造（**同一中心点 + 同一半尺寸**再旋转/梯形），所以滚转与 3D 转向
+  复用**同一次** `perspective`，不叠加第二次重采样。
+- 角点顺序：过滤器里 `x0..x3` 是 TL/TR/**BL/BR**，按索引连起来是蝴蝶结；面积与转向判定必须按
+  TL→TR→BR→BL 的**环序**（`_corners` 已换序）。
+- 三个硬坑：
+  1. **`on` 是 1-based 且会越过镜头长度继续涨**（`VAR_ON = frame_count_in + 1`；静态图来自
+     `-loop 1`，下游 `fps`/`trim` 会多拉几帧）。进度必须写 `clip((on-1)/(frames-1),0,1)`：
+     少 `-1` 末帧过冲；少 `clip` 则递减型运镜末尾**反转**，zoom < 1 → `W-W/zoom` 变负 → 该帧被拒。
+     症状极具误导性：只有 `dolly_out`/`pull_back`/`breathe` 这类**递减**运镜崩。
+     手持抖动用 `on` 计时（`(max(1,min(on,frames))-1)/fps`，两端都钳）。
+  2. **`clip()` 不交换上下界**（`min(max(x,min),max)`），上界为负就原样返回
+     （`x0='clip(5,0,-1)'` 直接 `Invalid argument`）。所以每个运镜额外抬高 `_MIN_ZOOM = 0.004`。
+  3. **`geq` 是另一套方言**：没有 `on`，用 0 基 `N`；逐像素求值，1080p 实测 0.18s/帧（≈5.5fps）——
+     iris 遮罩改在 1/8 画布生成再 `scale` 上采样。
 
-## 图片运镜（`beatforge/renderer.py::_image_filter_graph`）
-- **禁止再用 `zoompan` 做图片运镜**。它把 `x`/`y` 截断到输入帧的整数像素，而本项目运镜只有
-  0.03–0.1 px/帧，结果是"连续多帧静止 + 突然跳 1 像素"的顿挫。改用
-  `perspective=...:interpolation=cubic:sense=source:eval=frame`，逐帧求值裁剪四边形，亚像素重采样。
-- 几何量别写反：**裁剪框宽 = `W/zoom`**，**可平移量程 = `W - W/zoom`**。写反会变成极端硬推镜。
-- 运镜参数化在 `_CameraMove`（冻结 dataclass）+ `_CAMERA_MOVES`（21 种）。`zoom_from`/`zoom_to`
-  是**增量倍率**（保证 zoom ≥ 1），`x_from`..`y_to` 是**平移量程的比例**（±0.15 以内，避免撞 `clip()` 边界而中途停住）。
-  另外几个字段负责"不只是推一下"的运镜：`curve`(ramp/breathe/pulse)、`roll`(滚转角度)、
-  `keystone`/`keystone_v`(梯形变形)、`shake`(手持抖动)、`drag`(甩镜拖影帧数)。
-- **可平移量程正比于 zoom**：pan 的位移 = `(W - W/zoom) × 比例`，所以浅裁的运镜只能平移几个像素。
-  写"甩镜"这类大位移运镜必须把 zoom 调深（`whip_pan` 用 0.42），否则无论名义上多快都读起来像慢漂移
-  —— 曾因此写出位移只有 8px 的"甩镜"（修复后 46px @640）。
-- 四边形由 `_camera_quad` 统一构造：**同一个中心点 + 同一个半尺寸**，再整体旋转或做梯形变形。
-  这样滚转和 3D 转向都复用**同一次** `perspective`，不叠加第二次重采样。
-- 回归测试在 `tests/test_renderer.py`：断言无 zoompan、四边形是凸的且四角都在画面内、保持宽高比、
-  相邻帧步长不超过 `max(平均步长*6, 0.5px)`、以及**超出镜头长度后几何保持不变**。改运镜必须让这些测试继续通过。
-  注意四边形的角点顺序：过滤器里的 `x0..x3` 是 TL/TR/**BL/BR**，直接按索引连起来是蝴蝶结，
-  面积和转向判定必须按 TL→TR→BR→BL 的**环序**（`_corners` 已经换过序）。
+## 图片运镜：包围盒量程与 `amount`
+- 转过的角点会甩出裁剪框、梯形较宽的边会顶到边缘，所以量程必须按四边形**包围盒**算，不是
+  `W - W/zoom`（实测 `tilt3d_back` 越界 24.5px、`tilt3d_left` 12.1px、`roll_drift` 4.1px）。
+- `_required_zoom(move, amount, low, high, aspect)` 采样 9 点求包围盒需要的最小放大率，然后把
+  **整条曲线**抬高（不是夹住某几帧，以保住推进幅度）。轴对齐运镜的包围盒 == 裁剪框，故不受影响。
+- **`amount` 必须同时进估算和生成**。`amount` = 每镜运镜强度
+  （`max(.35, art.camera_intensity) * (1 + melody*.18) * {"dynamic":1.35,"gentle":.7}`，
+  实测 0.245~3.2），缩放 zoom/roll/shake/keystone。曾 `_quad_spread` 乘了 `amount` 而
+  `_camera_quad` **没乘**：估算小最多 14%，`amount < 1` 的镜头四角出画
+  （`tilt3d_front` @0.8714 越界 23px @1920，第 218/253 镜被 EINVAL 拒）。
+  **只要估算与生成各写一份公式就一定会漂移**，而 `amount == 1` 时完全等价 ——
+  所以测试与探针**必须扫 amount**。
+- 守门：`scripts/quad_probe.py` 逐帧求值全部运镜、**扫 10 个 amount**，报最紧余量（负值=越界像素）；
+  `test_every_camera_move_stays_in_frame_at_every_camera_intensity` 是测试版。
+  `tests/test_renderer.py` 另断言：无 zoompan、四边形凸且四角在画面内、保持宽高比、
+  相邻帧步长 ≤ `max(平均步长*6, 0.5px)`、**超出镜头长度后几何不变**。
 
-## 滚转/梯形必须按包围盒算量程（踩过的坑）
-- 转过的角点会甩到裁剪框外，梯形较宽的那条边会顶到画面边缘。所以能平移的量程必须按四边形的
-  **包围盒**算，而不是 `W - W/zoom`。用 `W - W/zoom` 会在渲染中途被 ffmpeg 拒绝某一帧
-  （实测 `tilt3d_back` 越界 24.5px、`tilt3d_left` 越界 12.1px、`roll_drift` 越界 4.1px）。
-- `_required_zoom(move, amount, low, high, aspect)` 采样 zoom 曲线，算出包围盒需要的**最小放大率**，
-  然后把**整条曲线**抬高到那个高度。抬高整条而不是夹住某几帧，是为了保住运镜原本的推进幅度。
-  轴对齐的运镜包围盒 == 裁剪框，所以这个改动对它们完全无影响（现有运镜的四边形逐帧不变）。
-- 采样 9 个点就够：所有曲线形状在采样点之间对 `unit` 单调，而 breathe/pulse 这类非单调曲线
-  本来就会扫过整个 0..1 区间。
-- `scripts/quad_probe.py` 逐帧求值全部运镜的四边形，报越界像素与形变量。**调滚转角度或梯形强度先跑它**，
-  比等 ffmpeg 在渲染中途拒绝某一帧快得多。
-
-## `perspective` 的三个硬坑（改任何运镜前必读）
-1. **`on` 是 1-based，而且会越过镜头长度继续增长。**
-   `vf_perspective.c` 里 `VAR_ON = outl->frame_count_in + 1`；静态图来自 `-loop 1`（无限长），
-   下游的 `fps`/`trim` 为了确定自己的时间戳会多拉几帧，所以 `on` 会一直涨。
-   进度必须写成 **`clip((on-1)/(frames-1),0,1)`**：
-   - 少写 `-1` → 末帧过冲一帧；
-   - 少写 `clip` → 递减型运镜在末尾**反转**，zoom 掉到 1 以下 → `W-W/zoom` 变负 → 该帧被 ffmpeg 拒绝。
-   症状极具误导性：只有 `dolly_out`/`pull_back`/`breathe` 这类**递减**运镜崩，`cinematic_depth` 全正常。
-   - 同理，手持抖动用 `on` 计时（`(max(1,min(on,frames))-1)/fps`，两端都要钳）：
-     用 progress 计时会让长镜头上的抖动频率变慢成"摇摆"，不钳上界则镜头结束后还在抖。
-2. **`clip()` 不交换上下界**，它算的是 `min(max(x,min),max)`；上界为负就原样返回负数。
-   实测 `perspective=x0='clip(5,0,-1)'` 直接 `Invalid argument`。
-   因此每个运镜额外抬高 `_MIN_ZOOM = 0.004` 的放大率，消除"裁剪框正好等于整帧"的退化映射。
-3. **`geq` 是另一套方言**：没有 `on`，用 0 基的 `N`。而且逐像素求值，1080p 实测 0.18s/帧（≈5.5fps），
-   比其它效果加起来还贵——iris 遮罩改在 1/8 画布上生成再 `scale` 上采样。
-
-## 合成平面与帧数（`_plane_duration`）
-- 用 `color` 生成的平面（分屏分隔条、iris 遮罩/底、渐变）经 `overlay=shortest=1` 与画面合成时，
-  若长度正好等于镜头时长，它会是**最短流**从而把整镜截短一帧。统一按 `duration + 1/fps` 生成，
-  多出的一帧由收尾的 `trim` 切掉。曾因此发现 `split_screen` 一直在丢最后一帧（既有 bug）。
-- `tests/test_renderer.py::test_all_still_image_effects_render` 断言帧数**精确相等**，用来守住这条。
-
-## 转场（`beatforge/renderer.py` + `planner.py`）
-- 规划器只下发**转场族**（`_transition_family`），`_transition_spec` 再结合进入镜头的
-  `transition_tone` 与离开镜头的漂移方向解析成具体动作。共 **21 个 xfade 族 / 58 个具体名**
+## 时间线：转场与拼接
+- 规划器只下发**转场族**（`_transition_family`），`_transition_spec` 结合进入镜头的
+  `transition_tone` 与离开镜头的漂移方向解析成动作。**21 个 xfade 族 / 58 个具体名**
   （`_TRANSITION_LIBRARY`）+ **3 个效果型转场**（`_EFFECT_TRANSITIONS`）。
-- `_transition_spec` 返回 `_Transition(kind, name, seconds)`，`kind ∈ {cut, xfade, effect}`，
-  带 `.handle` 属性：**只有 `xfade` 需要额外 footage 补重叠**，`cut` 和 `effect` 都是 0。
-  这个区分很关键——效果型转场是在镜头自己的帧里烧出来的，多渲染 footage 会直接改变总时长。
-- `_TRANSITION_PACE` 逐族定时长；方向性族在 `_TRANSITION_DIRECTION`。未知族名回退成溶解，不是硬切。
-- **效果型转场**（`glitch`/`light_leak`/`film_burn`）不用 xfade：滤镜直接烧进两个镜头各自的帧里，
-  时间线上是硬切。冲击发生在切点**上**而不是横跨切点，这是它和溶解的本质区别。
-  滤镜都带 `enable=` 时间门，只在切点附近生效；`rgbashift`/`noise`/`fade`/`tmix` 都支持 timeline。
-  - **闪光时序坑**：`fade` 在 `st + d` 才到达目标色，所以出点一侧要从 `duration - flash - 1/fps` 起算。
-    停在片段末尾的话最后一帧只走到三成，闪光退化成一记轻微提亮（实测峰值只比常态高 1.1）。
-  - 验证必须同时看**均值亮度 + 空间标准差 + 暖度**：噪点和通道分离几乎不改变均值，
-    只看平均亮度会得出"什么都没做"的结论（第一版探针就踩了这个）。
-- `render.transition_density`（默认 0.35）只管**段落内部**的可见转场比例；段落切换/乐段边界/
-  导演冲击点不受约束。`_break_transition_repeats` 防止同一族连续出现（含蓄转场除外），
-  `_TRANSITION_ALTERNATIVES` 里效果型转场的替代项也保持同等强度——把故障换成溶解会把这一刀泄掉。
-- 测试会拿 `ffmpeg -h filter=xfade` 校验名字，并**真的跑一遍**每个转场（`xfade` 的 duration 必须是
-  `0.3` 这种写法，`.3` 会报 `Unable to parse "duration" option value`）。
+  `_TRANSITION_PACE` 逐族定时长，方向性族在 `_TRANSITION_DIRECTION`；未知族名回退溶解而非硬切。
+- `_Transition(kind, name, seconds)`，`kind ∈ {cut, xfade, effect}`，带 `.handle`：
+  **只有 `xfade` 需要额外 footage**（`cut`/`effect` 都是 0）。
+- **补的必须是「入场」转场的重叠量**。整条时间线是**一次** ffmpeg 调用，滤镜链
+  `x_k = xfade(x_{k-1}, clip_k)`：第一输入是"已拼好的全部"，第二是当前镜头，混合段展示第二输入的
+  **第 0 帧起**。所以 **`A_k = D_k + s_{k-1}`**（入场）。曾写成出场侧 `D_k + s_k`：slack 放错端
+  （出场侧没人消费，xfade 直接丢弃），自己的入场混合又缺帧。253 镜实测 198.133s vs plan 197.555s
+  （**+0.578s**），`-shortest` 把它从片尾悄悄切掉（末镜 1.725s 只播 1.147s，**丢 33%**）。
+- **时间轴必须锚定 `shots[i].start`，不能跟着实测剪辑时长累加**。剪辑是整数帧而
+  `trim=duration=` **向上取整**（`ceil(D*fps)`），每镜最多长一帧，253 镜累加就是那 0.578s。
+  xfade 的 `offset` 取 `min(plan 位置, 实测流上限)`——xfade 丢弃第一输入超出 `offset+seconds` 的
+  部分，回锚不需要 trim；`concat`（cut/效果型）无法平移流，先 `trim=end=<plan 位置>` 再拼。
+  修后 picture 197.5667s（+0.0117s），末镜播满。残留 −0.06s（≈2 帧）来自 `trim=end=` 帧粒度。
+- **拼接命令行会超 Windows 32767 上限**：253 镜 = 滤镜图约 27k + `-i` 约 9k →
+  `FileNotFoundError: [WinError 206]`。**253 镜全部渲染成功后才在拼接时炸**，症状是 `output.mp4`
+  根本不存在、`picture.mp4` 还是上一次的。滤镜图已写进 `<picture>.filter` 用 `-/filter_complex`
+  传入（守门 `test_a_long_edit_keeps_the_filter_graph_off_the_command_line`）。残留上限：`-i` 仍内联
+  （约 36 字符/镜），约 900 镜后会再次超限。
+- `render.transition_density`（0.35）只管**段落内部**；段落切换/乐段边界/导演冲击点不受约束。
+  `_break_transition_repeats` 防同族连续（含蓄转场除外）；`_TRANSITION_ALTERNATIVES` 里效果型
+  转场的替代项保持同等强度——把故障换成溶解会把这一刀泄掉。
+- 测试拿 `ffmpeg -h filter=xfade` 校验名字并**真的跑一遍**每个转场（duration 必须写 `0.3`，
+  `.3` 报 `Unable to parse "duration" option value`）。
 
-## 字幕特效（`beatforge/lyrics.py`）
-- 16 种，按剪映式"入场/持续/异类"三类：`cinematic`/`bounce`/`typewriter`/`punch`/`slide`/`flip_in`、
-  `karaoke`/`float`/`glow`/`neon`/`neon_flicker`/`shake`/`wave`/`rainbow`/`spotlight`、`glitch`。
-- `SUBTITLE_EFFECTS` 是**唯一真源**：`config.SubtitleEffectChoice` 与
-  `ai_director.SubtitleEffect` 都用 `Literal[*SUBTITLE_EFFECTS]` 生成（Python 3.11+ 支持解包，
-  pydantic 也认）。别再在两处手抄名单。
-- `_subtitle_effect(name, line, *, width, height, margin) -> (prefix, text)` 是唯一的分派点；
-  逐字特效（`wave`/`flip_in`）走 `_per_character(text, tag_for)` 做 stagger。
-- ASS 颜色是 `&HAABBGGRR&`，不是 RGB，写反了会得到完全不同的颜色。
-- **libass 会静默忽略不认识的标签**——渲染完美无缺却什么都没做。所以
-  `scripts/subtitle_effect_probe.py` 要同时查"墨量"（真的画出来了吗）和"相邻帧差"（真的在动吗）。
-  `--sheet` 可输出接触表。
-- `\jitter` 是 libass 扩展；`shake` 同时叠了一层 `\frz` 摇摆作为保底，这样即使某个构建忽略
-  `\jitter`，这一句仍然在动。
-
-## 转录前的人声分离（`beatforge/models/separator.py`）
-- **作用域严格限定在 ASR**：`pipeline.speech_source()` 是唯一入口，只给人声轨做转录**和强制对齐**；
-  拍点/能量/段落分析仍跑整轨混音（那些要的就是鼓，人声轨里没有鼓）。
-- **模型名必须进缓存 key**（`cache/<stem>-<digest>-vocals.wav`）：两个检查点给出两条不同的人声轨，
-  混用在下游完全看不出来，只会表现成歌词略有不同。
-- **选轨按文件名里的分句标记 `_\(([^)]+)\)_`，绝不能按子串匹配**。输出命名是
-  `<输入>_(<分句>)_<模型>.wav`，而默认检查点就叫 `vocals_mel_band_roformer`——**每个输出文件名都含
-  "vocals"，包括伴奏**。子串匹配会选中伴奏喂给识别器，症状是转录出一片空白，看起来像模型坏了。
-  第一次实跑就中了：缓存下来的"人声轨"低频占 52.5%，比原始混音还高。测试必须用**真实文件名**，
-  用 `song_(Vocals)_model.wav` 这种模型名不含 vocals 的假名字会一路绿灯。
-- **别按架构推测依赖，读源码或直接 import 一遍**。曾断言"RoFormer 走 torch 所以不需要 onnxruntime"——
-  实际 `audio_separator/separator/separator.py` 顶层无条件 `import onnxruntime`；
-  `uvr_lib_v5/spec_utils.py` 顶层 `import audioread`，而 audioread 根本没写进它的依赖表。
-- CPU 推理约 **204 秒 / 分钟音频**（45 秒实测 153 秒）。`Separator.separate()` 返回的是**完整路径**
-  而不是裸文件名（文档措辞是 "Fully written output paths"），解析时要显式判断 `is_absolute()`。
-- 装不上时**退回整轨并明确说明**；`plan.json` 的 `models.separation` 记录是否做了分离。
-  降级本身没问题，悄悄降级才是问题——整轨转录是另一份更差的歌词，下游分辨不出来。
-- 选模型的依据是包自带的 `audio-separator/models-scores.json`（115 个模型的实测 SDR），
-  不是猜。默认 `vocals_mel_band_roformer.ckpt`（均 SDR 11.49，与最高的 11.53 持平）。
-  卡拉 OK 模型主轨是伴奏，不要拿来当人声分离用。
-- **下载步骤与运行时必须用同一个模型目录**。分离检查点不是 HF/ModelScope 的仓库快照，
-  而是 `audio-separator` 自己目录里的单个 `.ckpt`，走它提供的**只下载不加载**入口
-  `Separator.download_model_files(filename)`。两边目录都从 `separator.SEPARATOR_SUBDIR` 派生，
-  并有测试专门断言这条等式——不一致的后果是静默的：下载看起来成功，运行时找不到、首次使用重拉一遍。
-- **可选 extra 缺失时下载步骤要"跳过"而不是"失败"**：`separate_vocals` 默认为 true，
-  让下载失败就会让默认配置在所有没装 separation extra 的机器上跑不通。区分"没装包"（跳过 + 说明缺哪个）
-  与"真的下载失败"（进 failures 抛 ModelDownloadError）。
-- `release_gpu()` 只 `except ImportError` 是不够的：torch 存在但不可用（半装完、没有 `cuda` 属性、
-  驱动拒绝初始化）会抛 `AttributeError` 把调用它的阶段带崩。它是**尽力而为的清理**，
-  已放宽到 `(ImportError, AttributeError, RuntimeError, OSError)`。
-
-## 剪辑风格（`beatforge/editing.py`）
-- **剪辑不是 look**。调色/字体/颗粒属于艺术指导（`director.py`）；这一层只管**关于时间的决定**：
-  镜长、切点网格、转场音量、景别对比、运镜强度。加新的剪辑决策放这里，不要塞进 config 散键。
-- `EditStyle` 的字段各自是一条剪辑判断，`EDIT_STYLES` 里八种风格是**自洽的习惯**而不是独立旋钮。
-  `edit_style="auto"` 按情绪选，`manual` 表示"别接管"。**风格接管它表过态的项**
-  （镜长、transition_density、composite_ratio），其余走参数——风格和手工值是对同一问题的两个回答。
-- **`cut_alignment` 的乐句网格必须按风格自己的镜长窗口自适应**（`_phrase_grid`）。
-  固定四小节在 120bpm 下是 8 秒，镜长上限 6 秒的风格永远找不到候选点，会静默退化成按小节切。
-  加新的网格类型时先问：这个网格的间距会不会大于风格自己的 `shot_max`？
-- **密度门控必须在"意图"分支之前**。`impact`/`breathe` 分支曾排在门控前面，
-  导致 `transition_density=0.10` 的纪实风格实测仍有 47% 可见转场。
-- 转场降级（`_quieten`）要**在所有出口统一过滤**，不能只写在某一个分支里，
-  否则含蓄风格的结构性转场仍会出现闪白/故障。降级用**轮转的替代名**，避免全塌成同一个。
-- 改风格先跑 `scripts/edit_style_probe.py`（同一首歌喂给全部风格，对比镜长/转场/景别）。
-  **探针素材的景别必须成块分布**：按索引交替的话所有风格都会 100% 换景别，指标失去意义。
-
-## 字幕版式与镂空（`beatforge/lyrics.py` + `renderer.py`）
-- `subtitle_layout` 默认 `free`：不做底部字幕条，而是**按演唱位置把一句切成分片**，
-  摆到主体不占的地方，**每片在自己被唱到的时刻淡入**。参考片（利比《跳楼机》官方歌词 MV）的核心就是这个。
-- **断句不能按字数平分**。中文没有词间空格，"黎明照亮天空"对半分成"黎明照/亮天空"会把"照亮"劈开。
-  断点取**逐字时间轴里最长的静音**（`_MIN_BREAK_SECONDS=0.22`）→ 退到标点 → 都没有则整句不拆。
-- 落点用 `shot.focus_point` 避让主体：偏上整组下压、偏下上抬，只有居中才用完整版式。
-  三种版式 `sandwich`/`diagonal`/`gap`，靠 `line_index` 固定轮转。
-- **分片延迟出场的写法有讲究**：`\alpha&HFF&` + `\t(delay, delay+260, \alpha&H00&)`，
-  且**必须追加在特效标签之后**——libass 按顺序应用 `\t` 链，后写的对同一属性胜出。
-  同时要把特效自带 `\fad(in,out)` 的入场半边改成 `\fad(0,out)`，否则两个 alpha 动画互相打架。
-- 自由版式下 `karaoke` **不再逐字扫光**：分片本身已承载时间信息，再扫一遍是说两遍。
-  `band` 版式保留扫光。
-- `subtitle_fill="knockout"`：没有字幕层，只有画面里一个字形空洞，字中透出提亮虚化的同一帧。
-  遮罩 = 同一份脚本渲染成白字黑底，`format=gray` + `alphamerge` 取亮度当 alpha，
-  所以脚本里任何动画都会让空洞同步跟随。
-  **只提亮填充不够**：自由版式故意把字放在画面空处，那里平滑而暗，实测对比度 −6.2（比周围还暗）。
-  必须**同时把画面压暗**（`_KNOCKOUT_LIFT=0.16` / `_KNOCKOUT_DIM=-0.10`），
-  对比度才成为滤镜图的固有属性（实测 +47/+10）而不是碰巧。
-- 验证用 `scripts/subtitle_layout_probe.py`：**不依赖 LRC**（"歌手在哪换气"LRC 带不了），
-  直接构造带逐字时间轴的歌词走真实 `render()`，输出接触表。`--layout free|band --fill solid|knockout`。
-
-## 视觉检索的输入预算（`beatforge/models/vision_index.py`）
-- Qwen-VL 系 processor 在视觉塔之前会自己把图缩到 `max_pixels = 1280*28*28` ≈ 1.0MP。
-  所以喂原图**换不来任何模型能看到的细节**，只换来全分辨率解码 + 缩放 + 两者同时驻留。
-  任何"把素材喂给视觉模型"的改动都要先过 `_fit_within(w, h, input_pixels)`。
-- 按**像素预算**缩放，不要按长边：长边规则的失效模式正是竖屏（768x2048 仍是 1.5MP）。
-  只缩不放，取偶（yuv420p 与 patch 网格都要偶数）。
-- 图片素材走 `_model_image()` 拿预算内缓存副本（`cache/model-input/`），编码与重排共用；
-  在预算内的素材原样透传，不建缓存。存副本用 `source.draft("RGB", target)` 走 JPEG 的
-  1/2、1/4、1/8 免解码降采样。视频帧的缓存 key **必须包含目标尺寸**，
-  否则改预算会静默复用旧尺寸的帧。
-- 关键帧用完就释放：`similarities` 聚合后把 `spans[i]` 的 frames 置 None，
-  重排用 `_video_frame_at()` 只回读需要的那一帧。重排对同一素材的重复候选是常态，
-  "每个候选重新解码一次"是乘以候选数的浪费。
-- `VisionIndex.input_pixels` 是**类属性**，这样用 `__new__` 绕过构造器的测试也有合理默认值。
-- 验证用 `scripts/vision_input_probe.py`（两条路径各起一个子进程，峰值读数才各归各的）。
-  实测 8 张 6000x4000：耗时 1.29s→0.80s，峰值内存 224→61 MiB，
-  送进模型的像素 192→8.02 MP。**最后一项才是显存那本账**——视觉塔的 patch 数与激活显存
-  直接按像素数走，重排阶段还要乘以候选数。
-- Windows 上 `ctypes` 调 `GetProcessMemoryInfo` **必须显式声明 `argtypes`/`restype`**，
-  否则不报错、直接返回 0。`resource` 模块是 Unix-only。
-
-## 规划器的选择器必须用独立计数器（踩过的坑）
-- 运镜轮转（`_single_image_effect` 里的 `cursor % N`）按**已选出的单图镜头数**推进，
-  而不是按镜头总序号。多图合成门控会吃掉一部分镜头，若两者共用全局 `index`，
-  被吃掉的序号对应的轮转槽位就永远轮不到——实测同一首歌只用到 13/21 种运镜，
-  改成独立计数后用满 21 种。`create_plan` 维护 `single_image_cursor`，
-  `_choose_image_effect` 返回 `layer_count == 0` 时递增。
-- 转场轮转同理，但成因不同：`_transition_family` 接收**两个**计数器——
-  `index`（镜头序号，给密度门控用）和 `visible`（已分配的可见转场数，给轮转用）。
-  转场分支很窄（`open` 只在 dreamy 歌曲的段落切换处出现，一首歌两三次），
-  按镜头序号轮转会让这几次触发全落在同一余数上，`close`/`open`/`radial` 因此出现 0 次。
-  两者回答不同问题，所以都保留；两个 int 挨着容易传错，签名用关键字参数。
-- 这类"饿死"用单个样本歌曲测不出来：覆盖率取决于该曲的段落与能量分布。
-  已加两个跨歌曲扫描的测试，断言**每个**运镜 / 每个转场族都至少被选中一次：
-  `test_every_camera_move_is_reachable_from_some_song`（28 首）、
-  `test_every_transition_family_is_reachable_from_some_song`（8 组，是脚本穷举出的最小覆盖面）。
-  **写新的选择分支时要一起扩充这两个扫描**，否则新加的名字可能根本轮不到。
-- 注意"某族扫不到"未必是代码 bug：固定段落布局下副歌边界能量恒 >.78 会被 `flash` 分支抢占，
-  导致 `radial` 永远轮不到。先换几组段落布局和能量曲线再下结论。
-
-## 运镜抖动怎么测（别拿成片直接测）
-- 相位相关测帧间位移的前提是**相邻帧互为刚体变换**。成片里的暗角、颗粒、调色固定在画面坐标上，
-  会破坏这一前提，使单帧步长正负相消、读数全是噪声——曾因此在真实片段上报出 58/101 静止帧、
-  1.75px 抖动的假结论（一致性只有 0.033）。
-- 判据是**一致性** `|Σstep| / Σ|step|`：≈1 才有效，< 0.5 时脚本直接判"测量不可信"。
-  `scripts/jitter_probe.py` 已内置该判据。（本文件曾提到"技能的 `subpixel_motion.py`"，
-  但本机与项目里都没有任何 skills 目录，该文件不存在——需要时按本文自行重建。）
-- 要测真实运镜是否平滑，用 `scripts/camera_move_probe.py --controlled`（关掉颗粒/暗角/调色、
-  单层铺满）或 `scripts/zoompan_probe.py`。可信结论：旧 zoompan 抖动 1.67px / 比值 18.6
-  → 新 perspective 0.117px / 比值 1.5。
-- 自己写测量时的三个硬坑：float32 会让 FFT 退化成 complex64 且 DC 基底淹没真实峰（必须去均值
-  + float64）；三点抛物线拟合峰值在小平移下低偏差约 40%（用局部上采样 DFT）；测试卡要用类照片的
-  1/f 噪声且中灰，不能用平滑噪声或条纹。
-
-## 本机环境注意
-- `uv run pytest` 默认临时目录无权限，需要 `--basetemp=<可写目录> -p no:cacheprovider`。
-- **本机有可用 CUDA 显卡**：RTX 5070 12GB（`torch.cuda.is_available()` 为 True，空闲约 10.8GiB），
-  但 `nvidia-smi` 会报 `Failed to initialize NVML: Unknown Error`，所以别用 nvidia-smi 判断显存，
-  用 `torch.cuda.mem_get_info()`。AI 链路可以真机验证：`--no-ai` 仍是最快的回归方式。
-- `AIConfig.device` 只允许 `auto|cuda|cpu`，无法选多卡；但 `beatforge/models/` 下多处仍用
-  `device == "cuda"` 判断（`transcriber.py`、`vision_index.py`、`audio_semantics.py`），
-  一旦放开 `cuda:N` 会静默退回 fp32/CPU。导演模块已改为 `_is_cuda()` 前缀匹配，其余待跟进。
+## 其余模块的要点（细节见 `MEMORY-details.md`）
+- **效果型转场**（`glitch`/`light_leak`/`film_burn`）：不用 xfade，滤镜烧进两个镜头各自的帧，
+  时间线是硬切——冲击发生在切点**上**而非横跨切点。`fade` 在 `st+d` 才到目标色，
+  出点一侧要从 `duration - flash - 1/fps` 起算（否则闪光退化成轻微提亮）。
+  验证必须同时看**均值亮度 + 空间标准差 + 暖度**，只看平均亮度会得出"什么都没做"。
+- **合成平面**（`_plane_duration`）：`color` 平面经 `overlay=shortest=1` 合成时若长度正好等于镜头
+  时长，它会成为最短流把整镜截短一帧；统一按 `duration + 1/fps` 生成再由收尾 `trim` 切掉。
+  `test_all_still_image_effects_render` 断言帧数精确相等。
+- **字幕特效**：16 种，`SUBTITLE_EFFECTS` 是**唯一真源**（`config` 与 `ai_director` 都用
+  `Literal[*SUBTITLE_EFFECTS]` 生成，别手抄名单）；`_subtitle_effect()` 是唯一分派点；
+  ASS 颜色是 `&HAABBGGRR&`；**libass 会静默忽略不认识的标签**，所以
+  `scripts/subtitle_effect_probe.py` 要同时查"墨量"与"相邻帧差"。
+- **字幕版式/镂空**（`free` 分片淡入、断句取最长静音、`knockout` 必须同时压暗画面）、
+  **剪辑风格**（`editing.py` 只管时间决策；密度门控必须在意图分支之前）、
+  **人声分离**（选轨按分句标记而非子串）、**视觉检索输入预算**（按像素而非长边）、
+  **运镜抖动测量**（判据是一致性 `|Σstep|/Σ|step|`）——都在 `MEMORY-details.md`。
