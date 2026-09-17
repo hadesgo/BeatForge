@@ -146,6 +146,7 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `vision_model` | `tencent/WeMM-Embedding-2B` | 决定歌词与画面的语义召回质量，也是视觉阶段主要显存占用 | 保持4B原始精度 |
 | `vision_batch_size` | `4` | 影响视觉编码吞吐和激活显存；OOM会自动按4→2→1重试 | `4`，仍OOM时设 `1` |
 | `vision_rerank_top_k` | `8` | 每句歌词进入精排的候选数；更高可能改善选镜，但更慢 | `8` |
+| `vision_input_pixels` | `1003520` | 每张图送进视觉编码器前的像素上限（= 1280×28×28） | 显存紧张时降到 `501760`（约 0.5MP） |
 | `frame_samples` | `8` | 长视频关键帧覆盖率；更高更容易找到对应画面，但分析更慢 | `8`，长素材可到 `12` |
 | `director_model` | `XHToken/Spark-X2.5-4B` | 统一叙事、色彩弧、母题与章节策略 | 保持4B原始精度 |
 | `director_prompt_tokens` | `2600` | 导演提示词的 token 上限；超长歌曲会自动抽样歌词并裁剪候选表 | 显存紧张时降到 `1600`–`2000` |
@@ -163,7 +164,7 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `image_background_blur` | `26.0` | 原比例图片周围的满屏模糊背景强度 | 人像可用 `22`–`32` |
 | `subtitle_effect` / `subtitle_font` | `auto` / `auto` | AI按旋律、情绪和段落从 16 种字幕动效里选，并选择字体 | 保持 `auto`，也可固定成某个特效名 |
 
-`vision_batch_size` 只影响编码时的激活显存，不能解决模型权重加载就OOM的问题。`frame_samples` 和 `director_contact_sheet_assets` 主要交换分析时间与选择信息量，并不会让最终视频分辨率变高。`director_gpu_memory_gb` 只是权重上限，导演的注意力矩阵和 KV 缓存会另外占用显存，所以它必须明显低于显卡总容量。
+`vision_batch_size` 只影响编码时的激活显存，不能解决模型权重加载就OOM的问题。`vision_input_pixels` 决定每张图进编码器前的像素上限，直接决定视觉塔的 patch 数量和激活显存；它只压缩超出预算的素材，小图不受影响。`frame_samples` 和 `director_contact_sheet_assets` 主要交换分析时间与选择信息量，并不会让最终视频分辨率变高。`director_gpu_memory_gb` 只是权重上限，导演的注意力矩阵和 KV 缓存会另外占用显存，所以它必须明显低于显卡总容量。
 
 ## 本地 AI 导演
 
@@ -454,6 +455,27 @@ WeMM-Embedding 会分别通过 `encode_query` 和 `encode_document` 比较歌词
 
 视频默认均匀抽取8个关键帧并分别匹配歌词，以最相关的两帧计算稳健召回分数，再从语义最相关的时刻附近取材。视觉精排会继续使用这个歌词对应帧，不再退回视频中间帧。提高 `frame_samples` 会提升长视频覆盖率，也会增加分析时间。
 
+### 送进模型前先把素材压到合理范围
+
+Qwen-VL 系的 processor 在视觉塔看到画面之前，会先把每张图缩放到它自己的像素预算——`max_pixels = 1280×28×28`，约 100 万像素。也就是说，把一张 2400 万像素的原图交给它，**换不来任何模型能看到的细节**，只换来一次全分辨率解码、一次全分辨率缩放，以及两者同时在内存里。而且重排阶段会为**每个候选**重复支付一次，同一张素材在候选表里通常还出现好几次。
+
+所以 BeatForge 会先归一化再送进去：
+
+- **图片素材**不再以原始文件路径喂给模型，而是先生成一份压到预算内的缓存副本（`model-input/`），编码和重排共用同一份；
+- **视频抽帧**直接按素材实际尺寸解码到预算内，而不是固定 768 宽——固定宽度对竖屏是失效的，`768×2048` 听起来不大，实际仍然超标；
+- 归一化是**上限而不是目标**：本来就在预算内的素材原样透传，连缓存目录都不会创建；
+- JPEG 解码还会用 Pillow 的 `draft()` 走 1/2、1/4、1/8 的免解码降采样，大文件连全分辨率解码都省掉；
+- 编码完成后立刻释放常驻的关键帧。重排阶段只回读它真正需要的那**一帧**，而不是把整套采样帧再持有到整轮结束。
+
+`scripts/vision_input_probe.py` 用两个独立进程分别测两条路径（这样峰值读数各归各的）。8 张 6000×4000 照片的实测：
+
+| | 耗时 | 峰值内存 | 送进模型的像素 |
+| --- | --- | --- | --- |
+| 原样喂 | 1.29s | 224 MiB | 192.00 MP |
+| 归一化后 | 0.80s | 61 MiB | 8.02 MP |
+
+这还只是**素材预处理**这一层。真正的显存收益要算上视觉编码器：它的 patch 数量和激活显存直接按像素数走，所以「模型看到的像素少 23.9 倍」才是显存那本账上的数字，而且重排阶段是乘以候选数的。预算可以通过 `vision_input_pixels` 调整，显存紧张时降到 `501760`（约 0.5MP）能再省一半。
+
 ## 专业剪辑策略
 
 - 优先在 downbeat 和乐段边界切镜，而不是每句歌词机械切换；
@@ -587,6 +609,13 @@ uv run python scripts/cut_effect_probe.py        # 在真实切点上确认闪�
 
 字幕探针同时检查"有没有画出来"（墨量）和"有没有在动"（相邻帧差）；效果转场探针同时看均值亮度、空间标准差和暖度，因为噪点和通道分离几乎不改变均值。
 
+调 `vision_input_pixels` 之前先量一遍，它会把两条路径放在各自的进程里测，峰值读数才各归各的：
+
+```powershell
+uv run python scripts/vision_input_probe.py
+uv run python scripts/vision_input_probe.py --size 6000x4000 --count 16 --budget 501760
+```
+
 在你自己的 AI 环境中执行模型烟雾测试：
 
 ```powershell
@@ -607,6 +636,6 @@ beatforge/models/vision_index.py      WeMM/Qwen3-VL-Embedding/SigLIP2 检索
 beatforge/planner.py                  多目标镜头编排
 beatforge/renderer.py                 FFmpeg 成片渲染
 beatforge/pipeline.py                 分阶段模型生命周期
-scripts/                              演示素材、复用/显存/抖动/四边形/效果/字幕探针
+scripts/                              演示素材、复用/显存/抖动/四边形/效果/字幕/视觉输入探针
 tests/                                不下载模型的测试
 ```

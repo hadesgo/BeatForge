@@ -3,11 +3,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from PIL import Image
 
 import beatforge.models.vision_index as vision_index_module
 from beatforge.media import MediaAsset
 from beatforge.models.vision_index import (
+    DEFAULT_INPUT_PIXELS,
     VisionIndex,
     _load_cross_encoder,
     _nearest_sample_index,
@@ -162,7 +164,9 @@ def test_unique_with_inverse_preserves_first_seen_order() -> None:
     np.testing.assert_array_equal(inverse, [0, 1, 0, 2, 1])
 
 
-def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, monkeypatch) -> None:
+def test_reranker_reads_only_the_frame_it_needs(tmp_path: Path, monkeypatch) -> None:
+    """The shortlist names the same video several times; loading all its samples for
+    each of those names is the waste this avoids."""
     predictions = []
     created_options = {}
 
@@ -191,24 +195,92 @@ def test_reranker_batches_all_lyrics_and_reuses_video_frames(tmp_path: Path, mon
     index.offline = False
     index.best_source_starts = np.array([[.1], [9.9]])
     asset = MediaAsset(0, tmp_path / "clip.mp4", "video", 10.0, 1920, 1080)
-    frames = [Image.new("RGB", (8, 8), color) for color in ("red", "green", "blue")]
+    wanted: list[float] = []
+
+    def fake_frame_at(_asset, _count, target_time):
+        wanted.append(target_time)
+        return Image.new("RGB", (8, 8), "red")
+
+    monkeypatch.setattr(index, "_video_frame_at", fake_frame_at)
     monkeypatch.setattr(
-        index, "_video_frames",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("cached frames must be reused")),
+        index, "_video_frame_samples",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("the reranker must not load the whole sample set")
+        ),
     )
-    result = index._rerank(
-        ["first", "second"], [asset], np.array([[.7], [.6]]), 3,
-        asset_frames=[frames],
-    )
+    result = index._rerank(["first", "second"], [asset], np.array([[.7], [.6]]), 3)
 
     assert result.shape == (2, 1)
+    assert wanted == [.1, 9.9], "each row must ask for its own best frame"
     assert len(predictions) == 1
     assert [pair[0] for pair in predictions[0]] == ["first", "second"]
-    assert predictions[0][0][1] is frames[0]
-    assert predictions[0][1][1] is frames[2]
     assert created_options["device"] == "cuda"
     assert created_options["model_kwargs"]["dtype"] == "bfloat16"
     assert "quantization_config" not in created_options["model_kwargs"]
+
+
+def test_oversized_images_are_cached_at_the_encoder_budget(tmp_path: Path) -> None:
+    """The processor resizes to its own budget anyway, so a 24 MP original only buys
+    a bigger decode - once per shortlist candidate, not once per asset."""
+    index = VisionIndex.__new__(VisionIndex)
+    index.input_pixels = DEFAULT_INPUT_PIXELS
+    index.model_dir = tmp_path / "model-input"
+
+    big = tmp_path / "big.jpg"
+    Image.new("RGB", (6000, 4000), (120, 140, 160)).save(big)
+    asset = MediaAsset(0, big, "image", float("inf"), 6000, 4000)
+
+    cached = Path(index._model_image(asset))
+    assert cached != big and cached.is_file()
+    with Image.open(cached) as image:
+        assert image.width * image.height <= DEFAULT_INPUT_PIXELS
+        assert image.width / image.height == pytest.approx(6000 / 4000, rel=.01)
+    assert Path(index._model_image(asset)) == cached, "a second pass must reuse the copy"
+
+
+def test_images_inside_the_budget_are_passed_through_untouched(tmp_path: Path) -> None:
+    """No cache directory, no re-encode: a small library keeps exactly what it had."""
+    index = VisionIndex.__new__(VisionIndex)
+    index.input_pixels = DEFAULT_INPUT_PIXELS
+    index.model_dir = tmp_path / "model-input"
+
+    small = tmp_path / "small.jpg"
+    Image.new("RGB", (400, 300), (120, 140, 160)).save(small)
+    asset = MediaAsset(0, small, "image", float("inf"), 400, 300)
+
+    assert index._model_image(asset) == str(small)
+    assert not index.model_dir.exists()
+
+
+def test_video_frames_are_decoded_to_the_budget_and_keyed_by_it(tmp_path: Path, monkeypatch) -> None:
+    """Changing the budget has to invalidate frames cached at the old size, or a
+    project would quietly keep feeding the model the previous one."""
+    index = VisionIndex.__new__(VisionIndex)
+    index.cache_dir = tmp_path / "frames"
+    index.cache_dir.mkdir()
+    index.input_pixels = DEFAULT_INPUT_PIXELS
+    asset = MediaAsset(0, tmp_path / "clip.mp4", "video", 10.0, 6000, 4000)
+    asset.file.write_bytes(b"x")
+    commands: list[list[str]] = []
+
+    def fake_command(args, **_kwargs):
+        commands.append(args)
+        target = Path(args[-1])
+        Image.new("RGB", (8, 8), "red").save(target)
+
+    monkeypatch.setattr("beatforge.models.vision_index.command", fake_command)
+    frames, times = index._video_frame_samples(asset, 2)
+
+    assert len(frames) == 2 and times.shape == (2,)
+    scale = next(arg for arg in commands[0] if arg.startswith("scale="))
+    width, height = (int(value) for value in scale.removeprefix("scale=").split(":"))
+    assert width * height <= DEFAULT_INPUT_PIXELS
+    assert width / height == pytest.approx(6000 / 4000, rel=.01)
+
+    index.input_pixels = DEFAULT_INPUT_PIXELS // 4
+    index._video_frame_samples(asset, 2)
+    assert commands[-1] != commands[0], "a different budget must not reuse the old frames"
+    assert Path(commands[-1][-1]).name.split("-")[0] != Path(commands[0][-1]).name.split("-")[0]
 
 
 def test_video_frame_extraction_retries_when_ffmpeg_creates_no_output(

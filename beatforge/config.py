@@ -81,6 +81,7 @@ class AIConfig(BaseModel):
     vision_reranker_model: str | None = "Qwen/Qwen3-VL-Reranker-2B"
     vision_batch_size: int = Field(default=4, ge=1, le=32)
     vision_rerank_top_k: int = Field(default=8, ge=0, le=20)
+    vision_input_pixels: int = Field(default=1280 * 28 * 28, ge=224 * 224, le=4_000_000)
     frame_samples: int = Field(default=8, ge=1, le=12)
     director_enabled: bool = True
     director_model: str = "XHToken/Spark-X2.5-4B"
@@ -148,6 +149,7 @@ vision_model = "tencent/WeMM-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
 vision_batch_size = 4 # 更大显存可提高到 8
 vision_rerank_top_k = 8
+vision_input_pixels = 1003520 # 每张图送进编码器前的像素上限（默认 = 1280*28*28）
 frame_samples = 8 # WeMM 默认增加长视频覆盖率
 director_enabled = true # BeatForge 分阶段加载并释放模型；失败会回退规则导演
 director_model = "XHToken/Spark-X2.5-4B"

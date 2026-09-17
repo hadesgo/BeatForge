@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import gc
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,73 @@ from tqdm.auto import tqdm
 
 from beatforge.media import MediaAsset, estimate_focus_point
 from beatforge.runtime import command
+
+
+# The Qwen-VL family of processors resizes every image to its own budget before the
+# vision tower sees anything - ``max_pixels = 1280 * 28 * 28`` is the usual default,
+# about one megapixel. Handing one of them a 24 MP photo therefore buys nothing and
+# costs a full-resolution decode, a full-resolution resize, and both alive at once.
+# The reranker pays that again for every candidate, and the same asset shows up as
+# several candidates, so the waste is multiplied by the length of the shortlist.
+#
+# Normalising first makes the processor's own resize a no-op and puts a ceiling on
+# everything upstream of it. It is a ceiling and not a target: anything already under
+# the budget is passed through untouched, so small libraries keep their detail and no
+# cache directory is created for them.
+DEFAULT_INPUT_PIXELS = 1280 * 28 * 28
+
+# JPEG quality for the cached copies. At ~1 MP this is visually lossless, and the
+# alternative - PNG - would make the cache an order of magnitude larger for no gain
+# the encoders could see.
+_CACHE_QUALITY = 95
+
+
+def _even(value: float) -> int:
+    """Nearest even integer, at least 2. yuv420p and most patch grids want even sizes."""
+    return max(2, int(round(value / 2)) * 2)
+
+
+def _fit_within(width: int, height: int, max_pixels: int) -> tuple[int, int]:
+    """Scale a frame down to ``max_pixels``, preserving its aspect ratio.
+
+    Never upscales: an asset already inside the budget comes back unchanged, which is
+    what lets the caller skip the cache entirely. A pixel budget rather than a long
+    edge, because the failure mode of a long-edge rule is a tall portrait - 768 wide
+    sounds small until it is 768 x 2048 and over the budget anyway.
+    """
+    if width <= 0 or height <= 0 or width * height <= max_pixels:
+        return width, height
+    scale = math.sqrt(max_pixels / (width * height))
+    return _even(width * scale), _even(height * scale)
+
+
+def _image_size(path: Path) -> tuple[int, int]:
+    """Read an image's dimensions from its header, without decoding any pixels."""
+    try:
+        with Image.open(path) as image:
+            return image.size
+    except OSError:
+        return 0, 0
+
+
+def _file_digest(path: Path) -> str:
+    """Cache key for a file: its path plus its modification time."""
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        stamp = 0
+    return hashlib.sha1(f"{path}:{stamp}".encode()).hexdigest()[:12]
+
+
+def _load_bounded_image(path: Path, max_pixels: int) -> Image.Image:
+    """Decode an image and scale it into the encoder's budget, in one pass."""
+    with Image.open(path) as source:
+        size = _fit_within(*source.size, max_pixels)
+        source.draft("RGB", size)
+        image = source.convert("RGB")
+    if size == image.size or size[0] <= 0:
+        return image
+    return image.resize(size, Image.LANCZOS)
 
 
 _QWEN_RERANKER_CHAT_TEMPLATE = r"""
@@ -42,10 +110,14 @@ _QWEN_RERANKER_CHAT_TEMPLATE = r"""
 class VisionIndex:
     """WeMM/Qwen multimodal embedding index with a SigLIP2 fallback."""
 
+    # Class-level so an index built without the full constructor - a subclass, or a
+    # test that skips model loading - still has a sane input budget.
+    input_pixels: int = DEFAULT_INPUT_PIXELS
+
     def __init__(
         self, model_name: str, device: str, offline: bool, cache_dir: Path, *, backend: str,
         reranker_model: str | None = None, rerank_top_k: int = 0,
-        batch_size: int = 4,
+        batch_size: int = 4, input_pixels: int = DEFAULT_INPUT_PIXELS,
     ) -> None:
         try:
             import torch
@@ -59,8 +131,10 @@ class VisionIndex:
         self.reranker_model = reranker_model
         self.rerank_top_k = rerank_top_k
         self.batch_size = batch_size
+        self.input_pixels = input_pixels
         self.cache_dir = cache_dir / "frames"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.model_dir = cache_dir / "model-input"
         if backend in {"wemm-embedding", "qwen3-vl-embedding"}:
             self._init_multimodal_embedding(model_name, device, offline)
             return
@@ -99,9 +173,9 @@ class VisionIndex:
                     else self._video_frame_samples(asset, frame_samples)
                 )
                 if frames is None:
-                    image_document: str | dict[str, object] = str(asset.file)
+                    image_document: str | dict[str, object] = self._model_image(asset)
                     if self.backend == "wemm-embedding":
-                        image_document = {"image": str(asset.file)}
+                        image_document = {"image": image_document}
                     documents.append(image_document)
                 else:
                     if self.backend == "wemm-embedding":
@@ -119,16 +193,23 @@ class VisionIndex:
             all_frame_scores = text_features @ document_features.T
             score_columns: list[np.ndarray] = []
             source_columns: list[np.ndarray] = []
-            asset_spans = zip(assets, spans)
-            for asset, (start, end, frames, sample_times) in tqdm(
-                asset_spans, total=len(assets), desc="视觉索引 · 相似度聚合", unit="个",
-                dynamic_ncols=True, disable=None,
+            for position, (asset, (start, end, frames, sample_times)) in enumerate(
+                tqdm(
+                    zip(assets, spans), total=len(assets), desc="视觉索引 · 相似度聚合",
+                    unit="个", dynamic_ncols=True, disable=None,
+                )
             ):
                 frame_scores = all_frame_scores[:, start:end]
                 if asset.kind == "video":
                     assert sample_times is not None
                     source_columns.append(sample_times[np.argmax(frame_scores, axis=1)])
                     self._update_video_visuals(asset, frames or [])
+                    # Drop the frames now that the only two consumers that needed them
+                    # all at once - the encoder and the visual summary - are done. The
+                    # reranker reads back the single frame it wants from the cache, so
+                    # holding every sampled frame of every video for the rest of the
+                    # run would be pure residency.
+                    spans[position] = (start, end, None, sample_times)
                     top_count = min(2, frame_scores.shape[1])
                     strongest = np.partition(frame_scores, -top_count, axis=1)[:, -top_count:]
                     score_columns.append(strongest.mean(axis=1))
@@ -138,11 +219,7 @@ class VisionIndex:
             self.best_source_starts = np.stack(source_columns, axis=1)
             scores = np.stack(score_columns, axis=1)
             if self.reranker_model and self.rerank_top_k > 0:
-                scores = self._rerank(
-                    unique_texts, assets, scores, frame_samples,
-                    asset_frames=[frames for _start, _end, frames, _times in spans],
-                    asset_frame_times=[times for _start, _end, _frames, times in spans],
-                )
+                scores = self._rerank(unique_texts, assets, scores, frame_samples)
             self.best_source_starts = self.best_source_starts[text_rows]
             return scores[text_rows]
         image_features = np.stack([
@@ -194,8 +271,6 @@ class VisionIndex:
 
     def _rerank(
         self, texts: list[str], assets: list[MediaAsset], base: np.ndarray, frame_samples: int,
-        *, asset_frames: list[list[Image.Image] | None] | None = None,
-        asset_frame_times: list[np.ndarray | None] | None = None,
     ) -> np.ndarray:
         del self.model
         gc.collect()
@@ -220,16 +295,12 @@ class VisionIndex:
             for index in candidates:
                 asset = assets[int(index)]
                 if asset.kind == "image":
-                    document: str | Image.Image = str(asset.file)
+                    # The same downscaled copy the embedding pass used, so the
+                    # shortlist does not decode the original once per candidate.
+                    document: str | Image.Image = self._model_image(asset)
                 else:
-                    frames = asset_frames[int(index)] if asset_frames is not None else None
-                    sample_times = asset_frame_times[int(index)] if asset_frame_times is not None else None
-                    if frames is None:
-                        frames, sample_times = self._video_frame_samples(asset, frame_samples)
-                    if sample_times is None:
-                        sample_times = self._video_sample_times(asset, len(frames))
                     target_time = float(self.best_source_starts[row, int(index)])
-                    document = frames[_nearest_sample_index(sample_times, target_time)]
+                    document = self._video_frame_at(asset, frame_samples, target_time)
                 pairs.append((text, document))
         values = np.asarray(
             reranker.predict(
@@ -251,7 +322,10 @@ class VisionIndex:
         return output
 
     def _asset_embedding(self, asset: MediaAsset, samples: int) -> np.ndarray:
-        images = [Image.open(asset.file).convert("RGB")] if asset.kind == "image" else self._video_frames(asset, samples)
+        images = (
+            [_load_bounded_image(asset.file, self.input_pixels)]
+            if asset.kind == "image" else self._video_frames(asset, samples)
+        )
         vectors: list[np.ndarray] = []
         for offset in range(0, len(images), 8):
             inputs = self.processor(images=images[offset:offset + 8], return_tensors="pt")
@@ -274,18 +348,75 @@ class VisionIndex:
             vectors.extend(features.float().cpu().numpy())
         return np.stack(vectors)
 
+    def _model_image(self, asset: MediaAsset) -> str:
+        """Path to a cached, budget-sized copy of an image asset.
+
+        The encoder's own processor resizes to the same budget regardless, so the
+        original resolution buys nothing but a bigger decode - and the reranker pays
+        it once per shortlist candidate. Anything already inside the budget is passed
+        through untouched, so a library of small images never touches the cache.
+        """
+        width, height = _image_size(asset.file)
+        target = _fit_within(width, height, self.input_pixels)
+        if target[0] <= 0 or target == (width, height):
+            return str(asset.file)
+        self.model_dir.mkdir(parents=True, exist_ok=True)
+        cached = self.model_dir / f"{_file_digest(asset.file)}-{target[0]}x{target[1]}.jpg"
+        if cached.is_file():
+            return str(cached)
+        temporary = cached.with_name(f"{cached.stem}.part.jpg")
+        temporary.unlink(missing_ok=True)
+        try:
+            with Image.open(asset.file) as source:
+                # A JPEG can be decoded at 1/2, 1/4 or 1/8 scale for free, which skips
+                # the full-resolution decode entirely on exactly the oversized files
+                # this path exists for. A no-op on every other format.
+                source.draft("RGB", target)
+                source.convert("RGB").resize(target, Image.LANCZOS).save(
+                    temporary, format="JPEG", quality=_CACHE_QUALITY,
+                )
+            temporary.replace(cached)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return str(cached)
+
     def _video_frames(self, asset: MediaAsset, count: int) -> list[Image.Image]:
         frames, _sample_times = self._video_frame_samples(asset, count)
         return frames
 
-    def _video_frame_samples(self, asset: MediaAsset, count: int) -> tuple[list[Image.Image], np.ndarray]:
-        digest = hashlib.sha1(f"{asset.file}:{asset.file.stat().st_mtime_ns}".encode()).hexdigest()[:12]
+    def _video_frame_at(self, asset: MediaAsset, count: int, target_time: float) -> Image.Image:
+        """The single cached sample nearest ``target_time``.
+
+        The reranker wants one frame per candidate, and a shortlist usually names the
+        same video several times over. Loading the whole sample set to keep one frame
+        is the difference between reading one small JPEG and reading a dozen.
+        """
+        times = self._video_sample_times(asset, count)
+        nearest = _nearest_sample_index(times, target_time)
+        frames, _actual = self._video_frame_samples(asset, count, indices=[nearest])
+        return frames[0]
+
+    def _video_frame_samples(
+        self, asset: MediaAsset, count: int, *, indices: list[int] | None = None,
+    ) -> tuple[list[Image.Image], np.ndarray]:
+        # Decode straight to the size the encoder will use, and put that size in the
+        # cache key: changing the budget has to invalidate frames cached at the old
+        # one, or a project would silently keep feeding the model the previous size.
+        width, height = _fit_within(asset.width, asset.height, self.input_pixels)
+        scale = f"scale={width}:{height}" if width > 0 and height > 0 else "scale=768:-2"
+        digest = hashlib.sha1(
+            f"{asset.file}:{asset.file.stat().st_mtime_ns}:{width}x{height}".encode()
+        ).hexdigest()[:12]
+        sample_times = self._video_sample_times(asset, count)
+        wanted = list(range(len(sample_times))) if indices is None else indices
+
         frames: list[Image.Image] = []
         actual_times: list[float] = []
         failed_samples = 0
-        for requested_time in self._video_sample_times(asset, count):
+        for index in wanted:
+            requested_time = float(sample_times[index])
             decoded = None
-            for time in _frame_attempt_times(float(requested_time), asset.duration):
+            for time in _frame_attempt_times(requested_time, asset.duration):
                 if any(abs(time - previous) < .001 for previous in actual_times):
                     continue
                 target = self.cache_dir / f"{digest}-{round(time * 1000):012d}.jpg"
@@ -301,7 +432,7 @@ class VisionIndex:
                     command([
                         "ffmpeg", "-y", "-v", "error", "-ss", f"{time:.3f}",
                         "-i", str(asset.file), "-an", "-sn", "-frames:v", "1",
-                        "-vf", "scale=768:-2", str(temporary),
+                        "-vf", scale, str(temporary),
                     ], capture=True)
                     if not temporary.is_file() or temporary.stat().st_size == 0:
                         continue
@@ -326,7 +457,7 @@ class VisionIndex:
             )
         if failed_samples:
             tqdm.write(
-                f"警告：{asset.file.name} 有 {failed_samples}/{count} 个采样点无法解码，"
+                f"警告：{asset.file.name} 有 {failed_samples}/{len(wanted)} 个采样点无法解码，"
                 f"已使用其余 {len(frames)} 帧继续分析。"
             )
         return frames, np.asarray(actual_times, dtype=float)

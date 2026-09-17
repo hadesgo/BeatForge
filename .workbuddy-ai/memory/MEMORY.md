@@ -147,6 +147,27 @@ BatchEncoding / 张量 / 列表 / 嵌套列表四种形态（测试在 `tests/te
 - `\jitter` 是 libass 扩展；`shake` 同时叠了一层 `\frz` 摇摆作为保底，这样即使某个构建忽略
   `\jitter`，这一句仍然在动。
 
+## 视觉检索的输入预算（`beatforge/models/vision_index.py`）
+- Qwen-VL 系 processor 在视觉塔之前会自己把图缩到 `max_pixels = 1280*28*28` ≈ 1.0MP。
+  所以喂原图**换不来任何模型能看到的细节**，只换来全分辨率解码 + 缩放 + 两者同时驻留。
+  任何"把素材喂给视觉模型"的改动都要先过 `_fit_within(w, h, input_pixels)`。
+- 按**像素预算**缩放，不要按长边：长边规则的失效模式正是竖屏（768x2048 仍是 1.5MP）。
+  只缩不放，取偶（yuv420p 与 patch 网格都要偶数）。
+- 图片素材走 `_model_image()` 拿预算内缓存副本（`cache/model-input/`），编码与重排共用；
+  在预算内的素材原样透传，不建缓存。存副本用 `source.draft("RGB", target)` 走 JPEG 的
+  1/2、1/4、1/8 免解码降采样。视频帧的缓存 key **必须包含目标尺寸**，
+  否则改预算会静默复用旧尺寸的帧。
+- 关键帧用完就释放：`similarities` 聚合后把 `spans[i]` 的 frames 置 None，
+  重排用 `_video_frame_at()` 只回读需要的那一帧。重排对同一素材的重复候选是常态，
+  "每个候选重新解码一次"是乘以候选数的浪费。
+- `VisionIndex.input_pixels` 是**类属性**，这样用 `__new__` 绕过构造器的测试也有合理默认值。
+- 验证用 `scripts/vision_input_probe.py`（两条路径各起一个子进程，峰值读数才各归各的）。
+  实测 8 张 6000x4000：耗时 1.29s→0.80s，峰值内存 224→61 MiB，
+  送进模型的像素 192→8.02 MP。**最后一项才是显存那本账**——视觉塔的 patch 数与激活显存
+  直接按像素数走，重排阶段还要乘以候选数。
+- Windows 上 `ctypes` 调 `GetProcessMemoryInfo` **必须显式声明 `argtypes`/`restype`**，
+  否则不报错、直接返回 0。`resource` 模块是 Unix-only。
+
 ## 规划器的选择器必须用独立计数器（踩过的坑）
 - 运镜轮转（`_single_image_effect` 里的 `cursor % N`）按**已选出的单图镜头数**推进，
   而不是按镜头总序号。多图合成门控会吃掉一部分镜头，若两者共用全局 `index`，
