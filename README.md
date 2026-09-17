@@ -163,6 +163,9 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `transition_density` | `0.35` | 段落内部使用可见转场的比例；`0` 只在段落切换时转场，`1` 每个切点都转场 | `0.25`–`0.45` |
 | `image_background_blur` | `26.0` | 原比例图片周围的满屏模糊背景强度 | 人像可用 `22`–`32` |
 | `subtitle_effect` / `subtitle_font` | `auto` / `auto` | AI按旋律、情绪和段落从 16 种字幕动效里选，并选择字体 | 保持 `auto`，也可固定成某个特效名 |
+| `subtitle_layout` | `free` | `free` 分句自由排版并避开主体；`band` 为传统底部居中一行 | 想做成官方歌词 MV 那样就用 `free` |
+| `subtitle_fill` | `solid` | `knockout` 让文字从画面里镂空，字中透出提亮虚化的同一帧 | 想要"融入画面"就用 `knockout` |
+| `subtitle_outline` | `1.1` | 描边宽度；越小越融入画面，`0` 为无描边 | 画面偏暗时用 `0`，杂时用 `1.5`–`2.2` |
 
 `vision_batch_size` 只影响编码时的激活显存，不能解决模型权重加载就OOM的问题。`vision_input_pixels` 决定每张图进编码器前的像素上限，直接决定视觉塔的 patch 数量和激活显存；它只压缩超出预算的素材，小图不受影响。`frame_samples` 和 `director_contact_sheet_assets` 主要交换分析时间与选择信息量，并不会让最终视频分辨率变高。`director_gpu_memory_gb` 只是权重上限，导演的注意力矩阵和 KV 缓存会另外占用显存，所以它必须明显低于显卡总容量。
 
@@ -225,6 +228,9 @@ uv run python scripts/director_memory_probe.py
 subtitle_font = "auto"
 subtitle_fonts_dir = "fonts"
 subtitle_effect = "auto"
+subtitle_layout = "free"
+subtitle_fill = "solid"
+subtitle_outline = 1.1
 subtitle_margin = 72
 subtitle_highlight_color = "&H0000D7FF"
 visual_effects = true
@@ -241,6 +247,21 @@ film_grain = 1.6
 look_strength = 0.72
 shot_match_strength = 0.3
 ```
+
+### 版式：让字幕成为画面的一部分
+
+默认的 `subtitle_layout = "free"` 不做底部字幕条。它参考官方歌词 MV 的做法，把一句歌词**按歌手换气的位置切开**，分片摆到画面里主体不占的地方，每片在自己被唱到的时刻淡入：
+
+- **断句在停顿处**，不在字数中点。中文没有词间空格，按字数平分会把词切开——"黎明照亮天空"对半分成"黎明照 / 亮天空"，把"照亮"劈成两半。所以断点取**逐字时间轴里最长的那段静音**（`_MIN_BREAK_SECONDS = 0.22`）；没有逐字时间轴时退到标点；两者都没有就**整句不拆**，只做自由摆放；
+- **摆位避开主体**，用 `focus_point`（素材阶段已经估好的主体中心）决定：主体偏上就把整组落点下压，偏下就上抬，只有主体居中时才用完整的版式。三种版式是**上下夹持**（主体在中间）、**对角**、**同基线拉开间距**；
+- **每片按演唱时刻出现**。整句不再一次性出现，而是随着演唱在画面各处依次亮起——这是参考片最核心的一条，也是它读起来"在画面里"而不是"浮在画面上"的原因。所以自由版式下 `karaoke` 不再逐字扫光：分片本身已经承载了时间信息，再扫一遍是把同一件事说两遍。
+
+`subtitle_layout = "band"` 恢复传统的底部居中一行，逐字扫光的 `karaoke` 也在那个版式下保留。`subtitle_outline` 默认 1.1（发丝描边）；参考片是**完全无描边**，设成 `0` 可以得到同样的效果，但需要画面本身够暗——白字落在亮部会读不出来。
+
+`subtitle_fill = "knockout"` 是"融入画面"的字面做法：**没有字幕层，只有画面里一个字形空洞**，字中透出同一帧提亮虚化后的样子。
+
+- 遮罩就是同一份歌词脚本渲染成白字黑底，`alphamerge` 取它的亮度当 alpha，所以脚本里任何动画（淡入、缩放、分片延迟）都会让空洞同步跟随；
+- 字被提亮的同时**画面整体被压暗**。只提亮是不够的——自由版式故意把字放在画面空的地方，那里往往平滑而暗，只提亮会让字直接消失。压暗之后对比度成为滤镜图的固有属性，而不是碰巧取决于字背后是什么。
 
 字幕动效共 16 种，按剪映式文字动画的三类组织——入场、持续、以及故障那一种异类：
 
@@ -604,10 +625,14 @@ uv run python scripts/quad_probe.py
 
 ```powershell
 uv run python scripts/subtitle_effect_probe.py   # 逐帧比对，确认每种字幕动效真的在动
+uv run python scripts/subtitle_layout_probe.py   # 渲染四种断句路径，看每片歌词落在哪里
+uv run python scripts/subtitle_layout_probe.py --fill knockout   # 同上，镂空填充
 uv run python scripts/cut_effect_probe.py        # 在真实切点上确认闪光/漏光/烧毁真的发生
 ```
 
 字幕探针同时检查"有没有画出来"（墨量）和"有没有在动"（相邻帧差）；效果转场探针同时看均值亮度、空间标准差和暖度，因为噪点和通道分离几乎不改变均值。
+
+版式探针不依赖 LRC——自由排版要的"歌手在哪换气"是 LRC 带不了的信息——所以它直接构造带逐字时间轴的歌词，走真实的 `render()`，再把每个镜头的三帧铺成一张图，一眼就能看出每片落在哪、什么时候出现。改落点或版式前先跑它。
 
 调 `vision_input_pixels` 之前先量一遍，它会把两条路径放在各自的进程里测，峰值读数才各归各的：
 
@@ -636,6 +661,6 @@ beatforge/models/vision_index.py      WeMM/Qwen3-VL-Embedding/SigLIP2 检索
 beatforge/planner.py                  多目标镜头编排
 beatforge/renderer.py                 FFmpeg 成片渲染
 beatforge/pipeline.py                 分阶段模型生命周期
-scripts/                              演示素材、复用/显存/抖动/四边形/效果/字幕/视觉输入探针
+scripts/                              演示素材、复用/显存/抖动/四边形/效果/字幕/版式/视觉输入探针
 tests/                                不下载模型的测试
 ```

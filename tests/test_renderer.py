@@ -17,9 +17,12 @@ from beatforge.planner import Shot, ShotLayer
 from beatforge.renderer import (
     _CAMERA_MOVES,
     _EFFECT_TRANSITIONS,
+    _KNOCKOUT_DIM,
+    _KNOCKOUT_LIFT,
     _MIN_ZOOM,
     _TRANSITION_LIBRARY,
     _image_filter_graph,
+    _knockout_graph,
     _render_shot,
     _section_color_filter,
     _shot_match_filter,
@@ -693,3 +696,53 @@ def test_directional_transitions_follow_the_shots_own_drift() -> None:
         for media_id in range(4)
     }
     assert names == {"wipeleft", "wiperight"}
+
+
+def test_the_knockout_fill_guarantees_its_own_contrast() -> None:
+    """The letters have to read wherever the layout puts them.
+
+    Lifting the fill alone leaves the type invisible on a smooth dark patch, and the
+    free layout deliberately puts the type where the frame is empty. Pulling the rest
+    of the picture down at the same time makes the contrast a property of the graph
+    rather than a property of whatever happened to be behind the text.
+    """
+    cfg = RenderConfig(width=1280, height=720, fps=24)
+    graph = _knockout_graph(Path("lyrics.ass"), 12.5, cfg)
+
+    assert "split=2[base][treat]" in graph
+    assert f"brightness={_KNOCKOUT_LIFT:.3f}" in graph, "the letters are not lifted"
+    assert f"brightness={_KNOCKOUT_DIM:.3f}" in graph, "the picture is not pulled down"
+    assert _KNOCKOUT_LIFT - _KNOCKOUT_DIM > .2, "the two have to add up to real contrast"
+    assert "format=gray[mask]" in graph and "alphamerge[hole]" in graph
+    assert "[dim][hole]overlay" in graph, "the hole must sit in the dimmed picture"
+    assert "ass='" in graph, "the mask has to come from the lyric script"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+def test_the_knockout_fill_renders_and_differs_from_solid(tmp_path: Path) -> None:
+    """A graph this fiddly is worth running once: alphamerge silently takes an empty
+    input for a black frame, which would look like the subtitles simply vanished."""
+    image = tmp_path / "flat.jpg"
+    Image.new("RGB", (320, 180), (70, 80, 110)).save(image)
+    music = tmp_path / "music.wav"
+    sample_rate = 22_050
+    time = np.arange(sample_rate * 2) / sample_rate
+    sf.write(music, (.05 * np.sin(2 * np.pi * 200 * time)).astype(np.float32), sample_rate)
+    shot = Shot(0, 0, 2, 2, 0, str(image), "image", 0, "测试字幕", .5, "steady", "none", .8,
+                melody=.5, image_effect="cinematic_depth")
+    line = LyricLine(0, 2, "测试字幕")
+
+    frames = {}
+    for fill in ("solid", "knockout"):
+        cfg = RenderConfig(width=320, height=180, fps=12, crf=30, preset="ultrafast",
+                           film_grain=0, vignette=False, subtitle_fill=fill,
+                           subtitle_layout="band", subtitle_size=28, subtitle_margin=18)
+        output = tmp_path / f"{fill}.mp4"
+        render([shot], [line], music, output, tmp_path / f"cache-{fill}", cfg,
+               _transition_art())
+        frames[fill] = _frame_stats(output, 12, tmp_path)[1]
+        assert output.exists()
+
+    assert frames["knockout"] != frames["solid"], "the knockout drew the same frame"
+    assert frames["knockout"] > 0, "the knockout drew nothing"
+

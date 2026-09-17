@@ -40,6 +40,9 @@ class RenderConfig(BaseModel):
     subtitle_size: int = 46
     subtitle_effect: SubtitleEffectChoice = "auto"
     subtitle_margin: int = 72
+    subtitle_layout: Literal["band", "free"] = "free"
+    subtitle_fill: Literal["solid", "knockout"] = "solid"
+    subtitle_outline: float = Field(default=1.1, ge=0, le=6)
     subtitle_highlight_color: str = "&H0000D7FF"
     visual_effects: bool = True
     image_composites: bool = True
@@ -177,6 +180,9 @@ subtitle_fonts_dir = "fonts" # 可放入自定义 ttf/otf；不存在也不影�
 subtitle_size = 46
 subtitle_effect = "auto" # 也可固定为某个特效名；可选值见 README「字幕特效」
 subtitle_margin = 72
+subtitle_layout = "free" # free = 分句自由排版并避开主体；band = 传统的底部居中一行
+subtitle_fill = "solid" # knockout = 文字从画面里镂空，字中透出提亮虚化的同一帧
+subtitle_outline = 1.1 # 描边宽度；0 为无描边（更融入画面，但需要画面本身够暗）
 subtitle_highlight_color = "&H0000D7FF" # ASS 的金黄色（BGR）
 visual_effects = true
 image_composites = true # AI 按段落自动选择分屏、照片堆叠、双重曝光和节拍蒙太奇

@@ -147,6 +147,27 @@ BatchEncoding / 张量 / 列表 / 嵌套列表四种形态（测试在 `tests/te
 - `\jitter` 是 libass 扩展；`shake` 同时叠了一层 `\frz` 摇摆作为保底，这样即使某个构建忽略
   `\jitter`，这一句仍然在动。
 
+## 字幕版式与镂空（`beatforge/lyrics.py` + `renderer.py`）
+- `subtitle_layout` 默认 `free`：不做底部字幕条，而是**按演唱位置把一句切成分片**，
+  摆到主体不占的地方，**每片在自己被唱到的时刻淡入**。参考片（利比《跳楼机》官方歌词 MV）的核心就是这个。
+- **断句不能按字数平分**。中文没有词间空格，"黎明照亮天空"对半分成"黎明照/亮天空"会把"照亮"劈开。
+  断点取**逐字时间轴里最长的静音**（`_MIN_BREAK_SECONDS=0.22`）→ 退到标点 → 都没有则整句不拆。
+- 落点用 `shot.focus_point` 避让主体：偏上整组下压、偏下上抬，只有居中才用完整版式。
+  三种版式 `sandwich`/`diagonal`/`gap`，靠 `line_index` 固定轮转。
+- **分片延迟出场的写法有讲究**：`\alpha&HFF&` + `\t(delay, delay+260, \alpha&H00&)`，
+  且**必须追加在特效标签之后**——libass 按顺序应用 `\t` 链，后写的对同一属性胜出。
+  同时要把特效自带 `\fad(in,out)` 的入场半边改成 `\fad(0,out)`，否则两个 alpha 动画互相打架。
+- 自由版式下 `karaoke` **不再逐字扫光**：分片本身已承载时间信息，再扫一遍是说两遍。
+  `band` 版式保留扫光。
+- `subtitle_fill="knockout"`：没有字幕层，只有画面里一个字形空洞，字中透出提亮虚化的同一帧。
+  遮罩 = 同一份脚本渲染成白字黑底，`format=gray` + `alphamerge` 取亮度当 alpha，
+  所以脚本里任何动画都会让空洞同步跟随。
+  **只提亮填充不够**：自由版式故意把字放在画面空处，那里平滑而暗，实测对比度 −6.2（比周围还暗）。
+  必须**同时把画面压暗**（`_KNOCKOUT_LIFT=0.16` / `_KNOCKOUT_DIM=-0.10`），
+  对比度才成为滤镜图的固有属性（实测 +47/+10）而不是碰巧。
+- 验证用 `scripts/subtitle_layout_probe.py`：**不依赖 LRC**（"歌手在哪换气"LRC 带不了），
+  直接构造带逐字时间轴的歌词走真实 `render()`，输出接触表。`--layout free|band --fill solid|knockout`。
+
 ## 视觉检索的输入预算（`beatforge/models/vision_index.py`）
 - Qwen-VL 系 processor 在视觉塔之前会自己把图缩到 `max_pixels = 1280*28*28` ≈ 1.0MP。
   所以喂原图**换不来任何模型能看到的细节**，只换来全分辨率解码 + 缩放 + 两者同时驻留。

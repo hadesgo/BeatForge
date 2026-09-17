@@ -1,6 +1,13 @@
 from pathlib import Path
 
-from beatforge.lyrics import LyricLine, LyricToken, parse_lrc, srt_timestamp, write_ass
+from beatforge.lyrics import (
+    LyricLine,
+    LyricToken,
+    parse_lrc,
+    plan_placements,
+    srt_timestamp,
+    write_ass,
+)
 
 
 def test_parse_lrc() -> None:
@@ -71,3 +78,112 @@ def test_ass_shrinks_long_lines_and_typewriter_escapes_markup(tmp_path: Path) ->
     content = target.read_text("utf-8-sig")
     assert r"{\fs27}" in content
     assert r"\{" in content and r"\}" in content
+
+
+def _breathing_line() -> LyricLine:
+    """One line whose longest silence sits off-centre, the way sung phrasing does."""
+    return LyricLine(0, 4, "你反正不会再担心", tokens=[
+        LyricToken("你反正", 0.0, 1.1),
+        LyricToken("不会再", 1.6, 2.5),
+        LyricToken("担心", 2.5, 3.4),
+    ])
+
+
+def test_the_free_layout_breaks_the_line_at_the_singers_pause() -> None:
+    """Not at the midpoint. Splitting down the middle cuts words in half.
+
+    "黎明照亮天空" halves to "黎明照 / 亮天空", which breaks 照亮 - a break has to land
+    where the singer breathed, or the layout reads as a bug rather than as phrasing.
+    """
+    placements = plan_placements(
+        [_breathing_line()], [(.5, .5)], width=1280, height=720, margin=72, size=45,
+    )[0]
+
+    assert [fragment.text for fragment in placements] == ["你反正", "不会再担心"]
+    assert placements[1].start == 1.6, "the second fragment starts when it is sung"
+
+
+def test_the_free_layout_keeps_lines_without_a_break_whole() -> None:
+    """No pause and no punctuation means no split, however long the line is."""
+    line = LyricLine(0, 4, "城市亮起灯光", tokens=[
+        LyricToken("城市", 0.0, 1.0), LyricToken("亮起", 1.0, 2.0),
+        LyricToken("灯光", 2.0, 3.0),
+    ])
+    placements = plan_placements(
+        [line], [(.5, .5)], width=1280, height=720, margin=72, size=45,
+    )[0]
+
+    assert len(placements) == 1
+    assert placements[0].text == "城市亮起灯光"
+
+
+def test_the_free_layout_splits_on_punctuation_when_there_are_no_word_timings() -> None:
+    placements = plan_placements(
+        [LyricLine(0, 4, "那天的天气，难得放晴")], [(.5, .5)],
+        width=1280, height=720, margin=72, size=45,
+    )[0]
+
+    assert [fragment.text for fragment in placements] == ["那天的天气", "难得放晴"]
+
+
+def test_the_free_layout_steers_the_text_away_from_the_subject() -> None:
+    """A subject in the upper part of the frame pushes the whole layout down."""
+    lines = [_breathing_line()]
+    centred = plan_placements(
+        lines, [(.5, .5)], width=1280, height=720, margin=72, size=45,
+    )[0]
+    subject_high = plan_placements(
+        lines, [(.5, .28)], width=1280, height=720, margin=72, size=45,
+    )[0]
+    subject_low = plan_placements(
+        lines, [(.5, .74)], width=1280, height=720, margin=72, size=45,
+    )[0]
+
+    assert min(f.y for f in subject_high) > max(f.y for f in subject_low)
+    assert min(f.y for f in subject_high) > min(f.y for f in centred)
+
+
+def test_a_fragment_stays_hidden_until_it_is_sung(tmp_path: Path) -> None:
+    """The free layout assembles the line across the frame over its own duration."""
+    line = _breathing_line()
+    placements = plan_placements(
+        [line], [(.5, .5)], width=1280, height=720, margin=72, size=45,
+    )
+    target = tmp_path / "placed.ass"
+    write_ass([line], target, width=1280, height=720, font="sans", size=45, margin=72,
+              effect="cinematic", placements=placements)
+
+    events = [row for row in target.read_text("utf-8-sig").splitlines()
+              if row.startswith("Dialogue")]
+    assert len(events) == 2, "one event per fragment"
+    assert "\\pos(" in events[0] and "\\pos(" in events[1]
+    # The first fragment comes in with the line; the second waits for its own moment.
+    assert "\\alpha&HFF&" not in events[0]
+    assert "\\alpha&HFF&\\t(1600,1860,\\alpha&H00&)" in events[1]
+
+
+def test_the_band_layout_is_unchanged_without_placements(tmp_path: Path) -> None:
+    """The classic bottom band stays available, and stays one centred line."""
+    line = _breathing_line()
+    target = tmp_path / "band.ass"
+    write_ass([line], target, width=1280, height=720, font="sans", size=45, margin=72,
+              effect="karaoke")
+
+    events = [row for row in target.read_text("utf-8-sig").splitlines()
+              if row.startswith("Dialogue")]
+    assert len(events) == 1
+    assert "\\pos(" not in events[0]
+    assert "\\kf" in events[0], "the band layout keeps the character sweep"
+
+
+def test_the_outline_is_configurable_for_type_inside_the_picture(tmp_path: Path) -> None:
+    """A caption needs an outline; type that shares the frame with the picture does not."""
+    line = _breathing_line()
+    for outline, expected in ((2.2, ",2.2,0.0,2,"), (0.0, ",0.0,0.0,2,")):
+        target = tmp_path / f"outline-{outline}.ass"
+        write_ass([line], target, width=1280, height=720, font="sans", size=45,
+                  margin=72, effect="cinematic", outline=outline)
+        style = next(row for row in target.read_text("utf-8-sig").splitlines()
+                     if row.startswith("Style: Lyric"))
+        assert expected in style, style
+

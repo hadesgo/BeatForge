@@ -8,9 +8,17 @@ import numpy as np
 
 from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection
-from beatforge.lyrics import LyricLine, write_ass
+from beatforge.lyrics import LyricLine, Placement, plan_placements, write_ass
 from beatforge.planner import Shot
 from beatforge.runtime import command, duration
+
+# How the knockout fill treats the frame it shows through the letters. The letters are
+# lifted and the picture around them is pulled down, so the contrast between the two is
+# guaranteed rather than borrowed from whatever happened to be behind the text - which
+# matters because the free layout deliberately puts the type where the frame is empty.
+_KNOCKOUT_LIFT = 0.16
+_KNOCKOUT_DIM = -0.10
+_KNOCKOUT_SATURATION = 1.25
 
 
 def render(
@@ -43,23 +51,107 @@ def render(
         concat_file.write_text("\n".join(f"file '{(clips / f'{i:05}.mp4').as_posix()}'" for i in range(len(shots))), "utf-8")
         command(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(picture)])
     subtitle = cache / "lyrics.ass"
+    placements = _subtitle_placements(lyrics, shots, config)
     write_ass(
         lyrics, subtitle, width=config.width, height=config.height,
         font=art.font, size=config.subtitle_size,
         margin=config.subtitle_margin, effect=art.base_subtitle_effect,
         highlight_color=art.highlight_color, line_effects=art.line_effects,
+        placements=placements, outline=config.subtitle_outline,
+        mask_only=config.subtitle_fill == "knockout",
     )
     args = ["ffmpeg", "-y", "-v", "error", "-i", str(picture), "-i", str(music)]
-    if lyrics:
-        escaped = subtitle.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
-        subtitle_filter = f"ass='{escaped}'"
-        if config.subtitle_fonts_dir and config.subtitle_fonts_dir.exists():
-            fonts = config.subtitle_fonts_dir.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
-            subtitle_filter += f":fontsdir='{fonts}'"
-        args += ["-vf", subtitle_filter]
-    args += ["-map", "0:v:0", "-map", "1:a:0", *_video_encode_args(config, intermediate=False),
+    if lyrics and config.subtitle_fill == "knockout":
+        args += ["-filter_complex", _knockout_graph(subtitle, duration(picture), config),
+                 "-map", "[vout]"]
+    elif lyrics:
+        args += ["-vf", _subtitle_filter(subtitle, config), "-map", "0:v:0"]
+    else:
+        args += ["-map", "0:v:0"]
+    args += ["-map", "1:a:0", *_video_encode_args(config, intermediate=False),
              "-c:a", "aac", "-b:a", "320k", "-shortest", "-movflags", "+faststart", str(output)]
     command(args)
+
+
+def _subtitle_filter(subtitle: Path, cfg: RenderConfig) -> str:
+    """The ``ass`` filter that draws the lyric script over the picture."""
+    escaped = subtitle.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
+    filters = f"ass='{escaped}'"
+    if cfg.subtitle_fonts_dir and cfg.subtitle_fonts_dir.exists():
+        fonts = cfg.subtitle_fonts_dir.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
+        filters += f":fontsdir='{fonts}'"
+    return filters
+
+
+def _knockout_graph(subtitle: Path, seconds: float, cfg: RenderConfig) -> str:
+    """Cut the lyric out of the picture so a treated version of the frame shows through.
+
+    This is the literal reading of putting the type *into* the image: there is no
+    caption layer at all, only a hole in the frame shaped like the words. The fill is
+    the same frame, lifted and blurred, which is what makes the letters read as a
+    window rather than as white text.
+
+    The mask is the lyric script rendered white on black; ``alphamerge`` takes its luma
+    as the alpha, so whatever the script animates - a fade, a scale, a per-fragment
+    delay - the hole follows it exactly.
+
+    The picture around the letters is pulled down at the same time as the letters are
+    lifted. Relying on the lift alone would leave the type invisible wherever it landed
+    on a smooth, dark part of the frame - which is exactly where the free layout puts it.
+    """
+    blur = max(2.0, cfg.width / 320)
+    return (
+        f"[0:v]split=2[base][treat];"
+        f"[treat]gblur=sigma={blur:.2f},"
+        f"eq=brightness={_KNOCKOUT_LIFT:.3f}:saturation={_KNOCKOUT_SATURATION:.2f}[lit];"
+        f"[base]eq=brightness={_KNOCKOUT_DIM:.3f}[dim];"
+        f"color=c=black:s={cfg.width}x{cfg.height}:r={cfg.fps}:d={seconds:.3f},"
+        f"{_subtitle_filter(subtitle, cfg)},format=gray[mask];"
+        f"[lit]format=rgba[fill];"
+        f"[fill][mask]alphamerge[hole];"
+        f"[dim][hole]overlay=0:0:format=auto[vout]"
+    )
+
+
+def _subtitle_placements(
+    lyrics: list[LyricLine], shots: list[Shot], cfg: RenderConfig,
+) -> list[list[Placement]] | None:
+    """Free-layout positions for each lyric, or ``None`` for the classic bottom band.
+
+    The point of the free layout is that the type shares the frame with the subject
+    instead of sitting under it, so each line needs to know where its subject is -
+    which is the shot it lands in, and the focus point the media pass already
+    estimated for that shot.
+    """
+    if cfg.subtitle_layout != "free" or not lyrics:
+        return None
+    return plan_placements(
+        lyrics, _lyric_focus_points(lyrics, shots),
+        width=cfg.width, height=cfg.height,
+        margin=cfg.subtitle_margin, size=cfg.subtitle_size,
+    )
+
+
+def _lyric_focus_points(
+    lyrics: list[LyricLine], shots: list[Shot],
+) -> list[tuple[float, float] | None]:
+    """The subject position of the shot each lyric lands in.
+
+    Shots and lyrics are both in time order, so one walk covers the whole list rather
+    than searching the shot list again for every line.
+    """
+    points: list[tuple[float, float] | None] = []
+    cursor = 0
+    for line in lyrics:
+        midpoint = (line.start + line.end) / 2
+        while cursor < len(shots) - 1 and shots[cursor].end <= midpoint:
+            cursor += 1
+        focus = shots[cursor].focus_point if shots else None
+        points.append(
+            (float(focus[0]), float(focus[1]))
+            if focus and len(focus) == 2 else None
+        )
+    return points
 
 
 def _render_shot(

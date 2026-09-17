@@ -95,6 +95,141 @@ _NEON_CYAN = "&H00FFFFD7&"
 _DIM = "&H00303030&"
 
 
+@dataclass(frozen=True, slots=True)
+class Placement:
+    """One drawn fragment of a lyric line, in script coordinates.
+
+    ``align`` is ASS numpad alignment, so 4 anchors the fragment's left edge at ``x``
+    with its vertical centre at ``y``, and 5 centres it on both. ``tokens`` carries the
+    karaoke timings this fragment owns, and ``start`` is when the fragment is sung -
+    the free layout fades each one in on its own time, which is what makes the lyric
+    assemble itself across the frame instead of appearing all at once.
+    """
+
+    text: str
+    x: int
+    y: int
+    align: int = 4
+    tokens: tuple[LyricToken, ...] = ()
+    start: float = 0.0
+
+
+# Free-layout anchors, as fractions of the frame, for a subject sitting in the middle.
+# Lifted from the reference lyric video, which never uses a subtitle band: it splits
+# the line and puts the halves where the subject is not, so the type frames the
+# picture instead of sitting underneath it.
+_FREE_PATTERNS: dict[str, tuple[tuple[float, float, int], tuple[float, float, int]]] = {
+    # One half above, one below, subject between them.
+    "sandwich": ((.50, .20, 5), (.50, .74, 5)),
+    # A descending diagonal, upper left to lower right.
+    "diagonal": ((.09, .34, 4), (.55, .52, 4)),
+    # Both on one baseline with a deliberate gap, the way a phrase breaks in speech.
+    "gap": ((.10, .60, 4), (.58, .60, 4)),
+}
+_FREE_ORDER = ("sandwich", "diagonal", "gap", "sandwich", "gap", "diagonal")
+
+# Anchors for a subject that is off-centre: the text takes the empty half outright
+# rather than trusting a pattern that assumed the middle was free.
+_FREE_SUBJECT_HIGH = ((.09, .58, 4), (.55, .76, 4))
+_FREE_SUBJECT_LOW = ((.09, .20, 4), (.55, .38, 4))
+
+# How long a silence between two sung words has to last before the free layout treats
+# it as a phrase break. Below this the singer is just articulating; above it they
+# breathed, and that is where the reference style puts the break.
+_MIN_BREAK_SECONDS = 0.22
+
+# How long each fragment takes to appear once it is sung.
+_FRAGMENT_FADE_MS = 260
+
+
+def plan_placements(
+    lines: list[LyricLine],
+    focus_points: list[tuple[float, float] | None],
+    *,
+    width: int,
+    height: int,
+    margin: int,
+    size: int,
+) -> list[list[Placement]]:
+    """Lay each line out freely, in the parts of the frame its subject is not using.
+
+    ``focus_points`` is the subject centre per line, so the text can be steered away
+    from it. A subject in the upper part of the frame pushes the whole layout down and
+    one in the lower part pushes it up; only a centred subject gets to use the full
+    pattern. Everything here is a fixed rotation off the line index, so a given plan
+    always lays out the same way.
+    """
+    placements: list[list[Placement]] = []
+    for index, line in enumerate(lines):
+        focus = focus_points[index] if index < len(focus_points) else None
+        focus_y = focus[1] if focus else .5
+        if focus_y < .42:
+            anchors = _FREE_SUBJECT_HIGH
+        elif focus_y > .58:
+            anchors = _FREE_SUBJECT_LOW
+        else:
+            anchors = _FREE_PATTERNS[_FREE_ORDER[index % len(_FREE_ORDER)]]
+        fragments = _split_line(line)
+        if len(fragments) == 1:
+            # A line with no detectable pause keeps one fragment, placed at the first
+            # anchor of its pattern so it still lands somewhere different each time.
+            (text, tokens, start), (fx, fy, _align) = fragments[0], anchors[0]
+            placements.append([Placement(
+                text, round(width * fx), round(height * fy), 5, tokens, start,
+            )])
+            continue
+        row: list[Placement] = []
+        for (text, tokens, start), (fx, fy, align) in zip(fragments, anchors):
+            row.append(Placement(
+                text, round(width * fx), round(height * fy), align, tokens, start,
+            ))
+        placements.append(row)
+    return placements
+
+
+def _split_line(line: LyricLine) -> list[tuple[str, tuple[LyricToken, ...], float]]:
+    """Break a line into the fragments a free layout draws separately.
+
+    Returns ``(text, tokens, start)`` per fragment. The break goes at the singer's
+    longest pause, because that is where a break reads as phrasing instead of as a
+    mistake - splitting a line down the middle cuts words in half ("黎明照 / 亮天空"
+    breaks 照亮). Without word timings it falls back to punctuation, and without
+    either the line stays whole and simply gets placed freely.
+    """
+    text = line.text.strip()
+    tokens = list(line.tokens)
+    if len(tokens) >= 2:
+        gap, cut = max(
+            (tokens[index + 1].start - tokens[index].end, index + 1)
+            for index in range(len(tokens) - 1)
+        )
+        if gap >= _MIN_BREAK_SECONDS:
+            head = "".join(token.text for token in tokens[:cut]).strip()
+            tail = "".join(token.text for token in tokens[cut:]).strip()
+            if head and tail:
+                return [
+                    (head, tuple(tokens[:cut]), tokens[0].start),
+                    (tail, tuple(tokens[cut:]), tokens[cut].start),
+                ]
+    for mark in "，。！？、；：,.!?;: ":
+        position = text.find(mark)
+        if 0 < position < len(text) - 1:
+            head, tail = text[:position].strip(), text[position + 1:].strip()
+            if head and tail:
+                # Punctuation gives the break but not the timing, so the two halves
+                # share the line's span evenly.
+                return [
+                    (head, (), line.start),
+                    (tail, (), line.start + (line.end - line.start) / 2),
+                ]
+    return [(text, tuple(tokens), line.start)]
+
+
+def _visual_units(text: str) -> float:
+    """Rough width of a string in font-size units: CJK is full width, Latin is not."""
+    return sum(1.0 if ord(char) > 255 else .58 for char in text if char not in "\r\n")
+
+
 def write_ass(
     lines: list[LyricLine],
     file: Path,
@@ -107,7 +242,23 @@ def write_ass(
     effect: str = "karaoke",
     highlight_color: str = "&H0000D7FF",
     line_effects: list[str] | None = None,
+    placements: list[list[Placement]] | None = None,
+    outline: float = 2.2,
+    shadow: float = 0.0,
+    mask_only: bool = False,
 ) -> None:
+    """Write the lyric script.
+
+    ``placements`` switches the layout: without it every line is one centred line in
+    the bottom band, and with it each line is drawn as the freely positioned fragments
+    ``plan_placements`` chose. ``mask_only`` drops the fill colour to white and the
+    outline to nothing, which is what the knockout compositing needs to read the text
+    as a clean alpha channel rather than as a picture of some letters.
+    """
+    primary = "&H00FFFFFF" if mask_only else highlight_color
+    outline_colour = "&H00000000" if mask_only else "&H90000000"
+    border = 0.0 if mask_only else outline
+    drop = 0.0 if mask_only else shadow
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -117,7 +268,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Lyric,{font},{size},{highlight_color},&H00FFFFFF,&H90000000,&H50000000,-1,0,0,0,100,100,1,0,1,2.2,0,2,48,48,{margin},1
+Style: Lyric,{font},{size},{primary},&H00FFFFFF,{outline_colour},&H50000000,-1,0,0,0,100,100,1,0,1,{border},{drop},2,48,48,{margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -131,134 +282,177 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # does not know. Fall back to the plain fade rather than to karaoke, so a
             # line without word timings still renders sensibly.
             line_effect = "cinematic"
-        prefix, text = _subtitle_effect(
-            line_effect, line, width=width, height=height, margin=margin,
-        )
-        events.append(
-            f"Dialogue: 0,{ass_timestamp(line.start)},{ass_timestamp(line.end)},Lyric,,0,0,0,,{fit}{prefix}{text}"
-        )
+        fragments = placements[index] if placements and index < len(placements) else None
+        for fragment in fragments or [None]:
+            prefix, text = _subtitle_effect(
+                line_effect, line, width=width, height=height, margin=margin,
+                placement=fragment, mask_only=mask_only,
+            )
+            events.append(
+                f"Dialogue: 0,{ass_timestamp(line.start)},{ass_timestamp(line.end)},Lyric,,0,0,0,,{fit}{prefix}{text}"
+            )
     file.write_text(header + "\n".join(events) + "\n", "utf-8-sig")
+
+
+def _anchor(placement: Placement | None, *, move_from: tuple[int, int] | None = None, ms: int = 0) -> str:
+    """Pin a fragment where the free layout put it.
+
+    ``\\pos`` and ``\\move`` are mutually exclusive in ASS - the later one wins - so a
+    fragment that slides in gets ``\\move`` alone, with its destination at the layout
+    position rather than at the frame's centre.
+    """
+    if placement is None:
+        return ""
+    if move_from is None:
+        return rf"\pos({placement.x},{placement.y})\an{placement.align}"
+    return (
+        rf"\move({placement.x + move_from[0]},{placement.y + move_from[1]},"
+        rf"{placement.x},{placement.y},0,{ms})\an{placement.align}"
+    )
 
 
 def _subtitle_effect(
     effect: str, line: LyricLine, *, width: int, height: int, margin: int,
+    placement: Placement | None = None, mask_only: bool = False,
 ) -> tuple[str, str]:
-    """Return the override prefix and the (possibly rewritten) text for one line."""
+    """Return the override prefix and the (possibly rewritten) text for one fragment.
+
+    A fragment carries its own slice of the line, so every effect works on that slice
+    and the anchor is prepended once at the end.
+    """
     duration = max(.01, line.end - line.start)
     base_y = height - margin
     centre_x = width // 2
+    fragment = placement.text if placement else line.text
+    text = _ass_text(fragment)
+    tags = ""
 
     if effect == "karaoke":
-        return (
-            r"{\fad(160,220)\blur0.4\fscx92\fscy92\t(0,200,\fscx100\fscy100\blur0)}",
-            _karaoke_line(line),
-        )
-    if effect == "bounce":
-        return (
-            r"{\fad(90,180)\fscx76\fscy76\t(0,130,\fscx108\fscy108)\t(130,240,\fscx100\fscy100)}",
-            _ass_text(line.text),
-        )
-    if effect == "float":
-        return (
-            rf"{{\fad(260,360)\1c{_WHITE}\move({centre_x},{base_y + 14},{centre_x},{base_y},0,500)\blur0.5}}",
-            _ass_text(line.text),
-        )
-    if effect == "glow":
-        return (
-            r"{\fad(220,300)\blur3\bord3\t(0,320,\blur0.5\bord2.2)}",
-            _ass_text(line.text),
-        )
-    if effect == "typewriter":
-        return (
-            rf"{{\fad(80,240)\1c{_WHITE}}}",
-            _typewriter_text(line.text, duration),
-        )
-    if effect == "punch":
+        tags = r"\fad(160,220)\blur0.4\fscx92\fscy92\t(0,200,\fscx100\fscy100\blur0)"
+        text = _karaoke_fragment(line, placement)
+    elif effect == "bounce":
+        tags = r"\fad(90,180)\fscx76\fscy76\t(0,130,\fscx108\fscy108)\t(130,240,\fscx100\fscy100)"
+    elif effect == "float":
+        tags = (rf"\fad(260,360)\1c{_WHITE}"
+                + (_anchor(placement, move_from=(0, 14), ms=500)
+                   or rf"\move({centre_x},{base_y + 14},{centre_x},{base_y},0,500)")
+                + r"\blur0.5")
+    elif effect == "glow":
+        tags = r"\fad(220,300)\blur3\bord3\t(0,320,\blur0.5\bord2.2)"
+    elif effect == "typewriter":
+        tags = rf"\fad(80,240)\1c{_WHITE}"
+        text = _typewriter_text(fragment, duration)
+    elif effect == "punch":
         # Arrives far too large and slams into place. The blur is what sells the
         # speed - without it the frame just looks like a bad scale.
-        return (
-            r"{\fad(50,130)\fscx185\fscy185\blur5\t(0,110,\fscx100\fscy100\blur0)}",
-            _ass_text(line.text),
-        )
-    if effect == "slide":
-        offset = round(width * .18)
-        return (
-            rf"{{\fad(120,200)\move({centre_x - offset},{base_y},{centre_x},{base_y},0,260)}}",
-            _ass_text(line.text),
-        )
-    if effect == "flip_in":
+        tags = r"\fad(50,130)\fscx185\fscy185\blur5\t(0,110,\fscx100\fscy100\blur0)"
+    elif effect == "slide":
+        travel = round(width * .18)
+        tags = (r"\fad(120,200)"
+                + (_anchor(placement, move_from=(-travel, 0), ms=260)
+                   or rf"\move({centre_x - travel},{base_y},{centre_x},{base_y},0,260)"))
+    elif effect == "flip_in":
         # Each character flips up into place, so the line assembles itself.
-        return (
-            r"{\fad(0,200)}",
-            _per_character(line.text, lambda index, count, total: (
-                rf"{{\fry90\fscx55\fscy55\alpha&HFF&"
-                rf"\t({index * 45},{index * 45 + 230},\fry0\fscx100\fscy100\alpha&H00&)}}"
-            )),
-        )
-    if effect == "neon":
+        tags = r"\fad(0,200)"
+        text = _per_character(fragment, lambda index, count, total: (
+            rf"{{\fry90\fscx55\fscy55\alpha&HFF&"
+            rf"\t({index * 45},{index * 45 + 230},\fry0\fscx100\fscy100\alpha&H00&)}}"
+        ))
+    elif effect == "neon":
         # A white core inside a coloured halo that breathes.
-        return (
-            rf"{{\fad(160,260)\1c{_WHITE}\3c{_NEON_CYAN}\bord3\blur5"
-            rf"\t(0,650,\blur10\bord4)\t(650,1300,\blur5\bord3)}}",
-            _ass_text(line.text),
-        )
-    if effect == "neon_flicker":
+        tags = (rf"\fad(160,260)\1c{_WHITE}\3c{_NEON_CYAN}\bord3\blur5"
+                rf"\t(0,650,\blur10\bord4)\t(650,1300,\blur5\bord3)")
+    elif effect == "neon_flicker":
         # A neon sign that has not warmed up: mostly lit, with two stutters.
-        return (
-            rf"{{\fad(60,180)\1c{_WHITE}\3c{_NEON_CYAN}\bord3\blur6"
-            rf"\t(0,70,\alpha&H30&)\t(70,120,\alpha&H00&)"
-            rf"\t(120,170,\alpha&H55&)\t(170,230,\alpha&H00&)"
-            rf"\t(700,780,\alpha&H35&)\t(780,850,\alpha&H00&)}}",
-            _ass_text(line.text),
-        )
-    if effect == "shake":
+        tags = (rf"\fad(60,180)\1c{_WHITE}\3c{_NEON_CYAN}\bord3\blur6"
+                rf"\t(0,70,\alpha&H30&)\t(70,120,\alpha&H00&)"
+                rf"\t(120,170,\alpha&H55&)\t(170,230,\alpha&H00&)"
+                rf"\t(700,780,\alpha&H35&)\t(780,850,\alpha&H00&)")
+    elif effect == "shake":
         # ``\jitter`` is a libass extension, so the rotation chain is the guarantee:
         # if a build ignores the jitter, the line still moves.
-        return (
-            r"{\fad(120,220)\bord2.6\jitter(5,4,55,2)"
-            r"\t(0,90,\frz-2)\t(90,180,\frz2)\t(180,270,\frz-2)\t(270,360,\frz0)}",
-            _ass_text(line.text),
-        )
-    if effect == "wave":
-        return (
-            r"{\fad(140,220)}",
-            _per_character(line.text, lambda index, count, total: (
-                rf"{{\fry0\fscx100"
-                rf"\t({index * 55},{index * 55 + 140},\fry-72\fscx78)"
-                rf"\t({index * 55 + 140},{index * 55 + 280},\fry0\fscx100)}}"
-            )),
-        )
-    if effect == "rainbow":
+        tags = (r"\fad(120,220)\bord2.6\jitter(5,4,55,2)"
+                r"\t(0,90,\frz-2)\t(90,180,\frz2)\t(180,270,\frz-2)\t(270,360,\frz0)")
+    elif effect == "wave":
+        tags = r"\fad(140,220)"
+        text = _per_character(fragment, lambda index, count, total: (
+            rf"{{\fry0\fscx100"
+            rf"\t({index * 55},{index * 55 + 140},\fry-72\fscx78)"
+            rf"\t({index * 55 + 140},{index * 55 + 280},\fry0\fscx100)}}"
+        ))
+    elif effect == "rainbow":
         # Six hues over two seconds, then back to the first so the loop is seamless.
         steps = 6
         span = max(1, round(duration * 1000 / steps))
         cycle = ("&H000000FF&", "&H0000FFFF&", "&H0000FF00&",
                  "&H00FFFF00&", "&H00FF0000&", "&H00FF00FF&")
-        tags = rf"\1c{cycle[0]}"
+        tags = rf"\fad(200,300)\1c{cycle[0]}"
         for step in range(steps):
             tags += f"\\t({step * span},{(step + 1) * span},\\1c{cycle[(step + 1) % steps]})"
-        return (rf"{{\fad(200,300){tags}}}", _ass_text(line.text))
-    if effect == "spotlight":
+    elif effect == "spotlight":
         # Starts dark and dim, as if the light has not found it yet.
-        return (
-            rf"{{\fad(0,240)\1c{_DIM}\blur3\fscx96\fscy96"
-            rf"\t(0,520,\1c{_WHITE}\blur0\fscx100\fscy100)}}",
-            _ass_text(line.text),
-        )
-    if effect == "glitch":
+        tags = (rf"\fad(0,240)\1c{_DIM}\blur3\fscx96\fscy96"
+                rf"\t(0,520,\1c{_WHITE}\blur0\fscx100\fscy100)")
+    elif effect == "glitch":
         # Chromatic fringing plus an alpha stutter: the two things a dropped signal
         # does to a caption.
-        return (
-            rf"{{\fad(60,180)\3c{_MAGENTA}\4c{_CYAN}\bord3\shad4\blur0.6"
-            rf"\t(0,90,\shad8\blur1.6)\t(90,180,\shad4\blur0.6)"
-            rf"\t(400,470,\alpha&H45&)\t(470,540,\alpha&H00&)"
-            rf"\t(900,960,\alpha&H35&)\t(960,1030,\alpha&H00&)}}",
-            _ass_text(line.text),
-        )
-    return (
-        rf"{{\fad(360,460)\1c{_WHITE}\blur1.2\t(0,360,\blur0)}}",
-        _ass_text(line.text),
-    )
+        tags = (rf"\fad(60,180)\3c{_MAGENTA}\4c{_CYAN}\bord3\shad4\blur0.6"
+                rf"\t(0,90,\shad8\blur1.6)\t(90,180,\shad4\blur0.6)"
+                rf"\t(400,470,\alpha&H45&)\t(470,540,\alpha&H00&)"
+                rf"\t(900,960,\alpha&H35&)\t(960,1030,\alpha&H00&)")
+    else:
+        tags = rf"\fad(360,460)\1c{_WHITE}\blur1.2\t(0,360,\blur0)"
+
+    if mask_only:
+        # The mask has to trace the same shape the audience sees, so it keeps every
+        # geometric and alpha tag above. Only the fill and the outline change: a mask
+        # that is not solid white would read as a half-transparent letter.
+        tags = _strip_fill(tags)
+    tags = _fragment_entrance(tags, line, placement)
+    return f"{{{_anchor(placement)}{tags}}}", text
+
+
+def _fragment_entrance(tags: str, line: LyricLine, placement: Placement | None) -> str:
+    """Hold a fragment back until it is sung, then fade it in.
+
+    This is what makes the free layout read the way the reference does: the line
+    assembles itself across the frame over its own duration instead of appearing all
+    at once. A fragment that starts with its line keeps whatever entrance the effect
+    gave it, which is why the delay has to be measured rather than assumed.
+    """
+    if placement is None:
+        return tags
+    delay = round(max(0.0, placement.start - line.start) * 1000)
+    if delay <= 40:
+        return tags
+    # The effect's own fade-in would fight this one for the alpha channel, so that half
+    # is dropped and only the fade-out at the end of the line is kept. Appending rather
+    # than prepending matters: libass applies ``\t`` chains in order, so the later one
+    # wins for the property they share.
+    tags = re.sub(r"\\fad\(\s*[\d.]+", r"\\fad(0", tags)
+    return tags + rf"\alpha&HFF&\t({delay},{delay + _FRAGMENT_FADE_MS},\alpha&H00&)"
+
+
+def _strip_fill(tags: str) -> str:
+    """Drop the colour and outline tags, keeping the geometry and the timing.
+
+    Used for the knockout mask: the text's shape and its animation are what matter,
+    not which colour it happens to be drawn in.
+    """
+    return re.sub(r"\\(?:1c|2c|3c|4c|bord|shad|blur)[^\\}]*", "", tags)
+
+
+def _karaoke_fragment(line: LyricLine, placement: Placement | None) -> str:
+    """Karaoke markup for one fragment.
+
+    Under the free layout the fragment *is* the karaoke: it fades in at the moment it
+    is sung, so a character sweep on top would say the same thing twice. The plain text
+    is returned and ``_fragment_entrance`` supplies the timing. The band layout keeps
+    the sweep, which is what a single centred line has to work with.
+    """
+    if placement is None:
+        return _karaoke_line(line)
+    return _ass_text(placement.text)
 
 
 def _per_character(text: str, tag_for) -> str:
@@ -315,9 +509,8 @@ def _typewriter_text(text: str, duration: float) -> str:
 
 def _fit_font_size(text: str, width: int, size: int) -> str:
     """Shrink unusually long lines while keeping normal lyrics at the chosen size."""
-    visual_units = sum(1.0 if ord(char) > 255 else .58 for char in text if char not in "\r\n")
     available = width * .84
-    estimated = visual_units * size
+    estimated = _visual_units(text) * size
     if estimated <= available or estimated <= 0:
         return ""
     fitted = max(round(size * .68), min(size, round(size * available / estimated)))
