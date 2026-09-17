@@ -111,12 +111,15 @@ def main() -> int:
         raise SystemExit("PATH 中缺少 ffmpeg")
 
     media = _find_media(args.media)
-    if args.out.exists():
-        shutil.rmtree(args.out)
     clips = args.out / "clips"
     frames_dir = args.out / "frames"
-    clips.mkdir(parents=True)
-    frames_dir.mkdir(parents=True)
+    # Clear only what this script writes. Wiping the whole output directory would
+    # take anything else living there with it.
+    for stale in (clips, frames_dir):
+        if stale.exists():
+            shutil.rmtree(stale)
+    clips.mkdir(parents=True, exist_ok=True)
+    frames_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = RenderConfig(
         width=args.width, height=args.height, fps=args.fps, crf=30, preset="ultrafast",

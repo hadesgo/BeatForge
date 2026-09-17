@@ -17,12 +17,13 @@ from pydantic import BaseModel, Field, ValidationError
 
 from beatforge.audio import AudioAnalysis
 from beatforge.config import AIConfig
-from beatforge.lyrics import LyricLine
+from beatforge.lyrics import SUBTITLE_EFFECTS, LyricLine
 from beatforge.media import MediaAsset
 from beatforge.runtime import command
 
 
-SubtitleEffect = Literal["karaoke", "cinematic", "bounce", "float", "glow", "typewriter"]
+# Built from the renderer's own list, so the model can only choose effects that exist.
+SubtitleEffect = Literal[*SUBTITLE_EFFECTS]
 
 
 class SectionDirection(BaseModel):
@@ -79,7 +80,7 @@ TREATMENT_SPEC = """返回一个 JSON 对象，字段如下：
   - preferred_media: any|image|video
   - preferred_shot_sizes: 0~3 项，wide|medium|closeup|detail|unknown
   - preferred_asset_ids: 0~5 个素材 id
-  - subtitle_effect: karaoke|cinematic|bounce|float|glow|typewriter
+  - subtitle_effect: karaoke|cinematic|bounce|float|glow|typewriter|neon|neon_flicker|shake|wave|punch|glitch|slide|rainbow|flip_in|spotlight
   - transition_tone: bright|dark|soft|neutral
   - edit_intent: continuity|impact|breathe"""
 

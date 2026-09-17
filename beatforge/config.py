@@ -6,6 +6,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from beatforge.lyrics import SUBTITLE_EFFECTS
+
+# One source of truth: the renderer builds these, so the config validates against
+# whatever it can actually draw rather than against a second hand-kept list.
+SubtitleEffect = Literal[*SUBTITLE_EFFECTS]
+SubtitleEffectChoice = Literal["auto", *SUBTITLE_EFFECTS]
+
 
 class RenderConfig(BaseModel):
     width: int = 1920
@@ -31,9 +38,7 @@ class RenderConfig(BaseModel):
         }
     )
     subtitle_size: int = 46
-    subtitle_effect: Literal[
-        "auto", "karaoke", "cinematic", "bounce", "float", "glow", "typewriter"
-    ] = "auto"
+    subtitle_effect: SubtitleEffectChoice = "auto"
     subtitle_margin: int = 72
     subtitle_highlight_color: str = "&H0000D7FF"
     visual_effects: bool = True
@@ -168,7 +173,7 @@ max_shot_seconds = 5.5
 subtitle_font = "auto"
 subtitle_fonts_dir = "fonts" # 可放入自定义 ttf/otf；不存在也不影响系统字体
 subtitle_size = 46
-subtitle_effect = "auto" # 也可固定为 karaoke/cinematic/bounce/float/glow/typewriter
+subtitle_effect = "auto" # 也可固定为某个特效名；可选值见 README「字幕特效」
 subtitle_margin = 72
 subtitle_highlight_color = "&H0000D7FF" # ASS 的金黄色（BGR）
 visual_effects = true

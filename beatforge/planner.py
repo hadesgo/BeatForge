@@ -97,6 +97,11 @@ def create_plan(
     active_line_visual_assets: set[int] = set()
     shots: list[Shot] = []
     shot_count = len(boundaries) - 1
+    # Camera-move rotations advance on this, not on the shot index. Composites claim a
+    # share of the shots, and a rotation keyed off the global index would then lose
+    # whichever slots those shots occupied - with enough composites in one section, a
+    # whole group of moves can never be reached at all.
+    single_image_cursor = 0
     for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
         midpoint = (start + end) / 2
         line = next((line for line in lyrics if line.start <= midpoint < line.end), None)
@@ -181,11 +186,14 @@ def create_plan(
                 ]
                 image_candidates = (spare_pool or image_candidates)[:spare_assets]
             image_effect, layer_count = _choose_image_effect(
-                index, section, energy, analysis.melody_at(midpoint), len(image_candidates),
+                single_image_cursor, section, energy, analysis.melody_at(midpoint),
+                len(image_candidates),
                 enabled=image_composites, ratio=image_composite_ratio,
                 max_images=max_composite_images,
                 edit_intent=direction.edit_intent if direction else "continuity",
             )
+            if layer_count == 0:
+                single_image_cursor += 1
             entry_offsets = _layer_entry_offsets(analysis, start, end, layer_count)
             for layer_index, (_score, layer_asset, _layer_semantic, _column) in enumerate(image_candidates[:layer_count]):
                 layers.append(ShotLayer(
@@ -251,36 +259,40 @@ def _reuse_penalty(visible: int, last_index: int | None, index: int) -> float:
 
 
 def _choose_image_effect(
-    index: int, section: str, energy: float, melody: float, available: int,
+    cursor: int, section: str, energy: float, melody: float, available: int,
     *, enabled: bool, ratio: float, max_images: int,
     edit_intent: str = "continuity",
 ) -> tuple[str, int]:
-    """Choose a restrained, section-consistent still-image treatment."""
+    """Choose a restrained, section-consistent still-image treatment.
+
+    ``cursor`` counts the single-image shots chosen so far, not shots overall, so the
+    camera-move rotations stay independent of how many shots the composite gate took.
+    """
     if not enabled or available <= 0 or max_images < 2:
-        return _single_image_effect(index, section, energy, melody, edit_intent), 0
+        return _single_image_effect(cursor, section, energy, melody, edit_intent), 0
 
     # A stable gate keeps composites special instead of turning the MV into a slide template.
-    gate = ((index * 37 + 17) % 100) / 100
+    gate = ((cursor * 37 + 17) % 100) / 100
     intent_scale = 1.4 if edit_intent == "impact" else .45 if edit_intent == "breathe" else 1.0
     section_ratio = min(1.0, ratio * intent_scale * (1.85 if section == "chorus" else 1.25 if section in {"bridge", "solo"} else 1.0))
     if gate >= section_ratio:
-        return _single_image_effect(index, section, energy, melody, edit_intent), 0
+        return _single_image_effect(cursor, section, energy, melody, edit_intent), 0
 
     if section == "chorus":
-        effect = ("beat_montage", "photo_stack", "split_screen")[index % 3]
+        effect = ("beat_montage", "photo_stack", "split_screen")[cursor % 3]
     elif section in {"bridge", "solo"}:
-        effect = "double_exposure" if index % 2 else "photo_stack"
+        effect = "double_exposure" if cursor % 2 else "photo_stack"
     else:
-        effect = ("split_screen", "photo_stack", "double_exposure")[index % 3]
+        effect = ("split_screen", "photo_stack", "double_exposure")[cursor % 3]
     wanted_total = 4 if effect == "beat_montage" else 3 if effect == "photo_stack" else 2
     total = min(max_images, wanted_total, available + 1)
     if total < 2:
-        return _single_image_effect(index, section, energy, melody, edit_intent), 0
+        return _single_image_effect(cursor, section, energy, melody, edit_intent), 0
     return effect, total - 1
 
 
 def _single_image_effect(
-    index: int, section: str, energy: float, melody: float, edit_intent: str,
+    cursor: int, section: str, energy: float, melody: float, edit_intent: str,
 ) -> str:
     """Pick one camera move, or occasionally a framing treatment instead.
 
@@ -288,29 +300,34 @@ def _single_image_effect(
     phrase, an arrival on an impact, an unhurried drift through a verse. Selection
     is a fixed rotation rather than a random draw, so a given plan always renders
     the same way.
+
+    The rotations are ordered so that neighbouring shots in the same group differ in
+    *character*, not just in direction: a push, then a turn, then a travel.
     """
-    framing = _framing_effect(index, section, energy, edit_intent)
+    framing = _framing_effect(cursor, section, energy, edit_intent)
     if framing:
         return framing
     if edit_intent == "breathe" or section in {"intro", "outro"}:
-        return ("breathe", "cinematic_depth", "pull_back", "dolly_out")[index % 4]
+        return ("breathe", "cinematic_depth", "pull_back", "handheld", "dolly_out")[cursor % 5]
     if edit_intent == "impact" or (section == "chorus" and energy > .76):
-        return ("punch_in", "dolly_in", "arc", "pan_reveal")[index % 4]
+        # Impact cuts get the loud moves: a slam, a 3D turn, a whip, a spiral.
+        return ("punch_in", "tilt3d_back", "whip_pan", "spiral_in", "dolly_in")[cursor % 5]
     if energy > .62:
-        return ("pan_reveal", "drift", "arc", "dolly_in")[index % 4]
+        return ("pan_reveal", "tilt3d_right", "drift", "pulse_in", "arc", "dolly_in")[cursor % 6]
     if melody > .62:
-        return ("tilt_up", "focus_pull", "dolly_out", "tilt_down")[index % 4]
-    return ("cinematic_depth", "drift", "tilt_down", "arc")[index % 4]
+        # Melodic passages turn and roll rather than push.
+        return ("tilt_up", "spiral_in", "focus_pull", "roll_drift", "tilt3d_left", "tilt_down")[cursor % 6]
+    return ("cinematic_depth", "drift", "tilt3d_front", "tilt_down", "arc", "handheld")[cursor % 6]
 
 
-def _framing_effect(index: int, section: str, energy: float, edit_intent: str) -> str:
+def _framing_effect(cursor: int, section: str, energy: float, edit_intent: str) -> str:
     """Return a framing treatment for roughly one shot in twelve, else ``""``.
 
     Letterboxing, an iris and parallax are the still-image equivalent of a
     composite: each is worth seeing once and tedious if every shot gets one. The
     gate keeps them occasional without making them random.
     """
-    if ((index * 53 + 7) % 100) / 100 >= .085:
+    if ((cursor * 53 + 7) % 100) / 100 >= .085:
         return ""
     if section == "intro":
         return "iris"
@@ -466,6 +483,18 @@ _TRANSITION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
     "flash": ("zoom", "radial", "slice"),
     "circle": ("radial", "zoom", "dissolve"),
     "dip": ("dissolve", "blur", "circle"),
+    "mask": ("circle", "open", "reveal"),
+    "open": ("close", "mask", "circle"),
+    "close": ("open", "mask", "circle"),
+    "smooth": ("slide", "wipe", "reveal"),
+    "corner": ("diag", "wipe", "slice"),
+    "wind": ("slice", "pixel", "squeeze"),
+    "soft": ("blur", "dissolve", "circle"),
+    # The effect transitions are the loudest thing in the vocabulary, so their
+    # replacements stay loud - swapping a glitch for a dissolve would deflate the cut.
+    "glitch": ("flash", "film_burn", "zoom"),
+    "light_leak": ("dip", "flash", "soft"),
+    "film_burn": ("flash", "glitch", "zoom"),
 }
 
 
@@ -477,15 +506,36 @@ def _assign_transitions(shots: list[Shot], *, mood: str = "", density: float = .
     changes - a new section, a change of intent - and a bounded share of the cuts
     inside a section earn one.
     """
+    visible = 0
     for index, (shot, following) in enumerate(zip(shots, shots[1:])):
-        shot.transition = _transition_family(shot, following, index, mood, density)
+        family = _transition_family(
+            shot, following, index=index, visible=visible, mood=mood, density=density,
+        )
+        shot.transition = family
+        if family not in _SUBTLE_TRANSITIONS and family not in {"cut", "none", ""}:
+            visible += 1
     if shots:
         shots[-1].transition = "none"
     _break_transition_repeats(shots)
 
 
-def _transition_family(shot: Shot, following: Shot, index: int, mood: str, density: float) -> str:
-    """Name the transition family the edit is asking for at this cut."""
+def _transition_family(
+    shot: Shot, following: Shot, *, index: int, visible: int, mood: str, density: float,
+) -> str:
+    """Name the transition family the edit is asking for at this cut.
+
+    Two counters, because they answer different questions. ``index`` is the cut's
+    position in the timeline, which is what the density gate wants - a bounded share
+    of the cuts, spread across the whole edit. ``visible`` counts the visible
+    transitions handed out so far, and it is what the rotations index on.
+
+    Rotating on the shot index starves whole families. A branch is narrow - ``open``
+    only fires on a section change in a dreamy song - so it might fire three times at
+    cuts 7, 19 and 31, every one of them ``% 3 == 1``, and two of its three names can
+    never be reached. Rotating on the visible count makes consecutive firings take
+    consecutive slots, so a branch that fires as often as its rotation is long covers
+    all of it.
+    """
     tone = following.transition_tone if following.transition_tone != "neutral" else shot.transition_tone
     dreamy = mood in {"dreamy", "romantic"} or tone == "soft"
     restless = mood in {"energetic", "dark"} or tone == "bright"
@@ -493,31 +543,32 @@ def _transition_family(shot: Shot, following: Shot, index: int, mood: str, densi
     if shot.section_index != following.section_index:
         # Structural punctuation: the strongest move the music can justify.
         if following.energy > .78:
-            return "flash"
+            # A cut this loud wants a flash or a glitch, not a blend.
+            return ("flash", "glitch", "light_leak")[visible % 3]
         if following.section == "chorus":
-            return "radial" if restless else "zoom"
+            return ("radial", "wind", "mask")[visible % 3] if restless else ("zoom", "mask", "smooth")[visible % 3]
         if following.section in {"intro", "outro"} or shot.section == "chorus":
             return "dip"
         if dreamy:
-            return "circle"
+            return ("circle", "soft", "open")[visible % 3]
         if restless:
-            return "slice"
+            return ("slice", "corner", "close")[visible % 3]
         return "dissolve"
 
     if "impact" in {shot.edit_intent, following.edit_intent}:
-        return "zoom" if index % 2 else "flash"
+        return ("zoom", "film_burn", "flash", "glitch")[visible % 4]
     if "breathe" in {shot.edit_intent, following.edit_intent}:
-        return "blur" if dreamy else "dissolve"
+        return ("blur", "soft")[visible % 2] if dreamy else "dissolve"
 
     # Inside a section, spend a bounded share of the cut points on visible moves.
     if ((index * 29 + 11) % 100) / 100 >= density:
         return "cut"
     energy = max(shot.energy, following.energy)
     if energy > .70:
-        return ("wipe", "slide", "diag", "pixel", "squeeze")[index % 5]
+        return ("wipe", "slide", "diag", "pixel", "squeeze", "corner", "wind", "glitch")[visible % 8]
     if energy < .32:
-        return "blur" if dreamy else "dissolve"
-    return ("wipe", "reveal", "dissolve")[index % 3]
+        return ("blur", "soft", "dissolve")[visible % 3] if dreamy else ("dissolve", "soft")[visible % 2]
+    return ("wipe", "reveal", "dissolve", "smooth", "mask")[visible % 5]
 
 
 def _break_transition_repeats(shots: list[Shot]) -> None:

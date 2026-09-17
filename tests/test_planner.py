@@ -121,22 +121,24 @@ def test_transition_family_reads_the_music_not_the_calendar() -> None:
     """Inside a section, energy decides which visible move the cut earns."""
     def family(energy: float) -> str:
         return _transition_family(
-            _shot(0, "verse", energy), _shot(1, "verse", energy), 0, "cinematic", 1.0,
+            _shot(0, "verse", energy), _shot(1, "verse", energy),
+            index=0, visible=0, mood="cinematic", density=1.0,
         )
 
-    assert family(.9) in {"wipe", "slide", "diag", "pixel", "squeeze"}
+    assert family(.9) in {"wipe", "slide", "diag", "pixel", "squeeze", "corner", "wind", "glitch"}
     assert family(.1) == "dissolve"
-    assert family(.5) in {"wipe", "reveal", "dissolve"}
+    assert family(.5) in {"wipe", "reveal", "dissolve", "smooth", "mask"}
 
 
 def test_transition_density_zero_suppresses_only_inside_section_moves() -> None:
     """``transition_density = 0`` must not silence a section change."""
     inside = _transition_family(
-        _shot(0, "verse", .9), _shot(1, "verse", .9), 0, "cinematic", 0.0,
+        _shot(0, "verse", .9), _shot(1, "verse", .9),
+        index=0, visible=0, mood="cinematic", density=0.0,
     )
     structural = _transition_family(
         _shot(0, "verse", .5, section_index=0), _shot(1, "chorus", .5, section_index=1),
-        0, "cinematic", 0.0,
+        index=0, visible=0, mood="cinematic", density=0.0,
     )
     assert inside == "cut"
     assert structural != "cut"
@@ -146,14 +148,33 @@ def test_a_section_change_outranks_an_impact_inside_one() -> None:
     """The strongest move the music can justify belongs at the structural seam."""
     into_chorus = _transition_family(
         _shot(0, "verse", .5, section_index=0), _shot(1, "chorus", .9, section_index=1),
-        0, "cinematic", .35,
+        index=0, visible=0, mood="cinematic", density=.35,
     )
     into_outro = _transition_family(
         _shot(0, "chorus", .5, section_index=1), _shot(1, "outro", .3, section_index=2),
-        0, "cinematic", .35,
+        index=0, visible=0, mood="cinematic", density=.35,
     )
     assert into_chorus == "flash"
     assert into_outro == "dip"
+
+
+def test_transition_rotations_advance_on_visible_transitions_not_shot_index() -> None:
+    """A narrow branch must not be able to lock onto one name for the whole song.
+
+    ``open`` only fires on a section change in a dreamy song, and a song has only a
+    handful of those. Keyed off the shot index they can all land on the same residue
+    and two of the three names become unreachable; keyed off how many visible
+    transitions have already been handed out, consecutive firings take consecutive
+    slots.
+    """
+    def family(visible: int) -> str:
+        return _transition_family(
+            _shot(0, "verse", .5, section_index=0), _shot(1, "bridge", .5, section_index=1),
+            index=7, visible=visible, mood="dreamy", density=1.0,
+        )
+
+    # Same cut position, different visible count: the rotation has to move.
+    assert len({family(count) for count in range(6)}) == 3
 
 
 def test_identical_visible_transitions_are_rotated_apart() -> None:
@@ -388,65 +409,110 @@ def test_planned_effects_are_all_names_the_renderer_can_build() -> None:
 
 
 def test_planned_transition_families_are_all_known_to_the_renderer() -> None:
-    from beatforge.renderer import _TRANSITION_LIBRARY
+    from beatforge.renderer import _EFFECT_TRANSITIONS, _TRANSITION_LIBRARY
 
-    known = set(_TRANSITION_LIBRARY) | {"cut", "none"}
+    known = set(_TRANSITION_LIBRARY) | set(_EFFECT_TRANSITIONS) | {"cut", "none"}
     shots = create_plan(
         _varied_song(), _lines(120), _images(90), None,
         min_shot=1.5, max_shot=4, transition_density=1,
     )
 
     used = {shot.transition for shot in shots}
-    assert used <= known, used - known
-    assert len(used) >= 5, f"the plan barely used the vocabulary: {sorted(used)}"
-
-
-def _varied_song(duration: float = 120.0) -> AudioAnalysis:
-    """A song that visits every section type, so every effect branch can fire."""
-    labels = ["intro", "verse", "chorus", "bridge", "outro"]
-    step = duration / len(labels)
-    return AudioAnalysis(
-        duration=duration, bpm=120,
-        beats=[x / 2 for x in range(int(duration * 2) + 1)],
-        downbeats=[float(x) for x in range(0, int(duration) + 1, 2)],
-        sections=[i * step for i in range(len(labels) + 1)],
-        energy_times=[0, duration * .4, duration], energy_values=[.3, .85, .35],
-        average_energy=.5, brightness=.5, mood="cinematic",
-        mood_scores={"cinematic": 1}, section_labels=labels,
-    )
-
-
-def test_planned_effects_are_all_names_the_renderer_can_build() -> None:
-    """A name the renderer does not recognise degrades silently to a default move.
-
-    That failure is invisible in the plan and only shows up as a whole video of
-    identical push-ins, so pin the vocabulary from both ends.
-    """
-    from beatforge.renderer import _CAMERA_MOVES
-
-    known = set(_CAMERA_MOVES) | {
-        "split_screen", "photo_stack", "double_exposure", "beat_montage",
-        "film_bars", "iris", "parallax", "source_video",
-    }
-    shots = create_plan(
-        _varied_song(), _lines(120), _images(90), None,
-        min_shot=1.5, max_shot=4, image_composite_ratio=.35,
-    )
-
-    used = {shot.image_effect for shot in shots}
     assert used <= known, used - known
     assert len(used) >= 8, f"the plan barely used the vocabulary: {sorted(used)}"
 
 
-def test_planned_transition_families_are_all_known_to_the_renderer() -> None:
-    from beatforge.renderer import _TRANSITION_LIBRARY
 
-    known = set(_TRANSITION_LIBRARY) | {"cut", "none"}
-    shots = create_plan(
-        _varied_song(), _lines(120), _images(90), None,
-        min_shot=1.5, max_shot=4, transition_density=1,
-    )
+def test_every_camera_move_is_reachable_from_some_song() -> None:
+    """A move the planner can never pick is dead weight, and nothing would say so.
 
-    used = {shot.transition for shot in shots}
-    assert used <= known, used - known
-    assert len(used) >= 5, f"the plan barely used the vocabulary: {sorted(used)}"
+    Reachability is song-dependent. A shot lands in a branch based on its section,
+    energy, melody and intent, and a rotation like ``index % 5`` only ever offers one
+    of its five names at a time - so a single song can leave a whole group untouched
+    while every other test still passes. Sweep a spread of songs instead: this caught
+    a real case where a synthetic song's chorus energy sat exactly on the ``.65``
+    boundary and four impact moves were never once selected.
+    """
+    from beatforge.renderer import _CAMERA_MOVES
+
+    labels = ["intro", "verse", "chorus", "bridge", "solo", "outro"]
+    used: set[str] = set()
+    for mood in ("energetic", "uplifting", "melancholic", "dreamy", "romantic", "dark", "cinematic"):
+        for peak in (.5, .95):
+            for melody in (.3, .9):
+                analysis = AudioAnalysis(
+                    duration=160, bpm=120,
+                    beats=[x / 2 for x in range(321)],
+                    downbeats=[float(x) for x in range(0, 161, 2)],
+                    sections=[index * 160 / len(labels) for index in range(len(labels) + 1)],
+                    energy_times=[0, 40, 72, 120, 160],
+                    energy_values=[.15, .95, .6, peak, .2],
+                    average_energy=.5, brightness=.5, mood=mood,
+                    mood_scores={mood: 1}, section_labels=labels,
+                    melody_times=[0, 80, 160], melody_values=[.2, melody, .3],
+                    melodic_motion=.6, rhythmic_density=80,
+                )
+                shots = create_plan(
+                    analysis, _lines(160), _images(80), None,
+                    min_shot=1.5, max_shot=4, image_composite_ratio=.35,
+                )
+                used.update(shot.image_effect for shot in shots)
+
+    missing = sorted(set(_CAMERA_MOVES) - used)
+    assert not missing, f"no song can select these moves: {missing}"
+
+
+def test_every_transition_family_is_reachable_from_some_song() -> None:
+    """Same starvation risk as the camera moves, but with a different cause.
+
+    A transition branch is narrow - ``open`` only fires on a section change in a
+    dreamy song, ``radial`` only on a section change into the chorus in a restless
+    one - so rotating on the cut index lets its few firings land on the same residue
+    and starve the rest of the group. Rotating on the visible count fixes that, but
+    reachability still depends on the *song*: a layout whose section boundaries all
+    sit above the ``.78`` energy gate never reaches the chorus branch at all. These
+    eight layouts are the smallest set that covers the whole library, found by
+    sweeping layouts against energy shapes; a single fixed song covers about half.
+    """
+    from beatforge.renderer import _EFFECT_TRANSITIONS, _TRANSITION_LIBRARY
+
+    layouts = {
+        "six": ["intro", "verse", "chorus", "bridge", "solo", "outro"],
+        "vcvc": ["verse", "chorus", "verse", "chorus", "outro"],
+    }
+    shapes = {
+        "fall": ([0, 45, 90, 160], [.9, .25, .85, .3]),
+        "rise": ([0, 30, 55, 100, 160], [.15, .95, .5, .9, .2]),
+        "early": ([0, 25, 50, 80, 160], [.95, .3, .95, .35, .2]),
+    }
+    sweep = [
+        ("six", "fall", "energetic"), ("six", "fall", "dreamy"),
+        ("six", "fall", "cinematic"), ("six", "rise", "energetic"),
+        ("six", "rise", "dreamy"), ("six", "early", "energetic"),
+        ("six", "early", "dreamy"), ("vcvc", "early", "energetic"),
+    ]
+
+    used: set[str] = set()
+    for layout, shape, mood in sweep:
+        labels = layouts[layout]
+        times, values = shapes[shape]
+        analysis = AudioAnalysis(
+            duration=160, bpm=120,
+            beats=[x / 2 for x in range(321)],
+            downbeats=[float(x) for x in range(0, 161, 2)],
+            sections=[index * 160 / len(labels) for index in range(len(labels) + 1)],
+            energy_times=times, energy_values=values,
+            average_energy=.5, brightness=.5, mood=mood, mood_scores={mood: 1},
+            section_labels=labels,
+            melody_times=[0, 80, 160], melody_values=[.2, .9, .3],
+            melodic_motion=.6, rhythmic_density=80,
+        )
+        shots = create_plan(
+            analysis, _lines(160), _images(80), None,
+            min_shot=1.5, max_shot=4, transition_density=1,
+        )
+        used.update(shot.transition for shot in shots)
+
+    known = set(_TRANSITION_LIBRARY) | set(_EFFECT_TRANSITIONS)
+    missing = sorted(known - used)
+    assert not missing, f"no song can select these transitions: {missing}"

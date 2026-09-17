@@ -61,7 +61,7 @@ def create_art_direction(
     font = resolve_subtitle_font(requested_font, config.subtitle_fonts_dir)
     base_effect = config.subtitle_effect if config.subtitle_effect != "auto" else default_effect
     line_effects = []
-    for line in lyrics:
+    for line_index, line in enumerate(lyrics):
         midpoint = (line.start + line.end) / 2
         energy = analysis.energy_at(midpoint)
         melody = analysis.melody_at(midpoint)
@@ -74,17 +74,28 @@ def create_art_direction(
         elif section == "outro":
             effect = "cinematic"
         elif section in {"bridge", "solo"} and energy < .7:
-            effect = "glow" if melody > .5 else "cinematic"
+            # A held moment: let the line come up out of the dark, or ride the melody.
+            effect = "spotlight" if melody < .45 else "wave" if melody > .6 else "glow"
         elif section == "chorus" and energy > .58:
-            effect = "bounce" if analysis.rhythmic_density > 75 else "karaoke"
+            effect = (
+                ("punch", "neon", "shake", "bounce")[line_index % 4]
+                if analysis.rhythmic_density > 75 else "karaoke"
+            )
         elif energy > .76 or (energy > .58 and analysis.rhythmic_density > 75):
-            effect = "bounce"
+            effect = ("punch", "shake", "neon_flicker")[line_index % 3]
         elif energy < .24:
             effect = "cinematic" if mood != "dreamy" else "float"
         elif melody > .68:
-            effect = "karaoke" if mood not in {"romantic", "dreamy"} else "glow"
+            effect = (
+                ("wave", "neon")[line_index % 2] if mood not in {"romantic", "dreamy"}
+                else ("glow", "wave")[line_index % 2]
+            )
         elif mood in {"romantic", "dreamy"}:
             effect = "glow" if mood == "romantic" else "float"
+        elif mood == "dark":
+            effect = ("glitch", "spotlight", "typewriter")[line_index % 3]
+        elif mood == "uplifting":
+            effect = ("rainbow", "slide", "karaoke")[line_index % 3]
         else:
             effect = base_effect
         line_effects.append(effect)

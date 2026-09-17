@@ -27,10 +27,12 @@ def render(
     section_count = max((shot.section_index for shot in shots), default=0) + 1
     for index, shot in enumerate(shots):
         print(f"\r渲染镜头 {index + 1}/{len(shots)}", end="", flush=True)
-        handle = transitions[index][1] if index < len(transitions) else 0.0
+        outgoing = transitions[index] if index < len(transitions) else None
+        incoming = transitions[index - 1] if index > 0 else None
         _render_shot(
             shot, clips / f"{index:05}.mp4", config, art,
-            shot.duration + handle, section_count,
+            shot.duration + (outgoing.handle if outgoing else 0.0), section_count,
+            incoming=incoming, outgoing=outgoing,
         )
     print()
     picture = cache / "picture.mp4"
@@ -63,10 +65,12 @@ def render(
 def _render_shot(
     shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
     render_duration: float, section_count: int,
+    *, incoming: "_Transition | None" = None, outgoing: "_Transition | None" = None,
 ) -> None:
     frames = max(1, round(render_duration * cfg.fps))
     if shot.kind == "image":
-        _render_image_shot(shot, output, cfg, art, render_duration, section_count)
+        _render_image_shot(shot, output, cfg, art, render_duration, section_count,
+                           incoming=incoming, outgoing=outgoing)
         return
 
     # Preserve source cinematography: synthetic oscillation on moving footage looks seasick.
@@ -95,6 +99,7 @@ def _render_shot(
             effects.append("vignette=PI/5")
         if art.grain > 0:
             effects.append(f"noise=alls={art.grain}:allf=t+u")
+    effects += _cut_effects(incoming, outgoing, render_duration, cfg)
     args = ["ffmpeg", "-y", "-v", "error"]
     args += ["-stream_loop", "-1", "-ss", str(shot.source_start)]
     args += ["-i", shot.file, "-t", str(render_duration), "-an", "-vf", ",".join(
@@ -103,9 +108,28 @@ def _render_shot(
     command(args)
 
 
+def _cut_effects(
+    incoming: "_Transition | None", outgoing: "_Transition | None",
+    duration: float, cfg: RenderConfig,
+) -> list[str]:
+    """Effect-transition filters for both ends of one shot.
+
+    A shot sits between two cuts, so it can carry a head effect, a tail effect or
+    both; ``_transition_effect_filters`` returns nothing for cuts and xfades, which
+    are handled by the timeline instead.
+    """
+    filters: list[str] = []
+    if incoming is not None:
+        filters += _transition_effect_filters(incoming, "in", duration, cfg)
+    if outgoing is not None:
+        filters += _transition_effect_filters(outgoing, "out", duration, cfg)
+    return filters
+
+
 def _render_image_shot(
     shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
     render_duration: float, section_count: int,
+    *, incoming: "_Transition | None" = None, outgoing: "_Transition | None" = None,
 ) -> None:
     files = [shot.file, *(layer.file for layer in shot.layers if layer.kind == "image")]
     args = ["ffmpeg", "-y", "-v", "error"]
@@ -123,6 +147,7 @@ def _render_image_shot(
             finishing.append("vignette=PI/5")
         if art.grain > 0:
             finishing.append(f"noise=alls={art.grain}:allf=t+u")
+    finishing += _cut_effects(incoming, outgoing, render_duration, cfg)
     finish = ",".join(item for item in finishing if item)
     # Normalize to the exact target canvas: composite effects (e.g. split_screen's
     # hstack) can emit odd widths, and xfade/concat reject mismatched input sizes.
@@ -152,6 +177,13 @@ class _CameraMove:
     ``.09`` spends nine percent of the travel available at that moment. Keeping every
     offset inside about ±.15 stops the crop from reaching its ``clip()`` bound, which
     would park the move against the edge and stall it mid-shot.
+
+    The remaining fields are what let one table cover moves that are more than "push
+    in a bit". ``curve`` changes how progress maps onto the interpolation - a ramp
+    arrives, a breathe returns, a pulse repeats; ``roll`` turns the frame about its
+    centre; ``keystone``/``keystone_v`` skew the quad as if the picture were turning
+    in space; ``shake`` adds handheld jitter and ``drag`` smears the frame along its
+    own motion so a fast throw reads as fast rather than as a jump cut.
     """
 
     zoom_from: float
@@ -161,12 +193,19 @@ class _CameraMove:
     y_from: float = 0.0
     y_to: float = 0.0
     ease: str = "linear"
-    breathe: bool = False
+    curve: str = "ramp"
+    pulses: int = 1
+    roll: float = 0.0
+    keystone: float = 0.0
+    keystone_v: float = 0.0
+    shake: float = 0.0
+    drag: int = 0
 
 
 # Movement vocabulary for stills. These are deliberately distinct in *character*,
 # not just in magnitude: a drift holds its framing and slides, a dolly commits to
-# the push, a punch arrives fast and settles, a breathe swells and returns.
+# the push, a punch arrives fast and settles, a breathe swells and returns, a
+# handheld holds still and trembles.
 _CAMERA_MOVES: dict[str, _CameraMove] = {
     # The workhorses. Small, unhurried pushes for verses, intros and outros.
     "cinematic_depth": _CameraMove(0.0, 0.055, y_to=-0.035),
@@ -185,7 +224,30 @@ _CAMERA_MOVES: dict[str, _CameraMove] = {
     "punch_in": _CameraMove(0.0, 0.130, ease="out"),
     "pull_back": _CameraMove(0.120, 0.0, ease="out"),
     # Long, low-energy shots: the frame swells and settles instead of leaving.
-    "breathe": _CameraMove(0.0, 0.050, breathe=True),
+    "breathe": _CameraMove(0.0, 0.050, curve="breathe"),
+    # --- the wider vocabulary: moves that are not just "push in a bit" ---------
+    # A throw. A pan can only travel ``W - W/zoom``, so a whip needs a real crop to
+    # have anywhere to go: at a 5% zoom the whole move covers about eight pixels and
+    # reads as a slow drift however fast it is nominally going. The deep crop is what
+    # buys the travel, and ``drag`` blurs along it so the speed is visible rather than
+    # implied by a jump.
+    "whip_pan": _CameraMove(0.060, 0.420, x_from=-0.140, x_to=0.140, ease="inout", drag=5),
+    # A push that also turns: the two together read as travelling around a subject
+    # rather than straight at it.
+    "spiral_in": _CameraMove(0.0, 0.115, ease="inout", roll=2.8),
+    # A long slow dutch-angle drift. Barely any push, so the roll carries it.
+    "roll_drift": _CameraMove(0.050, 0.075, x_from=-0.075, x_to=0.075, roll=-3.4),
+    # A hold that breathes like a hand rather than a tripod, for intimate or
+    # documentary material.
+    "handheld": _CameraMove(0.0, 0.030, shake=0.055),
+    # Turning in space. The top and bottom edges travel at different widths, which
+    # is what makes a flat still read as a plane with a front and a back.
+    "tilt3d_back": _CameraMove(0.0, 0.055, keystone=0.14),
+    "tilt3d_front": _CameraMove(0.0, 0.055, keystone=-0.14),
+    "tilt3d_left": _CameraMove(0.0, 0.055, keystone_v=-0.13),
+    "tilt3d_right": _CameraMove(0.0, 0.055, keystone_v=0.13),
+    # Two swells instead of one long push, so the move lands on the beat twice.
+    "pulse_in": _CameraMove(0.0, 0.105, curve="pulse", pulses=2),
 }
 
 # Parallax drives two planes of the same image at different rates; the gap between
@@ -212,12 +274,98 @@ _EASES = {
 # including zoom curves that end exactly where they started.
 _MIN_ZOOM = 0.004
 
+# Handheld jitter is built from sines rather than noise because ``perspective``
+# exposes no random source. Two incommensurate rates per axis, plus a slow envelope
+# so the tremor waxes and wanes, keeps it from reading as a metronome.
+_SHAKE_HZ = (4.3, 7.1)
+_SHAKE_ENVELOPE_HZ = 0.6
 
-def _camera_expressions(
-    move: _CameraMove, amount: float, direction: int, frames: int,
-) -> tuple[str, str, str]:
-    """Return ffmpeg expressions for ``(zoom, x_fraction, y_fraction)``.
 
+def _curve_parameter(move: _CameraMove, progress: str) -> str:
+    """How progress drives the move's interpolation, as an FFmpeg expression.
+
+    ``ramp`` is the usual one-way trip. ``breathe`` runs 0 -> 1 -> 0, so the frame
+    swells and returns to where it started. ``pulse`` is the same shape repeated, so
+    a single shot can land on the beat more than once.
+    """
+    if move.curve == "breathe":
+        return f"(0.5-0.5*cos(2*PI*{progress}))"
+    if move.curve == "pulse":
+        return f"(0.5-0.5*cos(2*PI*{move.pulses}*{progress}))"
+    return _EASES[move.ease](progress)
+
+
+def _shake_expressions(amplitude: float, progress: str, frames: int, fps: int) -> tuple[str, str]:
+    """Handheld tremor for the crop origin, in travel units.
+
+    Driven by ``on`` divided by ``fps`` rather than by progress, so the tremor keeps
+    the same frequency in seconds whatever the shot length or frame rate - a shake
+    that slowed down on long shots would read as a wobble, not as a hand.
+
+    ``on`` is clamped at both ends rather than left to run. Like every other curve
+    here it has to hold once the shot is over: frames pulled past the end by
+    ``fps``/``trim`` would otherwise keep trembling, and a shot that will not sit
+    still at its end cannot be cut against anything.
+    """
+    seconds = f"((max(1,min(on,{frames}))-1)/{fps})"
+    envelope = f"(0.62+0.38*sin(2*PI*{_SHAKE_ENVELOPE_HZ}*{seconds}+0.9))"
+    slow, fast = _SHAKE_HZ
+    x = (
+        f"({amplitude:.5f}*{envelope}*"
+        f"(sin(2*PI*{slow}*{seconds})+0.55*sin(2*PI*{fast}*{seconds}+1.3)))"
+    )
+    y = (
+        f"({amplitude * .72:.5f}*{envelope}*"
+        f"(sin(2*PI*{fast}*{seconds}+2.1)+0.5*sin(2*PI*{slow}*{seconds})))"
+    )
+    return x, y
+
+
+def _quad_spread(move: _CameraMove, amount: float, unit: float, aspect: float) -> float:
+    """How much bigger than the crop box the quad gets at curve position ``unit``.
+
+    A keystone widens one edge and a roll swings the corners outward, so the box that
+    has to fit inside the frame is the quad's *bounding* box, not ``W/zoom``. Returns
+    the factor the zoom must reach to keep the widest case inside the picture, for the
+    horizontal and vertical axes (the larger of the two).
+    """
+    keystone = 1 + abs(move.keystone * amount * unit)
+    keystone_v = 1 + abs(move.keystone_v * amount * unit)
+    roll = math.radians(move.roll * amount * unit)
+    cos_r, sin_r = abs(math.cos(roll)), abs(math.sin(roll))
+    # The extra 0.4% is the same margin ``_MIN_ZOOM`` buys an unskewed move: it keeps
+    # a corner from landing exactly on the frame edge, where float noise decides
+    # whether the filter sees it as inside or out.
+    return 1.004 * max(
+        keystone * cos_r + aspect * keystone_v * sin_r,
+        keystone_v * cos_r + keystone * sin_r / aspect,
+    )
+
+
+def _required_zoom(move: _CameraMove, amount: float, low: float, high: float, aspect: float) -> float:
+    """How far the zoom curve must be lifted so the quad never leaves the frame.
+
+    Sampling the curve is enough because every shape here is monotonic in ``unit``
+    between the points sampled, and the curves that are not - a breathe, a pulse -
+    still sweep the whole 0..1 range. Lifting the whole curve rather than clamping it
+    keeps the move's intended zoom *delta* intact; only its baseline moves.
+    """
+    deficit = 0.0
+    for step in range(9):
+        unit = step / 8
+        available = low + (high - low) * unit
+        deficit = max(deficit, _quad_spread(move, amount, unit, aspect) - available)
+    return deficit
+
+
+def _camera_quad(
+    move: _CameraMove, amount: float, direction: int, frames: int, fps: int,
+    aspect: float = 9 / 16,
+) -> tuple[str, ...]:
+    """Return the eight corner expressions of the crop quad, per frame.
+
+    ``aspect`` is the frame's height over its width, which is what converts a
+    horizontal keystone into a vertical footprint and back.
     ``perspective`` exposes ``on`` — the output frame index — and nothing else: no
     ``t``, and no ``n``. ``on`` is **1-based**; ``vf_perspective.c`` fills it from
     ``outl->frame_count_in + 1``, so the last frame of an N-frame shot reports
@@ -233,50 +381,91 @@ def _camera_expressions(
     was supposed to arrive and hold instead reverses, and once the zoom drops under
     1.0 the crop collapses and the frame is rejected. Holding the final value costs
     nothing: those frames are trimmed away.
+
+    Every corner comes from one centre and one half-size, then optionally skewed and
+    rolled. Deriving them that way is what lets a roll or a 3D turn reuse the same
+    single ``perspective`` pass instead of stacking another resample on the crop.
     """
     progress = f"clip((on-1)/{max(1, frames - 1)},0,1)"
-    ease = _EASES[move.ease](progress)
+    unit = _curve_parameter(move, progress)
+
     low = 1 + _MIN_ZOOM + move.zoom_from * amount
     high = 1 + _MIN_ZOOM + move.zoom_to * amount
-    if move.breathe:
-        # 0.5-0.5*cos(2*pi*p) runs 0 -> 1 -> 0, so the frame swells and returns.
-        zoom = f"({low:.6f}+{high - low:.6f}*(0.5-0.5*cos(2*PI*{progress})))"
-    elif abs(high - low) < 1e-9:
-        zoom = f"{low:.6f}"
+    lift = _required_zoom(move, amount, low, high, aspect)
+    low, high = low + lift, high + lift
+    zoom = f"{low:.6f}" if abs(high - low) < 1e-9 else f"({low:.6f}+{high - low:.6f}*{unit})"
+
+    x = f"{direction * move.x_from:.5f}+{direction * (move.x_to - move.x_from):.5f}*{unit}"
+    y = f"{move.y_from:.5f}+{move.y_to - move.y_from:.5f}*{unit}"
+    if move.shake:
+        shake_x, shake_y = _shake_expressions(move.shake * amount, progress, frames, fps)
+        x, y = f"({x}+{shake_x})", f"({y}+{shake_y})"
+
+    crop_width = f"(W/({zoom}))"
+    crop_height = f"(H/({zoom}))"
+    half_width = f"({crop_width}/2)"
+    half_height = f"({crop_height}/2)"
+
+    # A keystone makes one edge wider (or taller) than its opposite, which is what a
+    # flat plane looks like when it turns in space. ``keystone`` splits the top and
+    # bottom widths, ``keystone_v`` the left and right heights.
+    top_bottom = f"({move.keystone:.5f}*{unit})" if move.keystone else None
+    left_right = f"({move.keystone_v:.5f}*{unit})" if move.keystone_v else None
+    wide_half = f"({half_width}*(1+abs({top_bottom})))" if top_bottom else half_width
+    tall_half = f"({half_height}*(1+abs({left_right})))" if left_right else half_height
+
+    if move.roll:
+        angle = f"({move.roll * amount * math.pi / 180:.6f}*{unit})"
+        cosine, sine = f"cos({angle})", f"sin({angle})"
+        extent_x = f"({wide_half}*abs({cosine})+{tall_half}*abs({sine}))"
+        extent_y = f"({wide_half}*abs({sine})+{tall_half}*abs({cosine}))"
     else:
-        zoom = f"({low:.6f}+{high - low:.6f}*{ease})"
-    x = f"{direction * move.x_from:.5f}+{direction * (move.x_to - move.x_from):.5f}*{ease}"
-    y = f"{move.y_from:.5f}+{move.y_to - move.y_from:.5f}*{ease}"
-    return zoom, x, y
+        cosine, sine = "1", "0"
+        extent_x, extent_y = wide_half, tall_half
+
+    footprint_x = f"(2*{extent_x})"
+    footprint_y = f"(2*{extent_y})"
+    travel_x = f"(W-{footprint_x})"
+    travel_y = f"(H-{footprint_y})"
+    centre_x = f"(clip({travel_x}/2+{travel_x}*({x}),0,{travel_x})+{footprint_x}/2)"
+    centre_y = f"(clip({travel_y}/2+{travel_y}*({y}),0,{travel_y})+{footprint_y}/2)"
+
+    corners = []
+    for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+        offset_x = f"({sx}*{half_width}*(1-({sy})*{top_bottom}))" if top_bottom else f"({sx}*{half_width})"
+        offset_y = f"({sy}*{half_height}*(1+({sx})*{left_right}))" if left_right else f"({sy}*{half_height})"
+        if move.roll:
+            corners.append(f"{centre_x}+{offset_x}*{cosine}-{offset_y}*{sine}")
+            corners.append(f"{centre_y}+{offset_x}*{sine}+{offset_y}*{cosine}")
+        else:
+            corners.append(f"{centre_x}+{offset_x}")
+            corners.append(f"{centre_y}+{offset_y}")
+    return tuple(corners)
 
 
-def _perspective_filter(zoom: str, x_fraction: str, y_fraction: str) -> str:
-    """Crop ``W/zoom`` wide and slide it inside the frame, per frame.
+def _perspective_filter(quad: tuple[str, ...]) -> str:
+    """Crop a quad out of the frame and stretch it back to full size, per frame.
 
     ``perspective`` is used instead of ``zoompan`` because zoompan truncates the
     crop origin to whole pixels of its input frame. The camera moves here are only
     a fraction of a pixel per frame, so zoompan holds the image still for several
     frames and then snaps it by a whole pixel - a visible stutter on any straight
     edge. Feeding it a supersampled frame only shrinks the jump; perspective
-    evaluates the crop rectangle per frame with true sub-pixel interpolation, so
-    the move stays smooth and nothing is resampled twice.
+    evaluates the crop quad per frame with true sub-pixel interpolation, so the move
+    stays smooth and nothing is resampled twice.
 
     The crop is ``W/zoom`` wide and may travel ``W - W/zoom`` before leaving the
     frame; the two are easy to confuse and swapping them turns the move into a
-    hard punch-in.
+    hard punch-in. ``sense=source`` means the coordinates describe where in the
+    *source* each output corner comes from.
     """
-    crop_width = f"(W/({zoom}))"
-    crop_height = f"(H/({zoom}))"
-    travel = f"(W-W/({zoom}))"
-    rise = f"(H-H/({zoom}))"
-    origin_x = f"clip({travel}/2+{travel}*({x_fraction}),0,{travel})"
-    origin_y = f"clip({rise}/2+{rise}*({y_fraction}),0,{rise})"
+    x0, y0, x1, y1, x2, y2, x3, y3 = quad
     return (
         f"perspective="
-        f"x0='{origin_x}':y0='{origin_y}':"
-        f"x1='{origin_x}+{crop_width}':y1='{origin_y}':"
-        f"x2='{origin_x}':y2='{origin_y}+{crop_height}':"
-        f"x3='{origin_x}+{crop_width}':y3='{origin_y}+{crop_height}':"
+        f"x0='{x0}':y0='{y0}':"
+        f"x1='{x1}':y1='{y1}':"
+        f"x2='{x2}':y2='{y2}':"
+        f"x3='{x3}':y3='{y3}':"
         f"interpolation=cubic:sense=source:eval=frame"
     )
 
@@ -378,8 +567,8 @@ def _image_filter_graph(
     if effect == "parallax" and cfg.blurred_image_background:
         _adapt_image_layers(filters, 0, "px", cfg.width, cfg.height, cfg)
         for plane, plane_move in (("bg", _PARALLAX_BACK), ("fg", _PARALLAX_FRONT)):
-            plane_zoom, plane_x, plane_y = _camera_expressions(plane_move, amount, direction, frames)
-            filters.append(f"[px{plane}]{_perspective_filter(plane_zoom, plane_x, plane_y)}[px{plane}m]")
+            quad = _camera_quad(plane_move, amount, direction, frames, cfg.fps, cfg.height / cfg.width)
+            filters.append(f"[px{plane}]{_perspective_filter(quad)}[px{plane}m]")
         filters.append("[pxbgm][pxfgm]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1[composite]")
         return filters, "[composite]"
 
@@ -390,15 +579,25 @@ def _image_filter_graph(
     # started - a drift, a breathe - are left alone.
     if (shot.edit_intent == "breathe" or shot.section == "outro") and move.zoom_to > move.zoom_from:
         move = replace(move, zoom_from=move.zoom_to, zoom_to=move.zoom_from, ease="out")
-    zoom, x_fraction, y_fraction = _camera_expressions(move, amount, direction, frames)
-    filters.append(f"[adapted]{_perspective_filter(zoom, x_fraction, y_fraction)}[moved]")
+    quad = _camera_quad(move, amount, direction, frames, cfg.fps, cfg.height / cfg.width)
+    filters.append(f"[adapted]{_perspective_filter(quad)}[moved]")
+    current = "[moved]"
+    if move.drag:
+        # A whip pan travels several pixels in a single frame, which on its own reads
+        # as a jump cut rather than as speed. Blending the neighbouring frames along
+        # the path supplies the smear a real shutter would have left - the effect
+        # filters below then work on the dragged stream instead of the clean one.
+        # The kernel is a triangle, so the centre frame dominates and the tails fade.
+        weights = " ".join(str(min(i + 1, move.drag - i)) for i in range(move.drag))
+        filters.append(f"[moved]tmix=frames={move.drag}:weights='{weights}'[dragged]")
+        current = "[dragged]"
 
     if effect == "film_bars":
         # Overlay the bars rather than cropping to them: the audience reads 2.35:1
         # while the image underneath keeps its whole frame.
         bar = max(2, round(cfg.height * .055 / 2) * 2)
         filters.append(
-            f"[moved]drawbox=x=0:y=0:w=iw:h={bar}:t=fill:color=black,"
+            f"{current}drawbox=x=0:y=0:w=iw:h={bar}:t=fill:color=black,"
             f"drawbox=x=0:y=ih-{bar}:w=iw:h={bar}:t=fill:color=black[composite]"
         )
         return filters, "[composite]"
@@ -427,14 +626,14 @@ def _image_filter_graph(
             f"format=gray,geq=lum='if(lte((X-W/2)^2+(Y-H/2)^2,"
             f"pow({reach:.2f}*(0.18+0.82*{progress}),2)),255,0)',"
             f"scale={cfg.width}:{cfg.height}:flags=bilinear[irismask];"
-            f"[moved]format=rgba[irisfg];"
+            f"{current}format=rgba[irisfg];"
             f"[irisfg][irismask]alphamerge[iriscut];"
             f"color=c=black:s={cfg.width}x{cfg.height}:r={cfg.fps}:d={mask_duration:.4f}[irisbg];"
             f"[irisbg][iriscut]overlay=0:0:shortest=1[composite]"
         )
         return filters, "[composite]"
 
-    return filters, "[moved]"
+    return filters, current
 
 
 def _adapt_image_layers(
@@ -554,6 +753,29 @@ _TRANSITION_LIBRARY: dict[str, tuple[str, ...]] = {
     "squeeze": ("squeezeh", "squeezev"),
     "reveal": ("revealleft", "revealright", "revealup", "revealdown",
                "coverleft", "coverright", "coverup", "coverdown"),
+    # --- the rest of what xfade offers, grouped the way an editor would think -----
+    # A shape opens over the cut, the way a mask on an adjustment layer would.
+    "mask": ("circlecrop", "rectcrop"),
+    # The frame comes apart, or comes back together.
+    "open": ("vertopen", "horzopen"),
+    "close": ("vertclose", "horzclose"),
+    # Like ``slide``, but the incoming shot eases in instead of shoving.
+    "smooth": ("smoothleft", "smoothright", "smoothup", "smoothdown"),
+    # Diagonal corners of a wipe, for cuts that want to move off-axis.
+    "corner": ("wipetl", "wipetr", "wipebl", "wipebr"),
+    # A fast rolling slice - reads as a shutter rather than as a wipe.
+    "wind": ("hlwind", "hrwind", "vuwind", "vdwind"),
+    # Weightless: long, low-contrast, and best saved for the end of a section.
+    "soft": ("distance", "fadeslow"),
+}
+
+# Families that are not xfade at all. These are applied inside each shot's own frames
+# - there is no overlap - so they read as a flash or a glitch *on* the cut rather than
+# as a blend across it. That is the difference between a dissolve and an impact.
+_EFFECT_TRANSITIONS: dict[str, float] = {
+    "glitch": .30,
+    "light_leak": .34,
+    "film_burn": .30,
 }
 
 # Families with a left/right reading. Index 0 travels left, index 1 travels right.
@@ -565,19 +787,51 @@ _TRANSITION_DIRECTION: dict[str, tuple[str, str]] = {
     "diag": ("diagtl", "diagbr"),
     "reveal": ("revealleft", "revealright"),
     "slice": ("hlslice", "hrslice"),
+    "smooth": ("smoothleft", "smoothright"),
+    "corner": ("wipetl", "wipebr"),
+    "wind": ("hlwind", "hrwind"),
 }
 
 # How long each family wants to take. An impact transition has to be short or it
 # stops reading as impact; the soft ones need room to breathe.
 _TRANSITION_PACE: dict[str, float] = {
-    "flash": .16, "zoom": .20, "pixel": .22, "squeeze": .24, "slice": .26,
-    "radial": .26, "wipe": .28, "slide": .28, "diag": .30, "reveal": .32,
-    "dip": .36, "circle": .42, "blur": .44, "dissolve": .44,
+    "flash": .16, "zoom": .20, "pixel": .22, "wind": .22, "squeeze": .24,
+    "slice": .26, "radial": .26, "wipe": .28, "slide": .28, "corner": .28,
+    "smooth": .30, "diag": .30, "reveal": .32, "mask": .34, "dip": .36,
+    "open": .38, "close": .38, "circle": .42, "blur": .44, "dissolve": .44,
+    "soft": .50,
 }
 
 
-def _transition_spec(shot: Shot, following: Shot, art: ArtDirection, cfg: RenderConfig) -> tuple[str, float]:
-    """Resolve the planner's transition family into a concrete ``xfade`` name.
+@dataclass(frozen=True, slots=True)
+class _Transition:
+    """One cut in the timeline, and how it should be realised.
+
+    ``xfade`` needs the outgoing shot to render extra footage - the overlap has to
+    come from somewhere. A ``cut`` and an ``effect`` transition both need none: the
+    effect lives inside the frames each shot already has.
+    """
+
+    kind: str
+    name: str
+    seconds: float
+
+    @property
+    def handle(self) -> float:
+        return self.seconds if self.kind == "xfade" else 0.0
+
+    @property
+    def visible(self) -> bool:
+        return self.kind != "cut"
+
+
+_CUT = _Transition("cut", "cut", 0.0)
+
+
+def _transition_spec(
+    shot: Shot, following: Shot, art: ArtDirection, cfg: RenderConfig,
+) -> _Transition:
+    """Resolve the planner's transition family into something the renderer can build.
 
     The planner picks *what* the edit needs - a wipe, a dip, a burst - and this
     decides how to realise it, using the tone of the incoming shot and the outgoing
@@ -585,7 +839,10 @@ def _transition_spec(shot: Shot, following: Shot, art: ArtDirection, cfg: Render
     """
     family = shot.transition
     if family in {"cut", "none", ""}:
-        return "cut", 0.0
+        return _CUT
+    if family in _EFFECT_TRANSITIONS:
+        seconds = _clamp_transition(_EFFECT_TRANSITIONS[family], cfg, shot, following)
+        return _Transition("effect", family, seconds)
     tone = following.transition_tone if following.transition_tone != "neutral" else art.transition_tone
     duration = _TRANSITION_PACE.get(family, .28)
 
@@ -606,13 +863,79 @@ def _transition_spec(shot: Shot, following: Shot, art: ArtDirection, cfg: Render
         options = _TRANSITION_LIBRARY.get(family) or _TRANSITION_LIBRARY["dissolve"]
         name = options[shot.index % len(options)]
 
-    duration = max(cfg.transition_min_seconds, min(cfg.transition_max_seconds, duration, shot.duration / 3, following.duration / 3))
-    return name, round(duration, 3)
+    return _Transition("xfade", name, _clamp_transition(duration, cfg, shot, following))
+
+
+def _clamp_transition(duration: float, cfg: RenderConfig, shot: Shot, following: Shot) -> float:
+    """Keep a transition inside the configured bounds and inside both of its shots."""
+    return round(max(
+        cfg.transition_min_seconds,
+        min(cfg.transition_max_seconds, duration, shot.duration / 3, following.duration / 3),
+    ), 3)
+
+
+def _transition_effect_filters(
+    transition: _Transition, side: str, duration: float, cfg: RenderConfig,
+) -> list[str]:
+    """Filters that turn a hard cut into one of the effect transitions.
+
+    ``side`` is ``"out"`` for the outgoing shot's tail or ``"in"`` for the incoming
+    shot's head. Everything here is timeline-gated, so the shot is untouched outside
+    the window around the cut - the point is a flash *on* the beat, not a look for
+    the whole shot.
+
+    The dip is timed to *arrive* at its colour on the boundary frame. ``fade`` reaches
+    full colour at ``st + d``, so the outgoing side starts one frame interval early:
+    stopping at ``duration`` would leave the last frame only part of the way there,
+    and a flash that peaks at 30% is just a slight brightening.
+    """
+    if transition.kind != "effect":
+        return []
+    seconds = min(transition.seconds, duration / 2)
+    interval = 1 / cfg.fps
+    texture = (
+        f"enable='gte(t,{max(0.0, duration - seconds):.4f})'" if side == "out"
+        else f"enable='lte(t,{seconds:.4f})'"
+    )
+
+    if transition.name == "glitch":
+        # Channel separation and sensor noise, then a hard flash into the cut. The
+        # split is what makes it read as a broken signal rather than as a blur.
+        shift = max(2, round(cfg.width * .0035))
+        flash = min(.12, max(2 * interval, seconds / 3))
+        return [
+            f"rgbashift=rh={shift}:bh={-shift}:edge=wrap:{texture}",
+            f"noise=alls=26:allf=t:{texture}",
+            _dip(side, duration, flash, interval, "white"),
+        ]
+    if transition.name == "light_leak":
+        # A warm bloom washing over the cut, the way light gets in at the edge of a
+        # lens. No texture and no hard flash: the colour is the whole effect, and it
+        # wants the full window to arrive.
+        return [_dip(side, duration, seconds, interval, "0xFFB060")]
+    if transition.name == "film_burn":
+        # A hot flash plus grain: the frame looks briefly overexposed and dirty, the
+        # way a splice does when it catches.
+        flash = min(.15, max(3 * interval, seconds / 2))
+        return [
+            f"noise=alls=30:allf=t:{texture}",
+            _dip(side, duration, flash, interval, "0xFFE8C0"),
+        ]
+    return []
+
+
+def _dip(side: str, duration: float, seconds: float, interval: float, colour: str) -> str:
+    """A fade to ``colour`` that reaches it exactly on the frame at the cut."""
+    if side == "out":
+        start = max(0.0, duration - seconds - interval)
+        return f"fade=t=out:st={start:.4f}:d={seconds:.4f}:color={colour}"
+    return f"fade=t=in:st=0:d={seconds:.4f}:color={colour}"
+
 
 
 def _compose_transitions(
     shots: list[Shot], clips: Path, output: Path,
-    transitions: list[tuple[str, float]], cfg: RenderConfig,
+    transitions: list["_Transition"], cfg: RenderConfig,
 ) -> None:
     args = ["ffmpeg", "-y", "-v", "error"]
     for index in range(len(shots)):
@@ -625,17 +948,21 @@ def _compose_transitions(
     actual = [duration(clips / f"{index:05}.mp4") for index in range(len(shots))]
     current = "[v0]"
     timeline = actual[0]
-    for index, (name, transition_duration) in enumerate(transitions):
+    for index, transition in enumerate(transitions):
         label = f"[x{index + 1}]"
-        if name == "cut" or transition_duration <= 0:
-            filters.append(f"{current}[v{index + 1}]concat=n=2:v=1:a=0{label}")
-            timeline += actual[index + 1]
-        else:
-            offset = max(0.0, timeline - transition_duration - .001)
+        if transition.kind == "xfade" and transition.seconds > 0:
+            offset = max(0.0, timeline - transition.seconds - .001)
             filters.append(
-                f"{current}[v{index + 1}]xfade=transition={name}:duration={transition_duration}:offset={round(offset, 3)}{label}"
+                f"{current}[v{index + 1}]xfade=transition={transition.name}"
+                f":duration={transition.seconds}:offset={round(offset, 3)}{label}"
             )
             timeline = offset + actual[index + 1]
+        else:
+            # A cut, and every effect transition: the flash, glitch or leak was
+            # already burned into the two shots' own frames, so the timeline just
+            # butts them together.
+            filters.append(f"{current}[v{index + 1}]concat=n=2:v=1:a=0{label}")
+            timeline += actual[index + 1]
         current = label
     end_fade = min(.5, shots[-1].duration / 3)
     filters.append(f"{current}fade=t=in:st=0:d=0.25,fade=t=out:st={max(0, timeline - end_fade):.3f}:d={end_fade:.3f}[vout]")

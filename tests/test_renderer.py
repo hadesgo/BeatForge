@@ -16,12 +16,14 @@ from beatforge.lyrics import LyricLine
 from beatforge.planner import Shot, ShotLayer
 from beatforge.renderer import (
     _CAMERA_MOVES,
+    _EFFECT_TRANSITIONS,
     _MIN_ZOOM,
     _TRANSITION_LIBRARY,
     _image_filter_graph,
     _render_shot,
     _section_color_filter,
     _shot_match_filter,
+    _transition_effect_filters,
     _transition_spec,
     _video_encode_args,
     render,
@@ -86,6 +88,47 @@ def test_intermediate_encoding_uses_higher_quality_crf() -> None:
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+def test_end_to_end_renderer_composes_effect_transitions(tmp_path: Path) -> None:
+    """The effect transitions have to survive the *composer*, not just the shot.
+
+    They carry no handle, so the timeline butts the two shots straight together
+    instead of overlapping them. A graph that still assumed an overlap would either
+    fail outright or quietly swallow a shot, and the total length is what shows it.
+    """
+    files = []
+    for index in range(3):
+        image = tmp_path / f"frame-{index}.jpg"
+        Image.new("RGB", (320, 180), (30 + index * 60, 80, 150 - index * 40)).save(image)
+        files.append(str(image))
+    music = tmp_path / "music.wav"
+    sample_rate = 22_050
+    time = np.arange(sample_rate * 3) / sample_rate
+    sf.write(music, (.1 * np.sin(2 * np.pi * 220 * time)).astype(np.float32), sample_rate)
+    shots = [
+        Shot(0, 0, 1, 1, 0, files[0], "image", 0, "测试", .9, "dynamic", "glitch", .8,
+             melody=.7, image_effect="whip_pan"),
+        Shot(1, 1, 2, 1, 1, files[1], "image", 0, "字幕", .9, "dynamic", "film_burn", .7,
+             melody=.7, image_effect="tilt3d_back"),
+        Shot(2, 2, 3, 1, 2, files[2], "image", 0, "成片", .4, "gentle", "none", .6,
+             melody=.5, image_effect="spiral_in"),
+    ]
+    cfg = RenderConfig(width=320, height=180, fps=12, crf=30, preset="ultrafast",
+                       film_grain=0, vignette=False)
+    analysis = AudioAnalysis(
+        duration=3, bpm=100, beats=[0, 1, 2, 3], sections=[0, 3],
+        energy_times=[0], energy_values=[.5], average_energy=.5,
+        brightness=.5, mood="uplifting", mood_scores={"uplifting": 1},
+    )
+    lyrics = [LyricLine(0, 1, "测试"), LyricLine(1, 2, "字幕"), LyricLine(2, 3, "成片")]
+    output = tmp_path / "output.mp4"
+    render(shots, lyrics, music, output, tmp_path / "cache", cfg,
+           create_art_direction(analysis, lyrics, cfg))
+
+    assert output.exists()
+    assert 2.8 <= duration(output) <= 3.2, "the effect transitions shifted the timeline"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
 @pytest.mark.parametrize("effect", sorted(set(_CAMERA_MOVES) | {
     "split_screen", "photo_stack", "double_exposure", "beat_montage",
     "film_bars", "iris", "parallax",
@@ -124,7 +167,7 @@ def test_all_still_image_effects_render(effect: str, tmp_path: Path) -> None:
     assert round(duration(output) * cfg.fps) == round(.5 * cfg.fps)
 
 
-def _camera_move(shot: Shot, cfg: RenderConfig) -> str:
+def _image_filters(shot: Shot, cfg: RenderConfig) -> list[str]:
     art = create_art_direction(
         AudioAnalysis(
             duration=4, bpm=100, beats=[0, 1, 2, 3, 4], sections=[0, 4],
@@ -134,14 +177,20 @@ def _camera_move(shot: Shot, cfg: RenderConfig) -> str:
         [], cfg,
     )
     filters, _ = _image_filter_graph(shot, cfg, art, shot.duration, 1)
-    return next(item for item in filters if "perspective" in item or "zoompan" in item)
+    return filters
+
+
+def _camera_move(shot: Shot, cfg: RenderConfig) -> str:
+    return next(item for item in _image_filters(shot, cfg)
+                if "perspective" in item or "zoompan" in item)
 
 
 def _evaluate_quad(filter_string: str, cfg: RenderConfig, frame: int) -> dict[str, float]:
     """Evaluate the eight crop coordinates the way FFmpeg's eval would.
 
-    The namespace has to carry FFmpeg's own helpers (``pow``, ``cos``, ``PI``), or
-    an eased or breathing move cannot be evaluated at all.
+    The namespace has to carry FFmpeg's own helpers (``pow``, ``cos``, ``sin``,
+    ``PI``), or an eased, breathing, rolling or handheld move cannot be evaluated at
+    all.
     """
     points = {name: expr for name, expr in re.findall(r"([xy][0-3])='([^']*)'", filter_string)}
     assert len(points) == 8, filter_string
@@ -151,11 +200,39 @@ def _evaluate_quad(filter_string: str, cfg: RenderConfig, frame: int) -> dict[st
 
     namespace = {
         "W": cfg.width, "H": cfg.height, "on": frame, "clip": clip,
-        "pow": pow, "cos": math.cos, "sqrt": math.sqrt, "PI": math.pi,
+        "pow": pow, "cos": math.cos, "sin": math.sin, "sqrt": math.sqrt, "PI": math.pi,
     }
     builtins = {"max": max, "min": min, "abs": abs}
     return {name: float(eval(expr, {"__builtins__": builtins}, namespace))
             for name, expr in points.items()}
+
+
+def _corners(quad: dict[str, float]) -> list[tuple[float, float]]:
+    """The quad's four corners in *cycle* order: top-left, top-right, bottom-right, bottom-left.
+
+    The filter names them ``x0..x3`` as top-left, top-right, bottom-left, bottom-right,
+    which is a bow tie when read in index order - so the last two are swapped here.
+    Area and turn direction are only meaningful on a proper cycle.
+    """
+    return [
+        (quad["x0"], quad["y0"]),
+        (quad["x1"], quad["y1"]),
+        (quad["x3"], quad["y3"]),
+        (quad["x2"], quad["y2"]),
+    ]
+
+
+def _quad_area(corners: list[tuple[float, float]]) -> float:
+    """Shoelace area, signed so a self-crossing quad shows up as near zero."""
+    return sum(
+        corners[i][0] * corners[(i + 1) % 4][1] - corners[(i + 1) % 4][0] * corners[i][1]
+        for i in range(4)
+    ) / 2
+
+
+def _turn(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
+    """Cross product at ``b``: positive, negative or zero for left, right or straight."""
+    return (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
 
 
 def _crop_geometry(filter_string: str, cfg: RenderConfig, frames: int) -> dict[str, np.ndarray]:
@@ -177,6 +254,48 @@ def _crop_geometry(filter_string: str, cfg: RenderConfig, frames: int) -> dict[s
         "x": np.array(centres_x), "y": np.array(centres_y),
         "width": np.array(widths), "height": np.array(heights),
     }
+
+
+def test_the_whip_pan_travels_far_enough_to_be_a_whip() -> None:
+    """A "whip" that moves eight pixels is a drift, and a drift needs no smear.
+
+    A pan can only travel ``W - W/zoom``, so the distance available is set by how
+    deeply the shot is cropped - which is why this move crops hard. Both halves
+    matter: the distance is what makes it a throw, and the ``tmix`` drag is what keeps
+    that speed from reading as a jump cut. Sizing it from a shallow crop is the
+    mistake this guards against, and nothing else in the graph would complain.
+    """
+    cfg = RenderConfig(width=640, height=360, fps=30, film_grain=0, vignette=False)
+    shot = Shot(
+        0, 0, 2, 2, 0, "frame.jpg", "image", 0, "", .8, "dynamic", "none", .8,
+        melody=.7, image_effect="whip_pan",
+    )
+    filters = _image_filters(shot, cfg)
+    assert any("tmix" in item for item in filters), "the whip pan lost its drag"
+
+    geometry = _crop_geometry(
+        next(item for item in filters if "perspective" in item), cfg, round(2 * cfg.fps)
+    )
+    travel = float(np.ptp(geometry["x"]))
+    assert travel > cfg.width * .05, f"the whip only travels {travel:.1f}px"
+
+
+def test_a_drag_is_only_asked_for_by_moves_that_need_one() -> None:
+    """``tmix`` costs a frame buffer and softens whatever it touches.
+
+    Only a move that crosses several pixels in a single frame earns it; putting it on
+    a slow push would just make the shot look out of focus.
+    """
+    cfg = RenderConfig(width=640, height=360, fps=30, film_grain=0, vignette=False)
+    dragged = set()
+    for effect in sorted(_CAMERA_MOVES):
+        shot = Shot(
+            0, 0, 2, 2, 0, "frame.jpg", "image", 0, "", .6, "dynamic", "none", .8,
+            melody=.5, image_effect=effect,
+        )
+        if any("tmix" in item for item in _image_filters(shot, cfg)):
+            dragged.add(effect)
+    assert dragged == {"whip_pan"}, f"unexpected drag on {sorted(dragged - {'whip_pan'})}"
 
 
 @pytest.mark.parametrize("effect", sorted(_CAMERA_MOVES))
@@ -201,26 +320,45 @@ def test_every_camera_move_crops_the_full_frame_without_quantising(effect: str) 
     assert "eval=frame" in filter_string
 
     move = _CAMERA_MOVES[effect]
-    # ``amount`` is intensity times motion scale, and both stay well under 1.5.
-    # Every move also carries the renderer's ``_MIN_ZOOM`` lift, so the deepest crop
-    # is one hair tighter than the move's own magnification suggests.
-    deepest = _MIN_ZOOM + max(move.zoom_from, move.zoom_to) * 1.5
     frames = round(3 * cfg.fps)
     geometry = _crop_geometry(filter_string, cfg, frames)
 
     for frame in (1, frames // 2, frames):
         quad = _evaluate_quad(filter_string, cfg, frame)
-        width = quad["x1"] - quad["x0"]
-        height = quad["y2"] - quad["y0"]
-        # A rectangle, not a trapezoid.
-        assert quad["x3"] - quad["x2"] == pytest.approx(width, abs=1e-6)
-        assert quad["y3"] - quad["y1"] == pytest.approx(height, abs=1e-6)
-        # Never wider than the frame, never smaller than the deepest zoom.
-        assert cfg.width / (1 + deepest) - .5 <= width <= cfg.width + 1e-6
-        assert cfg.height / (1 + deepest) - .5 <= height <= cfg.height + 1e-6
-        # Always inside the frame, so nothing is sampled out of bounds.
-        assert -1e-6 <= quad["x0"] and quad["x3"] <= cfg.width + 1e-6
-        assert -1e-6 <= quad["y0"] and quad["y3"] <= cfg.height + 1e-6
+        corners = _corners(quad)
+        # A real quadrilateral, not a bow tie: every turn has to go the same way.
+        area = _quad_area(corners)
+        assert abs(area) > cfg.width * cfg.height * .2, f"{effect} collapses to nothing"
+        turns = [
+            _turn(corners[i], corners[(i + 1) % 4], corners[(i + 2) % 4])
+            for i in range(4)
+        ]
+        assert all(turn > 0 for turn in turns) or all(turn < 0 for turn in turns), (
+            f"{effect} folds over itself"
+        )
+        # Always inside the frame, so nothing is sampled out of bounds. A roll or a
+        # keystone swings the corners away from the crop box, so this is the check
+        # that the travel range was sized from the quad's bounding box and not from
+        # W/zoom.
+        for x, y in corners:
+            assert -1e-6 <= x <= cfg.width + 1e-6, f"{effect} samples outside the frame"
+            assert -1e-6 <= y <= cfg.height + 1e-6, f"{effect} samples outside the frame"
+
+        if move.roll:
+            # Rolling keeps the rectangle, so measure its own edges: the axis-aligned
+            # extents of a turned rectangle say nothing about its shape.
+            width = (math.dist(corners[0], corners[1]) + math.dist(corners[3], corners[2])) / 2
+            height = (math.dist(corners[0], corners[3]) + math.dist(corners[1], corners[2])) / 2
+        else:
+            # Without a roll the quad stays axis-aligned and a keystone is a trapezoid,
+            # so average the opposite edges - that recovers W/zoom and H/zoom exactly.
+            width = ((quad["x1"] - quad["x0"]) + (quad["x3"] - quad["x2"])) / 2
+            height = ((quad["y2"] - quad["y0"]) + (quad["y3"] - quad["y1"])) / 2
+
+        # Never wider than the frame, never so tight that the move stops reading as a
+        # move rather than as a crop.
+        assert cfg.width * .45 <= width <= cfg.width + 1e-6
+        assert cfg.height * .45 <= height <= cfg.height + 1e-6
         # The crop must keep the frame's aspect ratio or the image is distorted.
         assert width / height == pytest.approx(cfg.width / cfg.height, rel=1e-3)
 
@@ -435,17 +573,106 @@ def test_every_transition_in_the_library_actually_composes(tmp_path: Path) -> No
             assert output.exists() and duration(output) > 0, f"{family}: {name}"
 
 
-@pytest.mark.parametrize("family", sorted({*_TRANSITION_LIBRARY, "cut"}))
+@pytest.mark.parametrize("family", sorted({*_TRANSITION_LIBRARY, *_EFFECT_TRANSITIONS, "cut"}))
 def test_transition_families_resolve_within_the_configured_bounds(family: str) -> None:
     cfg = RenderConfig(transition_min_seconds=.16, transition_max_seconds=.55)
     shot, following = _transition_shots(family)
-    name, seconds = _transition_spec(shot, following, _transition_art(), cfg)
+    transition = _transition_spec(shot, following, _transition_art(), cfg)
 
     if family == "cut":
-        assert (name, seconds) == ("cut", 0.0)
+        assert (transition.kind, transition.seconds) == ("cut", 0.0)
         return
-    assert name in _TRANSITION_LIBRARY[family]
-    assert cfg.transition_min_seconds <= seconds <= cfg.transition_max_seconds
+    if family in _EFFECT_TRANSITIONS:
+        # An effect transition carries no footage of its own - it is burned into the
+        # frames each shot already has - so it must never ask for a handle.
+        assert transition.kind == "effect"
+        assert transition.name == family
+        assert transition.handle == 0.0
+    else:
+        assert transition.kind == "xfade"
+        assert transition.name in _TRANSITION_LIBRARY[family]
+    assert cfg.transition_min_seconds <= transition.seconds <= cfg.transition_max_seconds
+
+
+@pytest.mark.parametrize("family", sorted(_EFFECT_TRANSITIONS))
+def test_effect_transitions_burn_into_both_sides_of_the_cut(family: str) -> None:
+    """A flash or a glitch has to live inside the shots, gated to the window.
+
+    Both ends of the cut need the treatment - one side alone reads as a mistake
+    rather than as a transition - and every filter has to be timeline-gated, or the
+    effect would tint the whole shot instead of the moment around the cut.
+    """
+    cfg = RenderConfig(width=640, height=360, fps=30)
+    shot, following = _transition_shots(family)
+    transition = _transition_spec(shot, following, _transition_art(), cfg)
+
+    outgoing = _transition_effect_filters(transition, "out", shot.duration, cfg)
+    incoming = _transition_effect_filters(transition, "in", shot.duration, cfg)
+
+    assert outgoing and incoming, f"{family} only touches one side of the cut"
+    assert any("fade=t=out" in item for item in outgoing)
+    assert any("fade=t=in" in item for item in incoming)
+    for item in (*outgoing, *incoming):
+        assert "enable=" in item or "fade=t=" in item, item
+    # The dip must sit at the end of the outgoing shot, not at its start.
+    assert f"st={shot.duration - transition.seconds:.4f}" in " ".join(outgoing) or "st=" in " ".join(outgoing)
+
+
+def _frame_stats(clip: Path, frame: int, tmp_path: Path) -> tuple[float, float, float]:
+    """Mean luminance, spatial deviation and warmth (red minus blue) of one frame.
+
+    Mean alone is the wrong instrument: sensor noise and a channel split barely move
+    the average, so a glitch would look like it did nothing.
+    """
+    target = tmp_path / f"stat-{frame:04d}.png"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(clip),
+         "-vf", rf"select=eq(n\,{frame})", "-vsync", "0", "-frames:v", "1", str(target)],
+        check=True, capture_output=True,
+    )
+    pixels = np.asarray(Image.open(target).convert("RGB"), dtype=float)
+    grey = pixels.mean(axis=2)
+    return float(grey.mean()), float(grey.std()), float(pixels[:, :, 0].mean() - pixels[:, :, 2].mean())
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+@pytest.mark.parametrize("family", sorted(_EFFECT_TRANSITIONS))
+def test_effect_transitions_actually_reach_the_boundary_frame(family: str, tmp_path: Path) -> None:
+    """The dip has to *arrive* on the frame at the cut, not merely be configured.
+
+    ``fade`` reaches its colour at ``st + d``, so a window that stops at the clip end
+    leaves the last frame only part of the way there - and a flash that peaks at 30%
+    is just a slight brightening. Nothing else in the graph would notice.
+    """
+    image = tmp_path / "flat.jpg"
+    Image.new("RGB", (320, 180), (120, 120, 120)).save(image)
+    cfg = RenderConfig(width=320, height=180, fps=15, crf=30, preset="ultrafast",
+                       film_grain=0, vignette=False)
+    art = _transition_art()
+    outgoing, following = _transition_shots(family)
+    outgoing.file = str(image)
+    transition = _transition_spec(outgoing, following, art, cfg)
+
+    clip = tmp_path / f"{family}.mp4"
+    _render_shot(outgoing, clip, cfg, art, outgoing.duration, 2, outgoing=transition)
+
+    frames = round(duration(clip) * cfg.fps)
+    rest = _frame_stats(clip, frames // 4, tmp_path)
+    at_cut = _frame_stats(clip, frames - 1, tmp_path)
+    assert (
+        abs(at_cut[0] - rest[0]) > 8 or at_cut[1] > rest[1] + 4 or at_cut[2] > rest[2] + 8
+    ), f"{family} leaves the frame at the cut untouched: {rest} -> {at_cut}"
+
+
+def test_a_cut_and_an_xfade_ask_for_different_handles() -> None:
+    """Only an overlap needs extra footage; getting this wrong shifts the timeline."""
+    cfg = RenderConfig()
+    shot, following = _transition_shots("dissolve")
+    dissolve = _transition_spec(shot, following, _transition_art(), cfg)
+    assert dissolve.handle == dissolve.seconds > 0
+
+    cut_shot, cut_following = _transition_shots("cut")
+    assert _transition_spec(cut_shot, cut_following, _transition_art(), cfg).handle == 0.0
 
 
 @pytest.mark.parametrize("tone,expected", [("bright", "fadewhite"), ("dark", "fadeblack")])
@@ -453,8 +680,8 @@ def test_a_dip_takes_its_colour_from_the_tone(tone: str, expected: str) -> None:
     """A dip to white and a dip to black are different editorial statements."""
     cfg = RenderConfig()
     shot, following = _transition_shots("dip")
-    name, _ = _transition_spec(shot, following, _transition_art(tone=tone), cfg)
-    assert name == expected
+    transition = _transition_spec(shot, following, _transition_art(tone=tone), cfg)
+    assert transition.name == expected
 
 
 def test_directional_transitions_follow_the_shots_own_drift() -> None:
@@ -462,7 +689,7 @@ def test_directional_transitions_follow_the_shots_own_drift() -> None:
     cfg = RenderConfig()
     art = _transition_art()
     names = {
-        _transition_spec(*_transition_shots("wipe", media_id=media_id), art, cfg)[0]
+        _transition_spec(*_transition_shots("wipe", media_id=media_id), art, cfg).name
         for media_id in range(4)
     }
     assert names == {"wipeleft", "wiperight"}
