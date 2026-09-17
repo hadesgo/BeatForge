@@ -41,6 +41,21 @@ def run_command(
     console.print(f"[bold green]完成[/bold green] {result}")
 
 
+def _supports_native_asr(version: str | None) -> bool:
+    """Qwen3-ASR needs ``transformers>=5.13``.
+
+    ``importlib.metadata.version`` returns ``None`` - rather than raising - when a
+    dist-info directory exists but its METADATA was never written, which is exactly what
+    an interrupted ``uv sync`` leaves behind. A pre-release like ``5.16.1rc1`` also does
+    not parse as a plain integer pair. Neither is worth crashing a diagnostic command
+    over: both simply mean "not ready", which is the answer the command exists to give.
+    """
+    try:
+        return tuple(int(part) for part in str(version).split(".")[:2]) >= (5, 13)
+    except (TypeError, ValueError):
+        return False
+
+
 @app.command()
 def doctor() -> None:
     """检查 FFmpeg、PyTorch、CUDA 和 AI 依赖。"""
@@ -64,6 +79,11 @@ def doctor() -> None:
             table.add_row("12GB 显存", "OK" if enough_vram else "不足", f"检测到 {vram:.1f} GB")
     except ImportError:
         table.add_row("AI 依赖", "缺失", "uv sync --extra ai --extra ai-cpu")
+    except (AttributeError, RuntimeError, OSError) as exc:
+        # torch is importable but unusable: an interrupted install leaves a namespace
+        # package behind, and a driver can refuse to initialise. That is precisely the
+        # state this command exists to report, so it must not be the state that breaks it.
+        table.add_row("PyTorch", "损坏", f"{type(exc).__name__}: {exc} · 重新 uv sync")
     try:
         import torchaudio
         table.add_row("TorchAudio", "OK", torchaudio.__version__)
@@ -74,10 +94,17 @@ def doctor() -> None:
         )
     try:
         transformers_version = importlib.metadata.version("transformers")
-        native_asr = tuple(map(int, transformers_version.split(".")[:2])) >= (5, 13)
-    except (importlib.metadata.PackageNotFoundError, ValueError):
-        transformers_version, native_asr = "未安装", False
-    table.add_row("Qwen3-ASR Native", "OK" if native_asr else "未就绪", f"Transformers {transformers_version}")
+    except importlib.metadata.PackageNotFoundError:
+        transformers_version = None
+    table.add_row(
+        "Qwen3-ASR Native", "OK" if _supports_native_asr(transformers_version) else "未就绪",
+        f"Transformers {transformers_version or '未安装'}",
+    )
+    separation = importlib.util.find_spec("audio_separator")
+    table.add_row(
+        "人声分离", "OK" if separation else "未安装",
+        "separation extra（MelBand-RoFormer，转录前分离人声）",
+    )
     sentence_transformers = importlib.util.find_spec("sentence_transformers")
     table.add_row("WeMM / 视觉精排", "OK" if sentence_transformers else "未安装", "sentence-transformers>=5.7")
     table.add_row(

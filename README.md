@@ -5,12 +5,13 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 ## AI 流程
 
 ```text
-音乐 ── Qwen3-ASR + ForcedAligner ── 逐字时间轴 ──┐
+音乐 ── MelBand-RoFormer 人声分离 ── Qwen3-ASR + ForcedAligner ── 逐字时间轴 ──┐
   └── All-In-One + CLAP ── 旋律/节拍/章节/意境 ──┼── Spark-X2.5 AI 导演 ── 确定性规划器 ── FFmpeg
 图片/视频 ── WeMM-Embedding + Qwen3-VL Reranker ─────┘        │
                                                       导演方案 JSON
 ```
 
+- `vocals_mel_band_roformer.ckpt`：MelBand-RoFormer 人声分离，只作用于歌词识别，见下文；
 - `Qwen/Qwen3-ASR-1.7B-hf`：Transformers 原生歌曲识别模型；
 - `Qwen/Qwen3-ForcedAligner-0.6B-hf`：Transformers 原生字符/单词级演唱时间对齐；
 - `laion/clap-htsat-fused`：音乐情绪、质感和强度的零样本分类；
@@ -49,7 +50,33 @@ uv sync --extra ai --extra ai-cpu --extra qwen --extra music-ai
 uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 ```
 
+人声分离是独立的可选 extra：`uv sync --extra ai --extra ai-cpu --extra separation`（CUDA 机器把 `ai-cpu` 换成 `ai-cuda`）。它只依赖 PyTorch——RoFormer 检查点走 torch 而不是 ONNX，所以不需要 `onnxruntime`。
+
 `ai-cpu` 和 `ai-cuda` 两个 profile 互斥，uv 会阻止混装。`ai-cuda` 从 CUDA 13.0 源安装 `torch 2.14.0+cu130`、`torchvision 0.29.0+cu130`、`torchaudio 2.11.0+cu130` 和 `torchcodec 0.16.0+cu130`。以上包均提供 Python 3.13 轮子。不要再单独覆盖其中任何一个包。模型权重不会在 `uv sync` 时下载。
+
+### 转录前的人声分离
+
+ASR 模型被要求从**整轨混音**里听人声，等于要求它隔着鼓组听人说话。词确实在那里，但它要和所有东西争抢模型的注意力，而失败方式不是听不出来——是**听出一份自信的错误歌词**，恰好在编曲最密的地方。所以先分离再转录：
+
+```
+音乐 ── MelBand-RoFormer ── 人声轨 ── Qwen3-ASR ── 歌词
+                    └─────── 伴奏轨（丢弃）
+```
+
+- **只给人声轨做转录，但强制对齐也用同一条人声轨**。对齐问的是"这个词是**什么时候**唱的"，而这个问题在没有军鼓压着的时候好回答得多；
+- **拍点、能量、段落分析仍然跑整轨混音**。那些要的就是鼓，人声轨里没有鼓；
+- 结果按「源文件 + 模型」缓存，重渲染不会重复付分离的代价。**换分离模型会让缓存失效**——两个检查点给出两条不同的人声轨，而混用它们在下游完全看不出来，只会表现成歌词略有不同；
+- 分离是可选依赖，**装不上时会退回整轨并明确说明**。降级本身没问题，悄悄降级才是问题：整轨转录出来的是另一份、更差的歌词，而下游没有任何环节能分辨。
+
+分离用的检查点由 `separation_model` 指定，默认 `vocals_mel_band_roformer.ckpt`。`audio-separator` 自带一份各模型的实测基准（`models-scores.json`），按人声 SDR 排下来：
+
+| 平均 SDR | 最高 SDR | 检查点 |
+| --- | --- | --- |
+| 11.53 | 15.57 | `mel_band_roformer_kim_ft_unwa.ckpt` |
+| **11.49** | **15.63** | **`vocals_mel_band_roformer.ckpt`（默认）** |
+| 10.02 | 16.13 | `model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt` |
+
+默认值与前两名在噪声范围内持平，取的是最通用、被引用最多的那一个。想换更强的（例如针对特定语种或编曲微调过的 RoFormer）只改这一行，缓存会自动按新模型重建。用卡拉 OK 模型（`mel_band_roformer_karaoke_*.ckpt`）也能分离人声，但它们是为去人声设计的，主轨是伴奏，平均 SDR 明显更低。
 
 ### 模型兼容性与安全
 
@@ -421,6 +448,8 @@ CPU兼容配置（用于功能验证，完整推理会很慢）：
 device = "auto"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
+separate_vocals = true
+separation_model = "vocals_mel_band_roformer.ckpt"
 vision_backend = "wemm-embedding"
 vision_model = "tencent/WeMM-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
@@ -441,6 +470,8 @@ director_gpu_memory_gb = 9.0
 device = "cuda"
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
+separate_vocals = true
+separation_model = "vocals_mel_band_roformer.ckpt"
 vision_backend = "wemm-embedding"
 vision_model = "tencent/WeMM-Embedding-2B"
 vision_reranker_model = "Qwen/Qwen3-VL-Reranker-2B"
@@ -689,6 +720,7 @@ uv run beatforge run demo/project.toml --plan-only
 beatforge/audio.py                    节拍、章节与能量分析
 beatforge/director.py                 导演方案到字幕与视觉艺术指导
 beatforge/models/ai_director.py       本地 Spark-X2.5 导演协议与校验
+beatforge/models/separator.py         MelBand-RoFormer 人声分离（转录前置）
 beatforge/models/transcriber.py       Qwen3-ASR 与强制对齐时间轴
 beatforge/models/audio_semantics.py   CLAP 音乐语义
 beatforge/models/music_structure.py   All-In-One/Beat This 结构分析

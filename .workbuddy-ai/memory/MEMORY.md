@@ -147,6 +147,22 @@ BatchEncoding / 张量 / 列表 / 嵌套列表四种形态（测试在 `tests/te
 - `\jitter` 是 libass 扩展；`shake` 同时叠了一层 `\frz` 摇摆作为保底，这样即使某个构建忽略
   `\jitter`，这一句仍然在动。
 
+## 转录前的人声分离（`beatforge/models/separator.py`）
+- **作用域严格限定在 ASR**：`pipeline.speech_source()` 是唯一入口，只给人声轨做转录**和强制对齐**；
+  拍点/能量/段落分析仍跑整轨混音（那些要的就是鼓，人声轨里没有鼓）。
+- **模型名必须进缓存 key**（`cache/<stem>-<digest>-vocals.wav`）：两个检查点给出两条不同的人声轨，
+  混用在下游完全看不出来，只会表现成歌词略有不同。
+- **选轨按名字匹配 `vocals`，不能按列表位置**。`Separator.separate()` 返回的是**完整路径**
+  而不是裸文件名（文档措辞是 "Fully written output paths"），解析时要显式判断 `is_absolute()`。
+- 装不上时**退回整轨并明确说明**；`plan.json` 的 `models.separation` 记录是否做了分离。
+  降级本身没问题，悄悄降级才是问题——整轨转录是另一份更差的歌词，下游分辨不出来。
+- 选模型的依据是包自带的 `audio-separator/models-scores.json`（115 个模型的实测 SDR），
+  不是猜。默认 `vocals_mel_band_roformer.ckpt`（均 SDR 11.49，与最高的 11.53 持平）。
+  卡拉 OK 模型主轨是伴奏，不要拿来当人声分离用。
+- `release_gpu()` 只 `except ImportError` 是不够的：torch 存在但不可用（半装完、没有 `cuda` 属性、
+  驱动拒绝初始化）会抛 `AttributeError` 把调用它的阶段带崩。它是**尽力而为的清理**，
+  已放宽到 `(ImportError, AttributeError, RuntimeError, OSError)`。
+
 ## 剪辑风格（`beatforge/editing.py`）
 - **剪辑不是 look**。调色/字体/颗粒属于艺术指导（`director.py`）；这一层只管**关于时间的决定**：
   镜长、切点网格、转场音量、景别对比、运镜强度。加新的剪辑决策放这里，不要塞进 config 散键。

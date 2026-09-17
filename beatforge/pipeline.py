@@ -21,6 +21,33 @@ from beatforge.runtime import (
 )
 
 
+def speech_source(project: ProjectConfig, device: str) -> tuple[Path, str]:
+    """The audio the recogniser should listen to, and a label for the log.
+
+    An ASR model asked to transcribe a full mix is hearing a voice through a drum kit,
+    and its failure mode is not silence - it is a confident transcript with the wrong
+    words where the arrangement is dense. Separating first hands it the stem it is good
+    at, and the same stem makes forced alignment easier for the same reason.
+
+    Separation is a heavy optional dependency, so a missing extra falls back to the mix
+    instead of failing the run. It says so loudly, because a transcript taken from the
+    mix is a different and worse transcript and nothing downstream can tell.
+    """
+    if not project.ai.separate_vocals:
+        return project.music, "原始混音（未做人声分离）"
+    from beatforge.models.separator import SeparationUnavailable, separate_vocals
+
+    try:
+        stem = separate_vocals(
+            project.music, project.cache_dir,
+            model=project.ai.separation_model,
+            device=device, offline=project.ai.offline,
+        )
+    except SeparationUnavailable as exc:
+        return project.music, f"原始混音（人声分离不可用：{exc}）"
+    return stem, f"人声轨 {stem.name}"
+
+
 def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool = False) -> Path:
     require_binaries()
     project.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -43,8 +70,10 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         lyrics = read_lrc(project.lyrics, total_duration)
     elif use_ai:
         from beatforge.models.transcriber import transcribe
+        source, source_label = speech_source(project, device)
+        print(f"    {source_label}")
         lyrics = transcribe(
-            project.music,
+            source,
             qwen_model=model_path(project.ai.qwen_asr_model),
             qwen_aligner=model_path(project.ai.qwen_aligner_model),
             device=device, offline=project.ai.offline,
@@ -143,6 +172,13 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         "models": {
             "asr": project.ai.qwen_asr_model if use_ai else None,
             "aligner": project.ai.qwen_aligner_model if use_ai else None,
+            # Recorded so a plan can be traced back to the audio the words came from: a
+            # transcript off the mix and one off the vocal stem are different edits.
+            "separation": (
+                project.ai.separation_model
+                if use_ai and project.ai.separate_vocals and not (project.lyrics and project.lyrics.exists())
+                else None
+            ),
             "audio": project.ai.clap_model if use_ai else None,
             "vision": project.ai.vision_model if similarities is not None else None,
             "vision_reranker": project.ai.vision_reranker_model if similarities is not None else None,

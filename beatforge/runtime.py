@@ -91,5 +91,9 @@ def release_gpu(*objects: object) -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
-    except ImportError:
+    except (ImportError, AttributeError, RuntimeError, OSError):
+        # Best-effort cleanup, and it must never be the thing that fails a stage. A
+        # torch that is present but unusable - a half-finished install, a build with no
+        # ``cuda`` attribute, a driver that refuses to initialise - is exactly the state
+        # this is most likely to run in, and it is not worth reporting.
         pass

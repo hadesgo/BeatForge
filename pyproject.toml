@@ -30,6 +30,9 @@ qwen = [
   "sentence-transformers[image]>=5.7",
 ]
 music-ai = ["all-in-one-infer>=3.0", "beat-this"]
+# MelBand-RoFormer vocal separation ahead of ASR. PyTorch only - the RoFormer
+# checkpoints run through torch, not ONNX, so the onnxruntime extras are not needed.
+separation = ["audio-separator>=0.47"]
 
 [dependency-groups]
 dev = ["pytest>=8.3"]

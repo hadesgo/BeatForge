@@ -86,6 +86,11 @@ class AIConfig(BaseModel):
     offline: bool = False
     qwen_asr_model: str = "Qwen/Qwen3-ASR-1.7B-hf"
     qwen_aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
+    #: Separate the vocal before transcribing. The recogniser is being asked to hear a
+    #: voice through a drum kit otherwise, and its failure mode is a confident
+    #: transcript with the wrong words rather than an empty one.
+    separate_vocals: bool = True
+    separation_model: str = "vocals_mel_band_roformer.ckpt"
     clap_model: str = "laion/clap-htsat-fused"
     music_structure_backend: Literal["librosa", "beat-this", "allin1"] = "allin1"
     vision_backend: Literal["wemm-embedding", "qwen3-vl-embedding", "siglip2"] = (
@@ -156,6 +161,8 @@ device = "auto"
 offline = false
 qwen_asr_model = "Qwen/Qwen3-ASR-1.7B-hf"
 qwen_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
+separate_vocals = true # 转录前先做 MelBand-RoFormer 人声分离；需要 uv sync --extra ai --extra separation
+separation_model = "vocals_mel_band_roformer.ckpt" # 换更强的分离模型只改这一行
 clap_model = "laion/clap-htsat-fused"
 music_structure_backend = "allin1" # 需要 music-ai extra；也可用 beat-this 或 librosa
 vision_backend = "wemm-embedding"
