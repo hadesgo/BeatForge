@@ -6,6 +6,7 @@ from pathlib import Path
 from beatforge.audio import analyze_music
 from beatforge.config import ProjectConfig
 from beatforge.director import create_art_direction
+from beatforge.editing import resolve_style
 from beatforge.lyrics import read_lrc, write_srt
 from beatforge.media import discover_media
 from beatforge.planner import create_plan
@@ -108,6 +109,18 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
             print(f"    本地导演不可用，使用规则导演：{type(exc).__name__}: {exc}")
         finally:
             release_gpu()
+    style = resolve_style(
+        project.render.edit_style, analysis.mood,
+        average_energy=analysis.average_energy,
+        rhythmic_density=analysis.rhythmic_density,
+    )
+    if style is not None:
+        print(f"    剪辑风格：{style.label} · {style.summary}")
+    # A style owns the settings it has an opinion about; the render config keeps the
+    # ones it does not, and everything the style does not name is passed through as-is.
+    render_config = project.render if style is None else project.render.model_copy(update={
+        "subtitle_layout": style.subtitle_layout,
+    })
     shots = create_plan(
         analysis, lyrics, assets, similarities,
         min_shot=project.render.min_shot_seconds,
@@ -121,8 +134,9 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         max_composite_images=project.render.max_composite_images,
         avoid_asset_repeats=project.render.avoid_asset_repeats,
         transition_density=project.render.transition_density,
+        style=style,
     )
-    art = create_art_direction(analysis, lyrics, project.render, treatment)
+    art = create_art_direction(analysis, lyrics, project.render, treatment, style)
     plan_file = project.cache_dir / "plan.json"
     plan = {
         "version": 3,
@@ -148,5 +162,5 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         return plan_file
 
     print("5/5 FFmpeg 成片渲染")
-    render(shots, lyrics, project.music, project.output, project.cache_dir, project.render, art)
+    render(shots, lyrics, project.music, project.output, project.cache_dir, render_config, art)
     return project.output

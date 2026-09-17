@@ -4,7 +4,9 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from beatforge.editing import style_choices
 
 from beatforge.lyrics import SUBTITLE_EFFECTS
 
@@ -39,7 +41,16 @@ class RenderConfig(BaseModel):
     )
     subtitle_size: int = 46
     subtitle_effect: SubtitleEffectChoice = "auto"
+
+    @field_validator("edit_style")
+    @classmethod
+    def _known_style(cls, value: str) -> str:
+        if value not in style_choices():
+            raise ValueError(f"未知剪辑风格 {value!r}；可选：{'/'.join(style_choices())}")
+        return value
     subtitle_margin: int = 72
+    #: Which editing craft to apply. See beatforge/editing.py for what each one means.
+    edit_style: str = "auto"
     subtitle_layout: Literal["band", "free"] = "free"
     subtitle_fill: Literal["solid", "knockout"] = "solid"
     subtitle_outline: float = Field(default=1.1, ge=0, le=6)
@@ -178,6 +189,7 @@ max_shot_seconds = 5.5
 subtitle_font = "auto"
 subtitle_fonts_dir = "fonts" # 可放入自定义 ttf/otf；不存在也不影响系统字体
 subtitle_size = 46
+edit_style = "auto" # auto 按歌曲情绪自动选；也可固定为某个风格名；manual = 用下面的手工值
 subtitle_effect = "auto" # 也可固定为某个特效名；可选值见 README「字幕特效」
 subtitle_margin = 72
 subtitle_layout = "free" # free = 分句自由排版并避开主体；band = 传统的底部居中一行

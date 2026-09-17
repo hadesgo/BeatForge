@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from beatforge.audio import AudioAnalysis
 from beatforge.config import RenderConfig
+from beatforge.editing import EditStyle
 from beatforge.fonts import resolve_subtitle_font
 from beatforge.lyrics import LyricLine
 
@@ -50,6 +51,7 @@ def create_art_direction(
     lyrics: list[LyricLine],
     config: RenderConfig,
     treatment: DirectorTreatment | None = None,
+    style: EditStyle | None = None,
 ) -> ArtDirection:
     mood = analysis.mood if analysis.mood in PROFILES else "cinematic"
     profile = treatment.grade_profile if treatment else mood
@@ -107,7 +109,13 @@ def create_art_direction(
         motifs=treatment.motif_asset_ids if treatment else [],
         mood=mood, font=font, highlight_color=config.subtitle_highlight_color,
         base_subtitle_effect=base_effect, line_effects=line_effects,
-        grade_filter=grade, camera_intensity=round(camera * (.85 + analysis.melodic_motion * .3), 3),
+        grade_filter=grade,
+        # The style scales the mood's camera energy: a documentary and an impact edit
+        # can share a mood and still want very different amounts of movement.
+        camera_intensity=round(
+            camera * (.85 + analysis.melodic_motion * .3) * (style.camera_intensity if style else 1.0),
+            3,
+        ),
         transition_tone=treatment.transition_tone if treatment and treatment.transition_tone != "neutral" else tone,
         grain=config.film_grain, vignette=config.vignette,
     )

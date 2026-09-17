@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from beatforge.audio import AudioAnalysis
+from beatforge.editing import EditStyle
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
 
@@ -66,25 +67,40 @@ def create_plan(
     assets: list[MediaAsset],
     similarities: np.ndarray | None,
     *,
-    min_shot: float,
-    max_shot: float,
+    min_shot: float | None = None,
+    max_shot: float | None = None,
     treatment: DirectorTreatment | None = None,
     source_starts: np.ndarray | None = None,
     target_width: int = 1920,
     target_height: int = 1080,
     image_composites: bool = True,
-    image_composite_ratio: float = .24,
+    image_composite_ratio: float | None = None,
     max_composite_images: int = 3,
     avoid_asset_repeats: bool = True,
-    transition_density: float = .35,
+    transition_density: float | None = None,
+    style: EditStyle | None = None,
 ) -> list[Shot]:
     """Lay out shots on the musical grid and pick media for each of them.
 
     Reuse policy: an asset that is already on screen is only chosen again when the
     remaining untouched assets can no longer cover the remaining shots. While the
     supply lasts, every shot gets something the audience has not seen yet.
+
+    A style owns the settings it has an opinion about - shot length, transition
+    density, composite ratio - because a style and a hand-set value are two answers to
+    the same question. Everything it does not name is taken from the arguments.
     """
-    boundaries = _boundaries(analysis, lyrics, min_shot, max_shot, treatment)
+    if style is not None:
+        min_shot, max_shot = style.shot_min, style.shot_max
+        transition_density = style.transition_density
+        image_composite_ratio = style.composite_ratio
+    if min_shot is None or max_shot is None:
+        raise ValueError("需要给出 min_shot/max_shot，或指定一个 edit_style")
+    transition_density = .35 if transition_density is None else transition_density
+    image_composite_ratio = .24 if image_composite_ratio is None else image_composite_ratio
+    boundaries = _boundaries(analysis, lyrics, min_shot, max_shot, treatment, style)
+    # How hard this edit insists on a shot-size change across a cut.
+    contrast = style.shot_size_contrast if style else .09
     lyric_rows = {id(line): i for i, line in enumerate(lyrics)}
     usage: dict[int, int] = {}
     last_seen: dict[int, int] = {}
@@ -130,7 +146,7 @@ def create_plan(
             repeat = _reuse_penalty(usage.get(asset.id, 0), last_seen.get(asset.id), index)
             quality = asset.quality_score * .16
             continuity = _color_similarity(previous, asset) * (.08 if section != "chorus" else .03)
-            shot_variety = -.09 if previous and previous.shot_size != "unknown" and previous.shot_size == asset.shot_size else 0
+            shot_variety = -contrast if previous and previous.shot_size != "unknown" and previous.shot_size == asset.shot_size else 0
             section_fit = .10 if section == "chorus" and asset.kind == "video" else .06 if section in {"intro", "outro"} and asset.kind == "image" else 0
             motif = .12 if section == "chorus" and asset.id in chorus_motifs else 0
             director_score = _director_asset_score(asset, direction, treatment)
@@ -228,7 +244,10 @@ def create_plan(
             image_effect=image_effect,
             layers=layers,
         ))
-    _assign_transitions(shots, mood=analysis.mood, density=transition_density)
+    _assign_transitions(
+        shots, mood=analysis.mood, density=transition_density,
+        flavour=style.transition_flavour if style else "balanced",
+    )
     return shots
 
 
@@ -359,9 +378,20 @@ def _boundaries(
     minimum: float,
     maximum: float,
     treatment: DirectorTreatment | None = None,
+    style: EditStyle | None = None,
 ) -> list[float]:
-    # Lyrics drive semantic shot choice, but must not force a cut on every line.
-    # Structural boundaries and musical beat grids are the editing clock.
+    """Lay the cut points on the musical grid.
+
+    Lyrics drive semantic shot choice, but must not force a cut on every line - unless
+    the style says they should. Which grid a cut may land on is the most audible
+    decision an editor makes: every beat reads as the cut playing percussion, bar lines
+    read as phrase punctuation, and lyric starts read as the words carrying the edit.
+    """
+    tempo = style.tempo if style else 3.8
+    gain = style.energy_gain if style else 1.5
+    speedup = style.section_speedup if style else 0.0
+    alignment = style.cut_alignment if style else "downbeat"
+
     anchors = sorted(set([0.0, analysis.duration, *analysis.sections]))
     output = [0.0]
     for target in anchors[1:]:
@@ -372,11 +402,14 @@ def _boundaries(
             direction = treatment.section(section_index) if treatment else None
             if direction:
                 section_scale *= 1.25 - direction.cut_intensity * .65
-            ideal = cursor + np.clip((3.8 - analysis.energy_at(cursor) * 1.5) * section_scale, minimum, maximum)
-            grid = analysis.downbeats or analysis.beats
-            candidates = [beat for beat in grid if minimum <= beat - cursor <= maximum and beat < target - minimum / 2]
-            if not candidates and grid is analysis.downbeats:
-                candidates = [beat for beat in analysis.beats if minimum <= beat - cursor <= maximum and beat < target - minimum / 2]
+            # Tighten toward the end of a section. An editor accelerates into the drop;
+            # the reverse - shots getting longer as the section builds - reads as an
+            # edit that has run out of ideas right where it should be peaking.
+            section_scale *= 1 - speedup * _section_progress(analysis, section_index, cursor)
+            ideal = cursor + np.clip((tempo - analysis.energy_at(cursor) * gain) * section_scale, minimum, maximum)
+            candidates = _cut_candidates(
+                analysis, lyrics, cursor, minimum, maximum, target, alignment,
+            )
             cut = min(candidates, key=lambda beat: abs(beat - ideal)) if candidates else float(ideal)
             if cut <= cursor + 0.1:
                 break
@@ -387,6 +420,72 @@ def _boundaries(
     if output[-1] != analysis.duration:
         output.append(analysis.duration)
     return sorted(set(output))
+
+
+def _cut_candidates(
+    analysis: AudioAnalysis, lyrics: list[LyricLine], cursor: float,
+    minimum: float, maximum: float, target: float, alignment: str,
+) -> list[float]:
+    """Every position this style is willing to put a cut, inside the allowed window.
+
+    Each alignment carries a finer fallback. A coarse grid can leave a window with no
+    candidate at all - a four-bar phrase grid especially - and falling through to the
+    next grid down keeps the cut musical instead of dropping it on an arbitrary frame.
+    """
+    primary, fallback = _alignment_grids(analysis, lyrics, alignment, maximum)
+    return (
+        _within_window(primary, cursor, minimum, maximum, target)
+        or _within_window(fallback, cursor, minimum, maximum, target)
+    )
+
+
+def _alignment_grids(
+    analysis: AudioAnalysis, lyrics: list[LyricLine], alignment: str, maximum: float,
+) -> tuple[list[float], list[float]]:
+    beats = list(analysis.beats or analysis.downbeats)
+    downbeats = list(analysis.downbeats or analysis.beats)
+    if alignment == "lyric":
+        return sorted({line.start for line in lyrics}), downbeats
+    if alignment == "phrase":
+        return _phrase_grid(downbeats, maximum), downbeats
+    if alignment == "beat":
+        return beats, downbeats
+    return downbeats, beats
+
+
+def _phrase_grid(downbeats: list[float], maximum: float) -> list[float]:
+    """Cut on musical phrases: the smallest whole number of bars that fits the window.
+
+    A fixed four-bar phrase is the textbook answer and the wrong one here. At 120 bpm a
+    bar is two seconds, so a four-bar phrase is eight, and a style whose shots top out
+    at six would never find a single candidate - it would silently fall back to cutting
+    on bar lines and the alignment would be decoration. Sizing the phrase to the style's
+    own window is what makes the promise keepable across tempos.
+    """
+    if len(downbeats) < 2:
+        return downbeats
+    bar = float(np.median(np.diff(downbeats)))
+    stride = max(1, min(4, int(maximum / bar))) if bar > 0 else 1
+    return downbeats[::stride]
+
+
+def _within_window(
+    grid: list[float], cursor: float, minimum: float, maximum: float, target: float,
+) -> list[float]:
+    return [
+        beat for beat in grid
+        if minimum <= beat - cursor <= maximum and beat < target - minimum / 2
+    ]
+
+
+def _section_progress(analysis: AudioAnalysis, section_index: int, time: float) -> float:
+    """How far into its section a moment sits, 0..1."""
+    starts = analysis.sections or [0.0, analysis.duration]
+    index = max(0, min(section_index, len(starts) - 1))
+    begin = starts[index]
+    finish = starts[index + 1] if index + 1 < len(starts) else analysis.duration
+    return float(np.clip((time - begin) / max(finish - begin, .01), 0, 1))
+
 
 
 def _tag_score(line: LyricLine | None, asset: MediaAsset) -> float:
@@ -498,7 +597,39 @@ _TRANSITION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
 }
 
 
-def _assign_transitions(shots: list[Shot], *, mood: str = "", density: float = .35) -> None:
+# Families an edit that does not want to shout will not use. A cut still has to go
+# somewhere, so each is swapped for something in the same place in the sentence but
+# spoken quietly - and rotated, so the substitution does not collapse to one name.
+_QUIET_SWAPS: dict[str, tuple[str, ...]] = {
+    "flash": ("dip", "blur", "dissolve"),
+    "glitch": ("dip", "blur", "dissolve"),
+    "film_burn": ("dip", "blur"),
+    "light_leak": ("dip", "soft"),
+    "zoom": ("blur", "dissolve", "circle"),
+    "pixel": ("blur", "soft"),
+    "squeeze": ("soft", "smooth"),
+    "slice": ("soft", "smooth", "blur"),
+    "radial": ("circle", "soft"),
+    "wind": ("soft", "smooth"),
+    "corner": ("smooth", "soft"),
+    "mask": ("circle", "soft"),
+    "open": ("circle", "soft"),
+    "close": ("circle", "soft"),
+}
+
+# Inside a section, the pool a visible cut draws from. Same musical moment, three
+# different volumes: a quiet edit dissolves, a loud one is part of the percussion.
+_INSIDE_POOLS: dict[str, tuple[str, ...]] = {
+    "subtle": ("blur", "soft", "smooth", "mask", "reveal", "circle", "wipe", "slide"),
+    "balanced": ("wipe", "slide", "diag", "pixel", "squeeze", "corner", "wind", "glitch"),
+    "impact": ("glitch", "flash", "pixel", "squeeze", "slice", "zoom", "wind", "corner"),
+}
+
+
+def _assign_transitions(
+    shots: list[Shot], *, mood: str = "", density: float = .35,
+    flavour: str = "balanced",
+) -> None:
     """Pick a transition family per cut, then keep it from repeating itself.
 
     Hard cuts stay the default. A visible transition is punctuation, and
@@ -510,6 +641,7 @@ def _assign_transitions(shots: list[Shot], *, mood: str = "", density: float = .
     for index, (shot, following) in enumerate(zip(shots, shots[1:])):
         family = _transition_family(
             shot, following, index=index, visible=visible, mood=mood, density=density,
+            flavour=flavour,
         )
         shot.transition = family
         if family not in _SUBTLE_TRANSITIONS and family not in {"cut", "none", ""}:
@@ -521,6 +653,7 @@ def _assign_transitions(shots: list[Shot], *, mood: str = "", density: float = .
 
 def _transition_family(
     shot: Shot, following: Shot, *, index: int, visible: int, mood: str, density: float,
+    flavour: str = "balanced",
 ) -> str:
     """Name the transition family the edit is asking for at this cut.
 
@@ -541,34 +674,64 @@ def _transition_family(
     restless = mood in {"energetic", "dark"} or tone == "bright"
 
     if shot.section_index != following.section_index:
-        # Structural punctuation: the strongest move the music can justify.
-        if following.energy > .78:
-            # A cut this loud wants a flash or a glitch, not a blend.
-            return ("flash", "glitch", "light_leak")[visible % 3]
-        if following.section == "chorus":
-            return ("radial", "wind", "mask")[visible % 3] if restless else ("zoom", "mask", "smooth")[visible % 3]
-        if following.section in {"intro", "outro"} or shot.section == "chorus":
-            return "dip"
-        if dreamy:
-            return ("circle", "soft", "open")[visible % 3]
-        if restless:
-            return ("slice", "corner", "close")[visible % 3]
-        return "dissolve"
+        # Structural punctuation: the strongest move the music can justify. A seam is
+        # always punctuated, which is why it sits above the density gate - the gate is
+        # about how many *ordinary* cuts get to be visible, not about the seams.
+        return _quieten(_structural_family(shot, following, visible, dreamy, restless), flavour, visible)
 
-    if "impact" in {shot.edit_intent, following.edit_intent}:
-        return ("zoom", "film_burn", "flash", "glitch")[visible % 4]
-    if "breathe" in {shot.edit_intent, following.edit_intent}:
-        return ("blur", "soft")[visible % 2] if dreamy else "dissolve"
-
-    # Inside a section, spend a bounded share of the cut points on visible moves.
+    # Inside a section, spend a bounded share of the cut points on visible moves. This
+    # has to come before the intent branches: a breathe or an impact cut is still a cut
+    # inside a section, and a low density has to be able to silence it. Letting those
+    # branches answer first made ``transition_density`` almost meaningless - a
+    # documentary edit asking for 0.10 still got a visible transition on most cuts.
     if ((index * 29 + 11) % 100) / 100 >= density:
         return "cut"
-    energy = max(shot.energy, following.energy)
-    if energy > .70:
-        return ("wipe", "slide", "diag", "pixel", "squeeze", "corner", "wind", "glitch")[visible % 8]
-    if energy < .32:
-        return ("blur", "soft", "dissolve")[visible % 3] if dreamy else ("dissolve", "soft")[visible % 2]
-    return ("wipe", "reveal", "dissolve", "smooth", "mask")[visible % 5]
+
+    if "impact" in {shot.edit_intent, following.edit_intent}:
+        family = ("zoom", "film_burn", "flash", "glitch")[visible % 4]
+    elif "breathe" in {shot.edit_intent, following.edit_intent}:
+        family = ("blur", "soft")[visible % 2] if dreamy else "dissolve"
+    else:
+        energy = max(shot.energy, following.energy)
+        if energy > .70:
+            pool = _INSIDE_POOLS.get(flavour, _INSIDE_POOLS["balanced"])
+            family = pool[visible % len(pool)]
+        elif energy < .32:
+            family = ("blur", "soft", "dissolve")[visible % 3] if dreamy else ("dissolve", "soft")[visible % 2]
+        else:
+            family = ("wipe", "reveal", "dissolve", "smooth", "mask")[visible % 5]
+    return _quieten(family, flavour, visible)
+
+
+def _structural_family(
+    shot: Shot, following: Shot, visible: int, dreamy: bool, restless: bool,
+) -> str:
+    """The family a seam between two sections earns."""
+    if following.energy > .78:
+        # A cut this loud wants a flash or a glitch, not a blend.
+        return ("flash", "glitch", "light_leak")[visible % 3]
+    if following.section == "chorus":
+        return ("radial", "wind", "mask")[visible % 3] if restless else ("zoom", "mask", "smooth")[visible % 3]
+    if following.section in {"intro", "outro"} or shot.section == "chorus":
+        return "dip"
+    if dreamy:
+        return ("circle", "soft", "open")[visible % 3]
+    if restless:
+        return ("slice", "corner", "close")[visible % 3]
+    return "dissolve"
+
+
+def _quieten(family: str, flavour: str, visible: int) -> str:
+    """Tone a family down when the style has asked for restraint.
+
+    An edit that never raises its voice still has to punctuate; it just does it with a
+    dip or a blur instead of a flash. The swap is rotated so the quiet alternative does
+    not become its own tic.
+    """
+    if flavour != "subtle":
+        return family
+    alternatives = _QUIET_SWAPS.get(family)
+    return alternatives[visible % len(alternatives)] if alternatives else family
 
 
 def _break_transition_repeats(shots: list[Shot]) -> None:
