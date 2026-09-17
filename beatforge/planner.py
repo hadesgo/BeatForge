@@ -76,6 +76,7 @@ def create_plan(
     image_composite_ratio: float = .24,
     max_composite_images: int = 3,
     avoid_asset_repeats: bool = True,
+    transition_density: float = .35,
 ) -> list[Shot]:
     """Lay out shots on the musical grid and pick media for each of them.
 
@@ -219,7 +220,7 @@ def create_plan(
             image_effect=image_effect,
             layers=layers,
         ))
-    _assign_transitions(shots)
+    _assign_transitions(shots, mood=analysis.mood, density=transition_density)
     return shots
 
 
@@ -256,16 +257,14 @@ def _choose_image_effect(
 ) -> tuple[str, int]:
     """Choose a restrained, section-consistent still-image treatment."""
     if not enabled or available <= 0 or max_images < 2:
-        single = "pan_reveal" if energy > .62 else "focus_pull" if melody > .62 else "cinematic_depth"
-        return single, 0
+        return _single_image_effect(index, section, energy, melody, edit_intent), 0
 
     # A stable gate keeps composites special instead of turning the MV into a slide template.
     gate = ((index * 37 + 17) % 100) / 100
     intent_scale = 1.4 if edit_intent == "impact" else .45 if edit_intent == "breathe" else 1.0
     section_ratio = min(1.0, ratio * intent_scale * (1.85 if section == "chorus" else 1.25 if section in {"bridge", "solo"} else 1.0))
     if gate >= section_ratio:
-        single = "pan_reveal" if energy > .62 else "focus_pull" if melody > .62 else "cinematic_depth"
-        return single, 0
+        return _single_image_effect(index, section, energy, melody, edit_intent), 0
 
     if section == "chorus":
         effect = ("beat_montage", "photo_stack", "split_screen")[index % 3]
@@ -276,8 +275,48 @@ def _choose_image_effect(
     wanted_total = 4 if effect == "beat_montage" else 3 if effect == "photo_stack" else 2
     total = min(max_images, wanted_total, available + 1)
     if total < 2:
-        return "cinematic_depth", 0
+        return _single_image_effect(index, section, energy, melody, edit_intent), 0
     return effect, total - 1
+
+
+def _single_image_effect(
+    index: int, section: str, energy: float, melody: float, edit_intent: str,
+) -> str:
+    """Pick one camera move, or occasionally a framing treatment instead.
+
+    The moves are grouped by what the music is doing: a release at the end of a
+    phrase, an arrival on an impact, an unhurried drift through a verse. Selection
+    is a fixed rotation rather than a random draw, so a given plan always renders
+    the same way.
+    """
+    framing = _framing_effect(index, section, energy, edit_intent)
+    if framing:
+        return framing
+    if edit_intent == "breathe" or section in {"intro", "outro"}:
+        return ("breathe", "cinematic_depth", "pull_back", "dolly_out")[index % 4]
+    if edit_intent == "impact" or (section == "chorus" and energy > .76):
+        return ("punch_in", "dolly_in", "arc", "pan_reveal")[index % 4]
+    if energy > .62:
+        return ("pan_reveal", "drift", "arc", "dolly_in")[index % 4]
+    if melody > .62:
+        return ("tilt_up", "focus_pull", "dolly_out", "tilt_down")[index % 4]
+    return ("cinematic_depth", "drift", "tilt_down", "arc")[index % 4]
+
+
+def _framing_effect(index: int, section: str, energy: float, edit_intent: str) -> str:
+    """Return a framing treatment for roughly one shot in twelve, else ``""``.
+
+    Letterboxing, an iris and parallax are the still-image equivalent of a
+    composite: each is worth seeing once and tedious if every shot gets one. The
+    gate keeps them occasional without making them random.
+    """
+    if ((index * 53 + 7) % 100) / 100 >= .085:
+        return ""
+    if section == "intro":
+        return "iris"
+    if edit_intent == "breathe" or section in {"outro", "bridge", "solo"}:
+        return "parallax"
+    return "film_bars" if energy > .7 else "parallax"
 
 
 def _layer_entry_offsets(
@@ -410,15 +449,88 @@ def _upscale_penalty(asset: MediaAsset, target_width: int, target_height: int) -
     return float(np.clip((scale - 1.15) * .055, 0, .18))
 
 
-def _assign_transitions(shots: list[Shot]) -> None:
-    """Use editorial cuts by default and reserve visible transitions for structural changes."""
-    for shot, following in zip(shots, shots[1:]):
-        section_change = shot.section_index != following.section_index
-        if section_change:
-            shot.transition = "flash" if following.energy > .78 else "dip"
-        elif shot.edit_intent == "breathe" or following.edit_intent == "breathe":
-            shot.transition = "dissolve"
-        else:
-            shot.transition = "cut"
+# Families subtle enough to repeat back to back without reading as a template.
+# Anything else gets rotated away from its predecessor.
+_SUBTLE_TRANSITIONS = {"cut", "none", "dissolve", "blur"}
+
+_TRANSITION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
+    "wipe": ("reveal", "slide", "diag"),
+    "slide": ("wipe", "reveal", "squeeze"),
+    "reveal": ("slide", "wipe", "diag"),
+    "diag": ("wipe", "reveal", "slide"),
+    "slice": ("pixel", "squeeze", "wipe"),
+    "pixel": ("slice", "squeeze", "wipe"),
+    "squeeze": ("slice", "pixel", "slide"),
+    "zoom": ("radial", "pixel", "slice"),
+    "radial": ("zoom", "circle", "slice"),
+    "flash": ("zoom", "radial", "slice"),
+    "circle": ("radial", "zoom", "dissolve"),
+    "dip": ("dissolve", "blur", "circle"),
+}
+
+
+def _assign_transitions(shots: list[Shot], *, mood: str = "", density: float = .35) -> None:
+    """Pick a transition family per cut, then keep it from repeating itself.
+
+    Hard cuts stay the default. A visible transition is punctuation, and
+    punctuating every cut turns the edit into a slideshow, so only structural
+    changes - a new section, a change of intent - and a bounded share of the cuts
+    inside a section earn one.
+    """
+    for index, (shot, following) in enumerate(zip(shots, shots[1:])):
+        shot.transition = _transition_family(shot, following, index, mood, density)
     if shots:
         shots[-1].transition = "none"
+    _break_transition_repeats(shots)
+
+
+def _transition_family(shot: Shot, following: Shot, index: int, mood: str, density: float) -> str:
+    """Name the transition family the edit is asking for at this cut."""
+    tone = following.transition_tone if following.transition_tone != "neutral" else shot.transition_tone
+    dreamy = mood in {"dreamy", "romantic"} or tone == "soft"
+    restless = mood in {"energetic", "dark"} or tone == "bright"
+
+    if shot.section_index != following.section_index:
+        # Structural punctuation: the strongest move the music can justify.
+        if following.energy > .78:
+            return "flash"
+        if following.section == "chorus":
+            return "radial" if restless else "zoom"
+        if following.section in {"intro", "outro"} or shot.section == "chorus":
+            return "dip"
+        if dreamy:
+            return "circle"
+        if restless:
+            return "slice"
+        return "dissolve"
+
+    if "impact" in {shot.edit_intent, following.edit_intent}:
+        return "zoom" if index % 2 else "flash"
+    if "breathe" in {shot.edit_intent, following.edit_intent}:
+        return "blur" if dreamy else "dissolve"
+
+    # Inside a section, spend a bounded share of the cut points on visible moves.
+    if ((index * 29 + 11) % 100) / 100 >= density:
+        return "cut"
+    energy = max(shot.energy, following.energy)
+    if energy > .70:
+        return ("wipe", "slide", "diag", "pixel", "squeeze")[index % 5]
+    if energy < .32:
+        return "blur" if dreamy else "dissolve"
+    return ("wipe", "reveal", "dissolve")[index % 3]
+
+
+def _break_transition_repeats(shots: list[Shot]) -> None:
+    """Never play the same visible transition twice in a row.
+
+    Two identical wipes back to back stop reading as punctuation and start reading
+    as a template, which is the one thing an edit like this cannot afford.
+    """
+    previous = ""
+    for shot in shots:
+        family = shot.transition
+        if family == previous and family not in _SUBTLE_TRANSITIONS:
+            options = _TRANSITION_ALTERNATIVES.get(family, ())
+            family = next((name for name in options if name != previous), "dissolve")
+            shot.transition = family
+        previous = family

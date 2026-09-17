@@ -6,7 +6,15 @@ import numpy as np
 from beatforge.audio import AudioAnalysis
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
-from beatforge.planner import _least_used_assets, _reuse_penalty, _upscale_penalty, create_plan
+from beatforge.planner import (
+    Shot,
+    _break_transition_repeats,
+    _least_used_assets,
+    _reuse_penalty,
+    _transition_family,
+    _upscale_penalty,
+    create_plan,
+)
 
 
 def _grid(duration: float, labels: list[str] | None = None) -> AudioAnalysis:
@@ -71,7 +79,19 @@ def test_ai_similarity_controls_selection() -> None:
     assert shots[0].source_color == [20, 40, 80]
 
 
-def test_plan_prefers_hard_cuts_and_reserves_transition_for_section_change() -> None:
+def _shot(
+    index: int, section: str, energy: float, intent: str = "continuity",
+    *, tone: str = "neutral", section_index: int = 0,
+) -> Shot:
+    return Shot(
+        index, index * 2, index * 2 + 2, 2, index, "a.jpg", "image", 0, "",
+        energy, "dynamic", "cut", .5, section=section, edit_intent=intent,
+        transition_tone=tone, section_index=section_index,
+    )
+
+
+def test_plan_punctuates_section_changes_and_keeps_the_rest_mostly_cut() -> None:
+    """A visible transition is punctuation; giving every cut one makes a slideshow."""
     analysis = AudioAnalysis(
         duration=8, bpm=120, beats=[0, 2, 4, 6, 8], sections=[0, 4, 8],
         energy_times=[0, 4], energy_values=[.5, .7], average_energy=.6,
@@ -86,8 +106,76 @@ def test_plan_prefers_hard_cuts_and_reserves_transition_for_section_change() -> 
 
     shots = create_plan(analysis, lyrics, assets, None, min_shot=1.5, max_shot=4)
 
-    assert shots[0].transition in {"dip", "flash"}
     assert shots[-1].transition == "none"
+    boundary = next(
+        index for index, (shot, following) in enumerate(zip(shots, shots[1:]))
+        if shot.section_index != following.section_index
+    )
+    assert shots[boundary].transition != "cut", "a section change is always punctuated"
+    inside = [shot.transition for index, shot in enumerate(shots[:-1]) if index != boundary]
+    visible = [name for name in inside if name != "cut"]
+    assert len(visible) <= len(inside) * .6, f"too many visible transitions: {inside}"
+
+
+def test_transition_family_reads_the_music_not_the_calendar() -> None:
+    """Inside a section, energy decides which visible move the cut earns."""
+    def family(energy: float) -> str:
+        return _transition_family(
+            _shot(0, "verse", energy), _shot(1, "verse", energy), 0, "cinematic", 1.0,
+        )
+
+    assert family(.9) in {"wipe", "slide", "diag", "pixel", "squeeze"}
+    assert family(.1) == "dissolve"
+    assert family(.5) in {"wipe", "reveal", "dissolve"}
+
+
+def test_transition_density_zero_suppresses_only_inside_section_moves() -> None:
+    """``transition_density = 0`` must not silence a section change."""
+    inside = _transition_family(
+        _shot(0, "verse", .9), _shot(1, "verse", .9), 0, "cinematic", 0.0,
+    )
+    structural = _transition_family(
+        _shot(0, "verse", .5, section_index=0), _shot(1, "chorus", .5, section_index=1),
+        0, "cinematic", 0.0,
+    )
+    assert inside == "cut"
+    assert structural != "cut"
+
+
+def test_a_section_change_outranks_an_impact_inside_one() -> None:
+    """The strongest move the music can justify belongs at the structural seam."""
+    into_chorus = _transition_family(
+        _shot(0, "verse", .5, section_index=0), _shot(1, "chorus", .9, section_index=1),
+        0, "cinematic", .35,
+    )
+    into_outro = _transition_family(
+        _shot(0, "chorus", .5, section_index=1), _shot(1, "outro", .3, section_index=2),
+        0, "cinematic", .35,
+    )
+    assert into_chorus == "flash"
+    assert into_outro == "dip"
+
+
+def test_identical_visible_transitions_are_rotated_apart() -> None:
+    """Two identical wipes in a row stop reading as punctuation and read as a template."""
+    shots = [_shot(index, "verse", .5) for index in range(4)]
+    for shot in shots:
+        shot.transition = "wipe"
+    _break_transition_repeats(shots)
+
+    families = [shot.transition for shot in shots]
+    assert families[0] == "wipe"
+    for previous, current in zip(families, families[1:]):
+        assert current != previous, families
+
+
+def test_subtle_transitions_are_allowed_to_repeat() -> None:
+    """A dissolve is invisible enough that repeating it reads as continuity, not a tic."""
+    shots = [_shot(index, "verse", .5) for index in range(3)]
+    for shot in shots:
+        shot.transition = "dissolve"
+    _break_transition_repeats(shots)
+    assert [shot.transition for shot in shots] == ["dissolve"] * 3
 
 
 def test_plan_penalizes_video_that_would_need_visible_loop() -> None:
@@ -260,3 +348,105 @@ def test_plan_builds_semantically_ranked_multi_image_layers() -> None:
     assert shots[0].image_effect == "split_screen"
     assert [layer.media_id for layer in shots[0].layers] == [1]
     assert shots[0].layers[0].enter_offset == 2
+
+
+def _varied_song(duration: float = 120.0) -> AudioAnalysis:
+    """A song that visits every section type, so every effect branch can fire."""
+    labels = ["intro", "verse", "chorus", "bridge", "outro"]
+    step = duration / len(labels)
+    return AudioAnalysis(
+        duration=duration, bpm=120,
+        beats=[x / 2 for x in range(int(duration * 2) + 1)],
+        downbeats=[float(x) for x in range(0, int(duration) + 1, 2)],
+        sections=[i * step for i in range(len(labels) + 1)],
+        energy_times=[0, duration * .4, duration], energy_values=[.3, .85, .35],
+        average_energy=.5, brightness=.5, mood="cinematic",
+        mood_scores={"cinematic": 1}, section_labels=labels,
+    )
+
+
+def test_planned_effects_are_all_names_the_renderer_can_build() -> None:
+    """A name the renderer does not recognise degrades silently to a default move.
+
+    That failure is invisible in the plan and only shows up as a whole video of
+    identical push-ins, so pin the vocabulary from both ends.
+    """
+    from beatforge.renderer import _CAMERA_MOVES
+
+    known = set(_CAMERA_MOVES) | {
+        "split_screen", "photo_stack", "double_exposure", "beat_montage",
+        "film_bars", "iris", "parallax", "source_video",
+    }
+    shots = create_plan(
+        _varied_song(), _lines(120), _images(90), None,
+        min_shot=1.5, max_shot=4, image_composite_ratio=.35,
+    )
+
+    used = {shot.image_effect for shot in shots}
+    assert used <= known, used - known
+    assert len(used) >= 8, f"the plan barely used the vocabulary: {sorted(used)}"
+
+
+def test_planned_transition_families_are_all_known_to_the_renderer() -> None:
+    from beatforge.renderer import _TRANSITION_LIBRARY
+
+    known = set(_TRANSITION_LIBRARY) | {"cut", "none"}
+    shots = create_plan(
+        _varied_song(), _lines(120), _images(90), None,
+        min_shot=1.5, max_shot=4, transition_density=1,
+    )
+
+    used = {shot.transition for shot in shots}
+    assert used <= known, used - known
+    assert len(used) >= 5, f"the plan barely used the vocabulary: {sorted(used)}"
+
+
+def _varied_song(duration: float = 120.0) -> AudioAnalysis:
+    """A song that visits every section type, so every effect branch can fire."""
+    labels = ["intro", "verse", "chorus", "bridge", "outro"]
+    step = duration / len(labels)
+    return AudioAnalysis(
+        duration=duration, bpm=120,
+        beats=[x / 2 for x in range(int(duration * 2) + 1)],
+        downbeats=[float(x) for x in range(0, int(duration) + 1, 2)],
+        sections=[i * step for i in range(len(labels) + 1)],
+        energy_times=[0, duration * .4, duration], energy_values=[.3, .85, .35],
+        average_energy=.5, brightness=.5, mood="cinematic",
+        mood_scores={"cinematic": 1}, section_labels=labels,
+    )
+
+
+def test_planned_effects_are_all_names_the_renderer_can_build() -> None:
+    """A name the renderer does not recognise degrades silently to a default move.
+
+    That failure is invisible in the plan and only shows up as a whole video of
+    identical push-ins, so pin the vocabulary from both ends.
+    """
+    from beatforge.renderer import _CAMERA_MOVES
+
+    known = set(_CAMERA_MOVES) | {
+        "split_screen", "photo_stack", "double_exposure", "beat_montage",
+        "film_bars", "iris", "parallax", "source_video",
+    }
+    shots = create_plan(
+        _varied_song(), _lines(120), _images(90), None,
+        min_shot=1.5, max_shot=4, image_composite_ratio=.35,
+    )
+
+    used = {shot.image_effect for shot in shots}
+    assert used <= known, used - known
+    assert len(used) >= 8, f"the plan barely used the vocabulary: {sorted(used)}"
+
+
+def test_planned_transition_families_are_all_known_to_the_renderer() -> None:
+    from beatforge.renderer import _TRANSITION_LIBRARY
+
+    known = set(_TRANSITION_LIBRARY) | {"cut", "none"}
+    shots = create_plan(
+        _varied_song(), _lines(120), _images(90), None,
+        min_shot=1.5, max_shot=4, transition_density=1,
+    )
+
+    used = {shot.transition for shot in shots}
+    assert used <= known, used - known
+    assert len(used) >= 5, f"the plan barely used the vocabulary: {sorted(used)}"

@@ -51,6 +51,7 @@ class RenderConfig(BaseModel):
     professional_transitions: bool = True
     transition_min_seconds: float = Field(default=0.16, ge=0.05, le=1.0)
     transition_max_seconds: float = Field(default=0.55, ge=0.1, le=1.5)
+    transition_density: float = Field(default=0.35, ge=0, le=1)
 
     @model_validator(mode="after")
     def keep_intermediates_high_quality(self) -> "RenderConfig":
@@ -185,6 +186,7 @@ shot_match_strength = 0.3 # 不同来源素材的轻量曝光/饱和度匹配
 professional_transitions = true
 transition_min_seconds = 0.16
 transition_max_seconds = 0.55
+transition_density = 0.35 # 段落内部使用可见转场的比例；0 = 只在段落切换时转场，1 = 每个切点都转场
 
 [render.subtitle_fonts]
 energetic = "preset:energetic"

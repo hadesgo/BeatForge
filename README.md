@@ -159,6 +159,7 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `image_composite_ratio` | `0.24` | 多图镜头的基础占比；副歌和导演标记的冲击段会自动提高 | `0.18`–`0.30` |
 | `max_composite_images` | `3` | 分屏、照片堆叠和节拍蒙太奇的同镜头素材上限 | 建议保持 `3` |
 | `avoid_asset_repeats` | `true` | 素材够用时保证每个镜头都用没出现过的素材，只在素材不足时才复用 | 保持 `true` |
+| `transition_density` | `0.35` | 段落内部使用可见转场的比例；`0` 只在段落切换时转场，`1` 每个切点都转场 | `0.25`–`0.45` |
 | `image_background_blur` | `26.0` | 原比例图片周围的满屏模糊背景强度 | 人像可用 `22`–`32` |
 | `subtitle_effect` / `subtitle_font` | `auto` / `auto` | AI按旋律、情绪和段落选择字幕动效与字体 | 保持 `auto` |
 
@@ -230,6 +231,7 @@ image_composites = true
 image_composite_ratio = 0.24
 max_composite_images = 3
 avoid_asset_repeats = true
+transition_density = 0.35
 blurred_image_background = true
 image_background_blur = 26.0
 image_foreground_scale = 0.92
@@ -265,11 +267,21 @@ cinematic = "preset:cinematic"
 
 图片素材始终保持原始宽高比，不会为填满横屏或竖屏而拉伸。默认把同一图片等比放大、裁切并模糊为满屏背景，再把清晰原图等比缩放到前景；`image_foreground_scale` 控制前景占画面比例。关闭 `blurred_image_background` 后仍保持原比例，但不再施加背景模糊。
 
-图片镜头不再只有随机推拉。规划器会参考歌曲段落、局部能量、旋律变化以及 AI 导演给出的 `edit_intent`，自动选择以下效果，并把结果和辅助图层写入 `plan.json`：
+图片镜头不再只有随机推拉。规划器会参考歌曲段落、局部能量、旋律变化以及 AI 导演给出的 `edit_intent`，自动选择效果，并把结果和辅助图层写入 `plan.json`。单图运镜按**性格**区分，而不是按幅度区分——漂移保持构图只做横移，推轨则明确承诺一次推进，冲击快到位后定住，呼吸是膨胀后回到原位：
 
-- `cinematic_depth`：克制的景深推拉，适合主歌、前奏和尾奏；
-- `focus_pull`：清晰前景配合柔化背景，随旋律缓慢推进；
-- `pan_reveal`：具有明确方向的画面揭示；
+- 铺垫型，用于主歌、前奏和尾奏：`cinematic_depth` 克制的景深推拉、`focus_pull` 清晰前景配合柔化背景的缓推；
+- 揭示型，画面要"露出"什么：`pan_reveal` 横向平移揭示、`tilt_up` / `tilt_down` 垂直摇移、`arc` 弧线绕行、`drift` 几乎不缩放的纯横移；
+- 承诺型，切点要求一个明确动作：`dolly_in` 推进、`dolly_out` 拉远、`punch_in` 快速推入后定住、`pull_back` 从近景退回；
+- 呼吸型：`breathe` 在中段膨胀再回到原位，用于长镜头和低能量段落。
+
+三种复合动效按约十二分之一的概率落在单图镜头上：
+
+- `film_bars`：叠加 2.35:1 上下遮幅，画面本身不裁切；
+- `iris`：圆形遮罩从中心一点开到全画幅，像锁孔逐渐打开；
+- `parallax`：同一张图分成模糊背景和清晰前景两个平面，以不同速度平移，形成视差纵深。
+
+多图合成：
+
 - `split_screen`：两张语义相关图片分屏并置；
 - `photo_stack`：图片按真实节拍依次滑入并轻微旋转叠放；
 - `double_exposure`：双图银幕混合，适合桥段、梦幻或抽象意境；
@@ -277,7 +289,34 @@ cinematic = "preset:cinematic"
 
 图片运镜使用 `perspective` 滤镜逐帧求值裁剪四边形，而不是 `zoompan`。`zoompan` 会把裁剪原点截断到输入帧的整数像素上：本项目的运镜速度通常只有每帧 0.03–0.1 像素，于是画面会连续多帧完全静止、再突然跳一个整像素，在任何直线边缘上都能看出规律性的顿挫。`perspective` 对每帧做真正的亚像素仿射重采样，单次重采样即可完成，既不会像超采样那样二次损失清晰度，也不会出现整像素跳变。裁剪框宽度是 `W/zoom`，可平移量程是 `W - W/zoom`，两者不可互换。
 
+关于 `perspective` 有三个容易踩空的地方，改动运镜时必须一并核对：`on` 是**从 1 开始**的输出帧序号，而且会**越过镜头长度**继续增长（静态图来自 `-loop 1`，是无限长的，下游的 `fps`、`trim` 会为了确定自己的时间戳多拉几帧），所以进度必须写成 `clip((on-1)/(frames-1),0,1)`——少了偏移会在末帧过冲，少了钳制则会让"推进到终点停住"的运镜在末尾反转，zoom 一旦掉到 1 以下，`W - W/zoom` 变负，滤镜会直接拒绝该帧。其次，每个运镜都额外抬高了 0.4% 的放大率，避免出现"裁剪框正好等于整帧"的退化映射。第三，表达式里的 `clip()` 不会交换上下界，它算的是 `min(max(x, min), max)`，所以上界一旦为负就会原样返回负数。
+
 多图辅助素材来自同一句歌词的视觉语义排序，同时受质量、色彩连续性、重复使用和分辨率惩罚约束。默认仅约 24% 图片镜头使用多图组合，副歌和 AI 导演标记的冲击段会提高概率，呼吸段会降低概率，避免整支 MV 变成模板化电子相册。`image_composites = false` 可只保留单图景深和方向性运镜。
+
+### 转场
+
+转场由规划器按"转场族"下发，渲染器再结合**进入镜头**的色调和**离开镜头**的运动方向，解析成具体的 `xfade` 动作。共 14 族、39 个具体转场：
+
+| 族 | 具体转场 | 时长 | 读作 |
+| --- | --- | --- | --- |
+| `dissolve` | `dissolve` / `fade` / `fadegrays` | 0.44s | 平静的溶解；暗调段落改用去色溶解 |
+| `dip` | `fadeblack` / `fadewhite` | 0.36s | 淡黑表示沉重，淡白表示释放 |
+| `flash` | `fadewhite` / `fadefast` | 0.16s | 冲击；必须短才成立 |
+| `wipe` | `wipeleft` / `wiperight` / `wipeup` / `wipedown` | 0.28s | 明确的方向性推进 |
+| `slide` | `slideleft` / `slideright` / `slideup` / `slidedown` | 0.28s | 画面整体推移 |
+| `circle` | `circleopen` / `circleclose` | 0.42s | 圆形开合 |
+| `radial` | `radial` | 0.26s | 放射状擦除 |
+| `zoom` | `zoomin` | 0.20s | 快速纵深冲击 |
+| `blur` | `hblur` | 0.44s | 柔化的段落过渡 |
+| `slice` | `hlslice` / `hrslice` / `vuslice` / `vdslice` | 0.26s | 条状切片 |
+| `diag` | `diagtl` / `diagtr` / `diagbl` / `diagbr` | 0.30s | 斜向擦除 |
+| `pixel` | `pixelize` | 0.22s | 数字感闪切 |
+| `squeeze` | `squeezeh` / `squeezev` | 0.24s | 挤压变形 |
+| `reveal` | `revealleft` … / `coverleft` … | 0.32s | 揭示与覆盖 |
+
+`transition_density`（默认 `0.35`）控制**段落内部**使用可见转场的比例：`0` 表示段落内部一律硬切、只在段落切换时转场，`1` 表示每个切点都转场。段落切换、乐段边界和导演标记的冲击点不受该比例限制，始终使用可见转场。同一族不会连续出现两次（`cut`、`dissolve`、`blur` 这类含蓄转场除外），避免连续几个切点重复同一个动作。
+
+方向性族（`wipe`、`slide`、`diag`、`reveal`、`slice`）跟随镜头自身的漂移方向：画面本来就在向右平移时，转场也向右擦除，而不是逆着运动走。未知族名（例如手工编辑过的 `plan.json`）会回退成溶解，而不是硬切，让这个镜头仍然读得出原本的意图。
 
 ### 素材复用规则
 
@@ -366,8 +405,8 @@ WeMM-Embedding 会分别通过 `encode_query` 和 `encode_document` 比较歌词
 - 副歌复现少量视觉母题，让成片有记忆点（素材充足时以不复用同一素材优先，母题主要在素材不足时体现）；
 - 同景别连续出现会扣分，画质、曝光、清晰度和分辨率参与选镜；
 - 相邻镜头主色差异过大时降低分数，冲击型剪辑除外；
-- 常规节拍点以硬切为主，只在乐段变化和呼吸段使用带 handle 的溶解、闪白或淡黑；
-- 原视频保留自身摄影运动，不再叠加周期性摇摆；静态图片根据 `impact/continuity/breathe` 使用不同的推近、漂移或缓慢拉远，不再按镜头序号机械横移；
+- 常规节拍点以硬切为主；可见转场的密度由 `transition_density` 控制，段落切换和导演标记的冲击点必用转场，具体动作从十余个转场族里按进入镜头的色调与离开镜头的运动方向挑选；
+- 原视频保留自身摄影运动，不再叠加周期性摇摆；静态图片根据 `impact/continuity/breathe` 在十余种运镜之间选择，不再按镜头序号机械横移；
 - 图片和视频按主体焦点进行保守的智能裁切；对短于目标镜头的视频、需要严重放大的低分辨率素材和极端画幅素材降权，减少可见循环、糊画面和主体裁掉；
 - intro/outro 留呼吸，chorus 紧凑，bridge/solo 给旋律性镜头更长时间。
 - AI 导演统一概念、叙事弧、调色倾向和视觉母题，并对各乐段给出剪辑强度、景别、素材偏好、字幕与转场意见；
@@ -465,6 +504,15 @@ uv run python scripts/camera_move_probe.py --controlled
 
 这三个工具都会先打印一个**一致性**（`|累计位移| / Σ|单帧位移|`）：测量成立的前提是相邻帧互为刚体变换，而暗角、颗粒、调色都固定在画面坐标上，会破坏这个前提。一致性低于 0.5 时脚本会直接判定"测量不可信"并拒绝给出结论——此时看到的"抖动"是噪声，不是成片的问题。要判断真实运镜是否平滑，请用 `camera_move_probe.py --controlled` 或 `zoompan_probe.py` 的受控片段。
 
+把全部图片效果渲染成一张接触表，一眼看清每种运镜和复合动效长什么样（每行是起始/中间/结束三帧）：
+
+```powershell
+uv run python scripts/effects_preview.py
+uv run python scripts/effects_preview.py --media demo/media --out .probe/effects
+```
+
+单图运镜由素材里**边缘能量最高**的那张图渲染，因为平坦的画面会把裁剪窗口完全藏起来；多图合成则需要目录里至少两张图。测试能证明裁剪框不越界、圆形遮罩确实在张开，但证明不了某个运镜是否读起来像它本该是的那个镜头——这张表就是给这件事用的。
+
 在你自己的 AI 环境中执行模型烟雾测试：
 
 ```powershell
@@ -485,6 +533,6 @@ beatforge/models/vision_index.py      WeMM/Qwen3-VL-Embedding/SigLIP2 检索
 beatforge/planner.py                  多目标镜头编排
 beatforge/renderer.py                 FFmpeg 成片渲染
 beatforge/pipeline.py                 分阶段模型生命周期
-scripts/                              演示素材、复用/显存/抖动探针
+scripts/                              演示素材、复用/显存/抖动/效果接触表探针
 tests/                                不下载模型的测试
 ```

@@ -62,10 +62,40 @@ BatchEncoding / 张量 / 列表 / 嵌套列表四种形态（测试在 `tests/te
 - **禁止再用 `zoompan` 做图片运镜**。它把 `x`/`y` 截断到输入帧的整数像素，而本项目运镜只有
   0.03–0.1 px/帧，结果是"连续多帧静止 + 突然跳 1 像素"的顿挫。改用
   `perspective=...:interpolation=cubic:sense=source:eval=frame`，逐帧求值裁剪四边形，亚像素重采样。
-- `perspective` 的表达式**只暴露 `on`（帧序号）**，不暴露 `t`；用 `t` 直接报错。
 - 几何量别写反：**裁剪框宽 = `W/zoom`**，**可平移量程 = `W - W/zoom`**。写反会变成极端硬推镜。
+- 运镜参数化在 `_CameraMove`（冻结 dataclass）+ `_CAMERA_MOVES`（12 种）。`zoom_from`/`zoom_to`
+  是**增量倍率**（保证 zoom ≥ 1），`x_from`..`y_to` 是**平移量程的比例**（±0.15 以内，避免撞 `clip()` 边界而中途停住）。
 - 回归测试在 `tests/test_renderer.py`：断言无 zoompan、裁剪框是矩形且不越界、保持宽高比、
-  相邻帧步长不超过 `max(平均步长*6, 0.5px)`。改运镜必须让这些测试继续通过。
+  相邻帧步长不超过 `max(平均步长*6, 0.5px)`、以及**超出镜头长度后几何保持不变**。改运镜必须让这些测试继续通过。
+
+## `perspective` 的三个硬坑（改任何运镜前必读）
+1. **`on` 是 1-based，而且会越过镜头长度继续增长。**
+   `vf_perspective.c` 里 `VAR_ON = outl->frame_count_in + 1`；静态图来自 `-loop 1`（无限长），
+   下游的 `fps`/`trim` 为了确定自己的时间戳会多拉几帧，所以 `on` 会一直涨。
+   进度必须写成 **`clip((on-1)/(frames-1),0,1)`**：
+   - 少写 `-1` → 末帧过冲一帧；
+   - 少写 `clip` → 递减型运镜在末尾**反转**，zoom 掉到 1 以下 → `W-W/zoom` 变负 → 该帧被 ffmpeg 拒绝。
+   症状极具误导性：只有 `dolly_out`/`pull_back`/`breathe` 这类**递减**运镜崩，`cinematic_depth` 全正常。
+2. **`clip()` 不交换上下界**，它算的是 `min(max(x,min),max)`；上界为负就原样返回负数。
+   实测 `perspective=x0='clip(5,0,-1)'` 直接 `Invalid argument`。
+   因此每个运镜额外抬高 `_MIN_ZOOM = 0.004` 的放大率，消除"裁剪框正好等于整帧"的退化映射。
+3. **`geq` 是另一套方言**：没有 `on`，用 0 基的 `N`。而且逐像素求值，1080p 实测 0.18s/帧（≈5.5fps），
+   比其它效果加起来还贵——iris 遮罩改在 1/8 画布上生成再 `scale` 上采样。
+
+## 合成平面与帧数（`_plane_duration`）
+- 用 `color` 生成的平面（分屏分隔条、iris 遮罩/底、渐变）经 `overlay=shortest=1` 与画面合成时，
+  若长度正好等于镜头时长，它会是**最短流**从而把整镜截短一帧。统一按 `duration + 1/fps` 生成，
+  多出的一帧由收尾的 `trim` 切掉。曾因此发现 `split_screen` 一直在丢最后一帧（既有 bug）。
+- `tests/test_renderer.py::test_all_still_image_effects_render` 断言帧数**精确相等**，用来守住这条。
+
+## 转场（`beatforge/renderer.py` + `planner.py`）
+- 规划器只下发**转场族**（14 族，`_transition_family`），`_transition_spec` 再结合进入镜头的
+  `transition_tone` 与离开镜头的漂移方向解析成 39 个具体 `xfade` 名（`_TRANSITION_LIBRARY`）。
+- `_TRANSITION_PACE` 逐族定时长；方向性族在 `_TRANSITION_DIRECTION`。未知族名回退成溶解，不是硬切。
+- `render.transition_density`（默认 0.35）只管**段落内部**的可见转场比例；段落切换/乐段边界/
+  导演冲击点不受约束。`_break_transition_repeats` 防止同一族连续出现（含蓄转场除外）。
+- 测试会拿 `ffmpeg -h filter=xfade` 校验名字，并**真的跑一遍**每个转场（`xfade` 的 duration 必须是
+  `0.3` 这种写法，`.3` 会报 `Unable to parse "duration" option value`）。
 
 ## 运镜抖动怎么测（别拿成片直接测）
 - 相位相关测帧间位移的前提是**相邻帧互为刚体变换**。成片里的暗角、颗粒、调色固定在画面坐标上，
