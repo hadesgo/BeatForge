@@ -200,6 +200,20 @@
 - 加新字体时族名必须出现在 `FONT_PRESETS` 里，否则没有任何预设能选中它——
   `tests/test_fonts.py` 会检查这条。
 
+## AI 导演：两个引擎（`beatforge/models/ai_director.py` + `llama_server.py`）
+- **默认 `llamacpp`**：`llama-server` 子进程跑 GGUF，`/v1/chat/completions` +
+  **服务端 JSON schema** 约束输出。`director_llama_url` 指向已运行的 server 可省一次 7GB 加载。
+- **三值 GGUF 必须用 PrismML 的 llama.cpp 分支**：原版要么拒绝该量化类型，要么**加载成功但输出乱码**
+  （缺 Hadamard 激活运行时）。报错信息里直接点名分支和下载地址。
+- **提示词上限的约束换了**：Spark 是手写 `torch.matmul`+softmax、开销**平方增长**（旧上限 2600 由此而来）；
+  Bonsai 约 75% 层是线性注意力，瓶颈变成 **KV 缓存**（由 `-c` 决定，按整个窗口一次性分配）。
+  默认 `-c 16384` 配 `director_prompt_tokens = 16384` 是自洽的，再大要同时抬 `-c`。
+- **上下文按最宽规格构建再由阶梯裁剪**——阶梯只能做减法，没放进去的细节任何引擎都用不到。
+  **候选列表必须按检索得分排序**：裁剪是普通切片，按发现顺序排会先丢最强的。
+- llamacpp 暂不支持多模态，且**显式报错而不是静默忽略联系表**——静默丢图会让导演对没看过的素材
+  给出自信的答案。
+- 下载走 `gguf` 提供方（`hf_hub_download` 单文件），整仓快照要 13GB 而只需要其中一个量化。
+
 ## 那条 `rope_parameters` 告警是什么意思（无害，但有静默失效风险）
 日志里每次加载导演模型会出现 1~3 条：
 ```
