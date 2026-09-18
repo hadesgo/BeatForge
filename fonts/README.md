@@ -5,14 +5,22 @@ Windows 上，所有 `subtitle_font = "preset:*"` 都会落到同一个系统兜
 
 全部为 **SIL Open Font License 1.1**，允许再分发；每份字体旁边都放了对应的许可证原文。
 
-| 文件 | 字族 | 用途 | 体积 |
+| 文件 | 字族 | 预设 | 体积 |
 | --- | --- | --- | --- |
 | `NotoSansSC-VF.ttf` | Noto Sans SC | `modern` / `minimal`，以及 `dreamy`(300) / `dark`(700) / `energetic`(700) 的字重 | 16.9 MiB |
 | `NotoSerifSC-VF.ttf` | Noto Serif SC | `cinematic`、`lyrical` 的衬线 | 24.0 MiB |
 | `LXGWWenKai-Regular.ttf` | LXGW WenKai | `lyrical` 的楷体 | 23.6 MiB |
 | `SmileySans-Oblique.ttf` | Smiley Sans | `energetic` / `dark` 的标题感黑体 | 2.5 MiB |
+| `MaShanZheng-Regular.ttf` | Ma Shan Zheng 马善政毛笔楷书 | `brush` 毛笔 | 5.6 MiB |
+| `ZhiMangXing-Regular.ttf` | Zhi Mang Xing 钟齐志莽行书 | `script` 行书 | 3.9 MiB |
+| `ZCOOLKuaiLe-Regular.ttf` | ZCOOL KuaiLe 站酷快乐体 | `playful` 活泼 | 1.4 MiB |
+| `ZCOOLQingKeHuangYou-Regular.ttf` | ZCOOL QingKe HuangYou 站酷庆科黄油体 | `poster` 海报粗圆 | 7.9 MiB |
+| `ZCOOLXiaoWei-Regular.ttf` | ZCOOL XiaoWei 站酷小薇体 | `elegant` 秀气衬线 | 6.0 MiB |
 
-合计约 **67 MiB**，用 **git-lfs** 存储（见仓库根目录的 `.gitattributes`）。
+合计约 **92 MiB**，用 **git-lfs** 存储（见仓库根目录的 `.gitattributes`）。
+
+后五个是**艺术字体**，都不由情绪自动选中——毛笔或海报体用错歌比用普通字体更糟，
+所以只能用 `subtitle_font = "preset:brush"` 这类方式显式指定。
 
 ## 为什么是可变字体，以及字重怎么传
 
@@ -33,6 +41,27 @@ Windows 上，所有 `subtitle_font = "preset:*"` 都会落到同一个系统兜
 | `dark` | Smiley Sans | 默认 | 5494 |
 
 （墨量 = 渲染后亮度 >40 的像素数，同一句同一字号；只用于横向比较粗细。）
+
+- **族名读取不能只靠 PIL**。`PIL.ImageFont.getname()` 返回的是字体**默认语言**的族名，
+  而中文商业字体的默认族名常常就是中文——PIL 解码失败会得到 `"?????"`，
+  于是字体明明能用（fontconfig 认得它的英文名），却因为发现阶段读不到而永远选不中。
+  `fonts.py` 现在直接读 name 表，收集**所有平台和语言**的记录，英文名和中文名都能寻址。
+  `ZCOOL XiaoWei` 就是踩到这个的真实例子（默认族名 `站酷小薇体`，
+  但 `Fontname: ZCOOL XiaoWei` 渲染正常、`Fontname: 站酷小薇体` 回退系统字体）。
+
+## 字形覆盖：艺术字体是裁剪过的
+
+五个艺术字体来自 Google Fonts，**码位只到 GB2312 常用字级别**。实测（65 个测试字符 =
+demo 歌词用字 + 常见生僻字）：
+
+| 字体 | demo 歌词用字 | 生僻字 |
+| --- | --- | --- |
+| 全部五个艺术字体 | **100% 覆盖（0 缺）** | 缺 7–13 个（囍垚彧惢掱燚犇瞐翀風飝骉龘 之类） |
+| Noto Sans SC / Noto Serif SC | 100% | 0 缺 |
+
+**结论：歌词正常用没问题，遇到真正的生僻字（人名、囍 之类）会缺字形。**
+libass 会按字形回退到其它已安装字体，所以通常不是空白方框，但字形会跳变。
+对字形完整性要求高的场合用 Noto 那两个。
 
 ## 加新字体
 

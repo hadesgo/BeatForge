@@ -68,6 +68,25 @@ FONT_PRESETS: dict[str, tuple[str, ...]] = {
         "Smiley Sans", "Noto Sans SC@700", "Source Han Sans SC Heavy",
         "Noto Sans CJK SC Black", "Microsoft YaHei UI", "SimHei",
     ),
+    # --- art faces. None of these is auto-selected by mood: a brush or a poster face on
+    # the wrong song is worse than a plain one, so they are opt-in via
+    # ``subtitle_font = "preset:brush"`` and friends.
+    "brush": (
+        "Ma Shan Zheng", "Zhi Mang Xing", "Kaiti SC", "STKaiti", "KaiTi",
+    ),
+    "script": (
+        "Zhi Mang Xing", "Ma Shan Zheng", "STXingkai", "Xingkai SC", "KaiTi",
+    ),
+    "playful": (
+        "ZCOOL KuaiLe", "ZCOOL QingKe HuangYou", "Microsoft YaHei UI", "SimHei",
+    ),
+    "poster": (
+        "ZCOOL QingKe HuangYou", "ZCOOL KuaiLe", "Smiley Sans",
+        "Source Han Sans SC Heavy", "SimHei",
+    ),
+    "elegant": (
+        "ZCOOL XiaoWei", "Noto Serif SC", "Songti SC", "SimSun",
+    ),
 }
 
 
@@ -108,18 +127,85 @@ def _available_font_families(fonts_dir: Path | None) -> set[str]:
 def _custom_font_families(fonts_dir: Path | None) -> set[str]:
     if fonts_dir is None or not fonts_dir.is_dir():
         return set()
-    try:
-        from PIL import ImageFont
-    except ImportError:
-        return set()
     families: set[str] = set()
     for file in [*fonts_dir.glob("*.ttf"), *fonts_dir.glob("*.otf"), *fonts_dir.glob("*.ttc")]:
+        families |= _font_families(file)
+    return families
+
+
+def _font_families(path: Path) -> set[str]:
+    """Every family name a font file answers to.
+
+    ``PIL.ImageFont.getname()`` returns the font's **default-language** family, and for a
+    font whose default name is Chinese it decodes to ``"?????"`` - which makes a
+    perfectly usable font undiscoverable, because fontconfig will happily render it under
+    its English name. Chinese fonts routinely have a Chinese default name, so the name
+    table is read directly and every platform and language record is collected.
+
+    Falls back to PIL if the table cannot be parsed, since a wrong-but-present name still
+    beats no name at all.
+    """
+    names = _name_table_families(path)
+    if names:
+        return names
+    try:
+        from PIL import ImageFont
+
+        family, _ = ImageFont.truetype(str(path), 12).getname()
+        return {family} if family else set()
+    except (ImportError, OSError):
+        return set()
+
+
+def _name_table_families(path: Path) -> set[str]:
+    """Family (name ID 1) and typographic family (ID 16) records, all languages."""
+    import struct
+
+    try:
+        data = path.read_bytes()
+        table_count = struct.unpack(">H", data[4:6])[0]
+    except (OSError, struct.error, IndexError):
+        return set()
+    offset = None
+    for index in range(table_count):
+        base = 12 + index * 16
+        if data[base:base + 4] == b"name":
+            try:
+                offset = struct.unpack(">I", data[base + 8:base + 12])[0]
+            except struct.error:
+                return set()
+            break
+    if offset is None:
+        return set()
+    try:
+        count, string_offset = struct.unpack(">HH", data[offset + 2:offset + 6])
+    except struct.error:
+        return set()
+
+    families: set[str] = set()
+    for index in range(count):
+        base = offset + 6 + index * 12
         try:
-            family, _ = ImageFont.truetype(str(file), 12).getname()
-            if family:
-                families.add(family)
-        except OSError:
+            platform, _encoding, _language, name_id, length, string_at = struct.unpack(
+                ">HHHHHH", data[base:base + 12]
+            )
+        except struct.error:
+            break
+        if name_id not in (1, 16):
             continue
+        start = offset + string_offset + string_at
+        raw = data[start:start + length]
+        # Unicode platforms are UTF-16BE; the Mac platform is whatever its encoding
+        # byte says, which in practice means trying the plausible ones in order.
+        codecs = ("utf-16-be",) if platform in (0, 3) else ("utf-8", "gb18030", "latin-1")
+        for codec in codecs:
+            try:
+                value = raw.decode(codec).replace("\x00", "").strip()
+            except (UnicodeDecodeError, LookupError):
+                continue
+            if value and "?" not in value:
+                families.add(value)
+                break
     return families
 
 

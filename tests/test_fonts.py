@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-from PIL import ImageFont
 
 from beatforge import fonts
 
@@ -40,8 +39,7 @@ def test_bundled_fonts_are_real_font_files() -> None:
         assert path.read_bytes()[:4] in (b"\x00\x01\x00\x00", b"OTTO", b"true"), (
             f"{path.name} is not a font - is git-lfs installed?"
         )
-        family, _ = ImageFont.truetype(str(path), 12).getname()
-        assert family, path.name
+        assert fonts._font_families(path), path.name
 
 
 def test_every_bundled_font_is_declared_in_the_presets() -> None:
@@ -52,8 +50,43 @@ def test_every_bundled_font_is_declared_in_the_presets() -> None:
         for entry in entries
     }
     for path in sorted(BUNDLED.glob("*.ttf")):
-        family, _ = ImageFont.truetype(str(path), 12).getname()
-        assert family in declared, f"{path.name} ({family}) is bundled but no preset can pick it"
+        names = fonts._font_families(path)
+        assert names & declared, f"{path.name} {sorted(names)} is bundled but no preset names it"
+
+
+def test_every_bundled_font_is_reachable_from_some_preset(monkeypatch, tmp_path: Path) -> None:
+    """Being *declared* in a preset is not enough - it has to be the one that gets picked.
+
+    A font listed behind another bundled family is never selected on a machine that has
+    the bundle, so it would sit in the repository unreachable. Checking the resolved set
+    rather than the declared one is what makes this test worth having.
+    """
+    available = fonts._custom_font_families(BUNDLED)
+    monkeypatch.setattr(fonts, "_available_font_families", lambda _: available)
+
+    picked = {
+        fonts.resolve_subtitle_font(f"preset:{preset}", tmp_path).family
+        for preset in fonts.FONT_PRESETS
+    }
+
+    for path in sorted(BUNDLED.glob("*.ttf")):
+        names = fonts._font_families(path)
+        assert names & picked, f"{path.name} {sorted(names)} is bundled but no preset picks it"
+
+
+def test_a_font_with_a_chinese_default_name_is_still_discoverable() -> None:
+    """PIL decodes a Chinese default family name to "?????", which makes it unfindable.
+
+    ZCOOL XiaoWei is exactly that font: its default-language family is 站酷小薇体, which
+    PIL cannot decode, while fontconfig renders it happily under "ZCOOL XiaoWei". Going
+    through PIL alone left a bundled font that no preset could ever select. The name
+    table is read directly now, so every platform and language record is collected.
+    """
+    names = fonts._font_families(BUNDLED / "ZCOOLXiaoWei-Regular.ttf")
+
+    assert "ZCOOL XiaoWei" in names
+    assert not any("?" in name for name in names)
+    assert names, "the fallback did not produce a name either"
 
 
 def test_every_preset_resolves_to_a_bundled_family(monkeypatch, tmp_path: Path) -> None:
@@ -62,9 +95,7 @@ def test_every_preset_resolves_to_a_bundled_family(monkeypatch, tmp_path: Path) 
     That is the whole point of shipping the fonts: without them a bare Linux box or a
     stripped Windows install renders every preset as the same fallback, or as tofu.
     """
-    bundled = {
-        ImageFont.truetype(str(path), 12).getname()[0] for path in BUNDLED.glob("*.ttf")
-    }
+    bundled = fonts._custom_font_families(BUNDLED)
     monkeypatch.setattr(fonts, "_available_font_families", lambda _: bundled)
 
     resolved = {

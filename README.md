@@ -647,12 +647,36 @@ uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 
 ### 字幕乱码、方框字或自定义字体没有生效
 
-确认 FFmpeg 构建包含 libass。仓库 `fonts/` 已自带四个 OFL 中文字体（Noto Sans SC / Noto Serif SC / LXGW WenKai / Smiley Sans，约 67 MiB，用 git-lfs 存储），开箱即用；也可以再把自己的 `.ttf`/`.otf`/`.ttc` 放进同一目录，或改 `subtitle_fonts_dir` 指向别处。固定字体时填写**字体内部的家族名**而不是文件名，不确定时优先用 `preset:cinematic`、`preset:modern` 等内置预设。
+确认 FFmpeg 构建包含 libass。仓库 `fonts/` 已自带**九个** OFL 中文字体（约 92 MiB，用 git-lfs 存储），开箱即用；也可以再把自己的 `.ttf`/`.otf`/`.ttc` 放进同一目录，或改 `subtitle_fonts_dir` 指向别处。固定字体时填写**字体内部的家族名**而不是文件名，不确定时优先用内置预设。
+
+十二个预设，按情绪自动选的是前七个：
+
+| 预设 | 字体 | 气质 |
+| --- | --- | --- |
+| `modern` / `minimal` | Noto Sans SC | 干净黑体（默认） |
+| `cinematic` | Noto Serif SC | 衬线 |
+| `elegant` | ZCOOL XiaoWei 站酷小薇体 | 秀气衬线 |
+| `lyrical` | LXGW WenKai 霞鹜文楷 | 楷体 |
+| `dreamy` | Noto Sans SC@300 | 细黑 |
+| `energetic` / `dark` | Smiley Sans 得意黑 | 标题感黑体 |
+| `brush` | Ma Shan Zheng 马善政毛笔楷书 | 毛笔 |
+| `script` | Zhi Mang Xing 钟齐志莽行书 | 行书 |
+| `playful` | ZCOOL KuaiLe 站酷快乐体 | 活泼 |
+| `poster` | ZCOOL QingKe HuangYou 站酷庆科黄油体 | 海报粗圆 |
+
+后五个是艺术字体，**不由情绪自动选中**——毛笔或海报体用错歌比用普通字体更糟——用 `subtitle_font = "preset:brush"` 这类方式显式指定。它们来自 Google Fonts，码位只到 GB2312 常用字级别：歌词正常用 100% 覆盖，但真正的生僻字（人名、囍 之类）会缺字形，此时 libass 会按字形回退到其它已安装字体。对字形完整性要求高的场合用 Noto 那两个。
 
 两个容易踩的点：
 
 - **`git clone` 后字体是几百字节的文本**，说明没装 git-lfs。`tests/test_fonts.py` 会直接报出来（它检查文件头魔数——指针文件本身是可读文本，不检查就会一路跑到渲染才以方框字暴露）。
 - **可变字体不能用"族名 + 字重"选择**。fontconfig 不暴露命名实例，`Fontname: Noto Sans SC Light` 解析不到任何东西并**静默回退到系统字体**。内置预设表用 `族名@字重` 表达（如 `"Noto Sans SC@300"`），由 `write_ass()` 发成 ASS 的 `\b` 标签。自己加可变字体时照这个写法。
+
+- **族名读取不能只靠 PIL**。`PIL.ImageFont.getname()` 返回的是字体**默认语言**的族名，
+  而中文商业字体的默认族名常常就是中文——PIL 解码失败会得到 `"?????"`，
+  于是字体明明能用（fontconfig 认得它的英文名），却因为发现阶段读不到而永远选不中。
+  `fonts.py` 现在直接读 name 表，收集**所有平台和语言**的记录，英文名和中文名都能寻址。
+  `ZCOOL XiaoWei` 就是踩到这个的真实例子（默认族名 `站酷小薇体`，
+  但 `Fontname: ZCOOL XiaoWei` 渲染正常、`Fontname: 站酷小薇体` 回退系统字体）。
 
 ### 成片能生成，但看起来像素材幻灯片
 
