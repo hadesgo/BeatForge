@@ -1,6 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from beatforge.lyrics import (
+    _CLEAR_X,
+    _CLEAR_Y,
     LyricLine,
     LyricToken,
     parse_lrc,
@@ -126,21 +130,52 @@ def test_the_free_layout_splits_on_punctuation_when_there_are_no_word_timings() 
     assert [fragment.text for fragment in placements] == ["那天的天气", "难得放晴"]
 
 
-def test_the_free_layout_steers_the_text_away_from_the_subject() -> None:
-    """A subject in the upper part of the frame pushes the whole layout down."""
-    lines = [_breathing_line()]
-    centred = plan_placements(
-        lines, [(.5, .5)], width=1280, height=720, margin=72, size=45,
-    )[0]
-    subject_high = plan_placements(
-        lines, [(.5, .28)], width=1280, height=720, margin=72, size=45,
-    )[0]
-    subject_low = plan_placements(
-        lines, [(.5, .74)], width=1280, height=720, margin=72, size=45,
+@pytest.mark.parametrize(
+    "focus", [(.5, .5), (.5, .25), (.5, .75), (.3, .4), (.7, .6), (.5, .12), (.5, .88)],
+)
+def test_the_free_layout_keeps_the_type_off_the_subject(focus: tuple[float, float]) -> None:
+    """The whole point: the words share the frame with the subject, not sit under it.
+
+    The check is the box the subject occupies rather than a vertical ordering. The
+    reference style puts type *beside* the subject as often as above or below it, so a
+    layout that only ever moved up and down would be avoiding the wrong thing - and an
+    earlier version did exactly that, which collapsed every off-centre shot onto the
+    same two positions.
+    """
+    placements = plan_placements(
+        [_breathing_line()], [focus], width=1280, height=720, margin=72, size=45,
     )[0]
 
-    assert min(f.y for f in subject_high) > max(f.y for f in subject_low)
-    assert min(f.y for f in subject_high) > min(f.y for f in centred)
+    assert placements
+    for fragment in placements:
+        dx = abs(fragment.x / 1280 - focus[0])
+        dy = abs(fragment.y / 720 - focus[1])
+        assert dx >= _CLEAR_X or dy >= _CLEAR_Y, (focus, fragment)
+
+
+def test_the_free_layout_does_not_repeat_itself() -> None:
+    """Ten patterns that all land in the same place are one pattern.
+
+    This is what "too rigid" looked like: three anchors, and an off-centre subject
+    collapsing even those onto two fixed positions.
+    """
+    lines = [
+        LyricLine(i * 4, i * 4 + 4, f"第{i}句歌词要断成两半", tokens=[
+            LyricToken("第i句", i * 4, i * 4 + 1.5),
+            LyricToken("歌词要", i * 4 + 2.0, i * 4 + 3.0),
+            LyricToken("断成两半", i * 4 + 3.0, i * 4 + 4.0),
+        ])
+        for i in range(10)
+    ]
+    placed = plan_placements(
+        lines, [(.5, .5)] * len(lines), width=1280, height=720, margin=72, size=45,
+    )
+
+    shapes = [tuple((f.x, f.y, f.align) for f in row) for row in placed]
+    assert len(set(shapes)) >= 8, f"only {len(set(shapes))} distinct layouts in ten lines"
+    assert all(
+        shapes[index] != shapes[index - 1] for index in range(1, len(shapes))
+    ), "two consecutive lines landed on the same layout"
 
 
 def test_a_fragment_stays_hidden_until_it_is_sung(tmp_path: Path) -> None:

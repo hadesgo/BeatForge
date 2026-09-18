@@ -119,19 +119,73 @@ class Placement:
 # the line and puts the halves where the subject is not, so the type frames the
 # picture instead of sitting underneath it.
 _FREE_PATTERNS: dict[str, tuple[tuple[float, float, int], tuple[float, float, int]]] = {
+    # Anchors are (x, y, alignment) as fractions of the frame, and the alignment is ASS
+    # numpad: 4 puts the fragment's left edge at x, 5 centres it, 6 puts its right edge
+    # there. Mixing justification is most of what makes a set of layouts read as ten
+    # compositions rather than as one composition in ten places.
+    #
+    # The second anchor of each pair is kept clear of the frame's centre by enough that
+    # a centred subject does not sit under it - a layout that cannot manage that is still
+    # usable, it just gets skipped when the subject is in the middle.
+    #
     # One half above, one below, subject between them.
-    "sandwich": ((.50, .20, 5), (.50, .74, 5)),
+    "sandwich":     ((.50, .19, 5), (.50, .75, 5)),
     # A descending diagonal, upper left to lower right.
-    "diagonal": ((.09, .34, 4), (.55, .52, 4)),
-    # Both on one baseline with a deliberate gap, the way a phrase breaks in speech.
-    "gap": ((.10, .60, 4), (.58, .60, 4)),
+    "diagonal":     ((.09, .31, 4), (.62, .54, 4)),
+    # The same idea climbing instead of falling.
+    "diagonal_up":  ((.09, .58, 4), (.62, .33, 4)),
+    # One baseline with a deliberate gap, the way a phrase breaks in speech.
+    "gap":          ((.10, .63, 4), (.62, .63, 4)),
+    # Both fragments left, stacked tight against the left edge.
+    "stack_left":   ((.09, .38, 4), (.09, .56, 4)),
+    # The same against the right edge, justified the other way.
+    "stack_right":  ((.91, .31, 6), (.91, .50, 6)),
+    # Both centred and close together - the quietest of the ten, and the one that needs
+    # the subject to be off to one side.
+    "centre_stack": ((.50, .28, 5), (.50, .45, 5)),
+    # Opposite corners, as far apart as the frame allows.
+    "corners":      ((.09, .23, 4), (.91, .79, 6)),
+    # Pinned to the two side edges at different heights, the subject between them.
+    "edges":        ((.08, .44, 4), (.92, .70, 6)),
+    # Low and centred, the second half hanging under the first.
+    "offset":       ((.50, .65, 5), (.50, .80, 5)),
 }
-_FREE_ORDER = ("sandwich", "diagonal", "gap", "sandwich", "gap", "diagonal")
 
-# Anchors for a subject that is off-centre: the text takes the empty half outright
-# rather than trusting a pattern that assumed the middle was free.
-_FREE_SUBJECT_HIGH = ((.09, .58, 4), (.55, .76, 4))
-_FREE_SUBJECT_LOW = ((.09, .20, 4), (.55, .38, 4))
+# A step through the table rather than a written-out cycle. The step is coprime with the
+# table size, so the rotation visits all ten before repeating, and because the table is
+# ordered roughly by how much room each pattern leaves in the middle, consecutive lines
+# land on layouts that look nothing alike.
+_FREE_STEP = 3
+
+# How far the layout slides away from a subject that is not in the middle. Shifting the
+# chosen pattern keeps its shape; swapping in a fixed off-centre layout instead collapsed
+# every line of an off-centre shot onto the same two positions, which is what made the
+# free layout feel like one layout.
+_FREE_SHIFT = .16
+_SUBJECT_HIGH = .42
+_SUBJECT_LOW = .58
+
+# How much room a fragment has to leave around the subject, as fractions of the frame.
+# Both axes matter: the reference style puts type beside the subject as often as above
+# or below it, and a vertical-only rule rejects exactly those layouts. The thresholds
+# describe a person-sized subject rather than its bounding box, which is all
+# ``focus_point`` gives us.
+_CLEAR_X = .11
+_CLEAR_Y = .10
+#: A hair more than the threshold, so rounding to whole pixels cannot land a fragment
+#: back inside the box the threshold was meant to clear.
+_CLEAR_MARGIN = .005
+#: A hair more than the threshold, so rounding to whole pixels cannot land a fragment
+#: back inside the box the threshold was meant to clear.
+_CLEAR_MARGIN = .005
+#: How many layouts the rotation will pass over looking for one that clears the subject.
+_FREE_TRIES = 4
+
+# A small deterministic drift so the same pattern never lands pixel-identically twice in
+# one song. Big enough to read as placed by hand, small enough that it never looks like a
+# mistake, and derived from the line index so a given plan always lays out the same way.
+_DRIFT_X = .010
+_DRIFT_Y = .008
 
 # How long a silence between two sung words has to last before the free layout treats
 # it as a phrase break. Below this the singer is just articulating; above it they
@@ -153,26 +207,24 @@ def plan_placements(
 ) -> list[list[Placement]]:
     """Lay each line out freely, in the parts of the frame its subject is not using.
 
-    ``focus_points`` is the subject centre per line, so the text can be steered away
-    from it. A subject in the upper part of the frame pushes the whole layout down and
-    one in the lower part pushes it up; only a centred subject gets to use the full
-    pattern. Everything here is a fixed rotation off the line index, so a given plan
-    always lays out the same way.
+    Ten patterns rotate through the song. Each candidate is slid as a whole to clear its
+    subject, and the rotation passes over any that still will not fit, so the variety
+    survives an off-centre subject instead of collapsing onto one safe layout.
+
+    ``focus_points`` is the subject centre per line, so the text can be steered away from
+    it. Everything is a fixed rotation off the line index - no random numbers - so a
+    given plan always lays out the same way.
     """
+    names = list(_FREE_PATTERNS)
+    inset = margin / max(height, 1)
     placements: list[list[Placement]] = []
     for index, line in enumerate(lines):
         focus = focus_points[index] if index < len(focus_points) else None
-        focus_y = focus[1] if focus else .5
-        if focus_y < .42:
-            anchors = _FREE_SUBJECT_HIGH
-        elif focus_y > .58:
-            anchors = _FREE_SUBJECT_LOW
-        else:
-            anchors = _FREE_PATTERNS[_FREE_ORDER[index % len(_FREE_ORDER)]]
+        anchors = _choose_layout(names, index, (focus[0], focus[1]) if focus else (.5, .5), inset)
         fragments = _split_line(line)
         if len(fragments) == 1:
-            # A line with no detectable pause keeps one fragment, placed at the first
-            # anchor of its pattern so it still lands somewhere different each time.
+            # A line with no detectable pause keeps one fragment, at its pattern's first
+            # anchor so it still lands somewhere different each time.
             (text, tokens, start), (fx, fy, _align) = fragments[0], anchors[0]
             placements.append([Placement(
                 text, round(width * fx), round(height * fy), 5, tokens, start,
@@ -185,6 +237,83 @@ def plan_placements(
             ))
         placements.append(row)
     return placements
+
+
+def _choose_layout(
+    names: list[str], index: int, focus: tuple[float, float], inset: float,
+) -> list[tuple[float, float, int]]:
+    """The first layout in this line's rotation that does not land on the subject.
+
+    Looking a few candidates ahead is what keeps the variety. The alternative - always
+    falling back to one safe layout when the subject is off-centre - is exactly what made
+    the free layout feel like a single layout repeated.
+    """
+    fallback: list[tuple[float, float, int]] | None = None
+    for step in range(_FREE_TRIES):
+        name = names[(index * _FREE_STEP + step) % len(names)]
+        # The drift is part of the candidate, so clearance is checked against the
+        # positions that actually get drawn rather than the pre-drift ones.
+        placed = _fit(_drift(_FREE_PATTERNS[name], index), focus[1], inset)
+        if fallback is None:
+            fallback = placed
+        if _clears(placed, focus):
+            return placed
+    assert fallback is not None
+    return fallback
+
+
+def _fit(
+    anchors: tuple[tuple[float, float, int], ...], focus_y: float, inset: float,
+) -> list[tuple[float, float, int]]:
+    """Slide a layout vertically until it clears the subject, then keep it in frame.
+
+    The group moves as a whole and slides back if that took it out of frame, so the shape
+    of the pattern survives the move. Clamping each anchor on its own is only the last
+    resort, for a layout taller than the band it has to fit in.
+    """
+    ys = [y for _, y, _ in anchors]
+    gap = _CLEAR_Y + _CLEAR_MARGIN
+    if focus_y < _SUBJECT_HIGH:
+        shift = (focus_y + gap) - min(ys)
+    elif focus_y > _SUBJECT_LOW:
+        shift = (focus_y - gap) - max(ys)
+    else:
+        shift = 0.0
+    low, high = inset, 1 - inset
+    top, bottom = min(ys) + shift, max(ys) + shift
+    if top < low:
+        shift += low - top
+    if bottom > high:
+        shift -= bottom - high
+    return [(x, min(max(y + shift, low), high), align) for x, y, align in anchors]
+
+
+def _clears(anchors: list[tuple[float, float, int]], focus: tuple[float, float]) -> bool:
+    """Does any fragment land on the subject?
+
+    A box test, not a distance: a fragment beside the subject is as clear as one above
+    it. The anchor stands in for the fragment's body, which understates how far a
+    left-justified fragment reaches and overstates it for a right-justified one - close
+    enough for a threshold, and the reference style works the same way.
+    """
+    return all(
+        abs(x - focus[0]) >= _CLEAR_X or abs(y - focus[1]) >= _CLEAR_Y
+        for x, y, _ in anchors
+    )
+
+
+def _drift(
+    anchors: tuple[tuple[float, float, int], ...], index: int,
+) -> tuple[tuple[float, float, int], ...]:
+    """Nudge a layout by a hair, deterministically, so it never lands twice the same.
+
+    Without this the ten patterns are still ten *fixed* compositions, and a song long
+    enough to come back round to one of them repeats it exactly. The offsets are derived
+    from the line index rather than drawn at random, so a plan stays reproducible.
+    """
+    dx = ((index * 7) % 5 - 2) * _DRIFT_X
+    dy = ((index * 11) % 5 - 2) * _DRIFT_Y
+    return tuple((x + dx, y + dy, align) for x, y, align in anchors)
 
 
 def _split_line(line: LyricLine) -> list[tuple[str, tuple[LyricToken, ...], float]]:

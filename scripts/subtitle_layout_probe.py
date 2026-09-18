@@ -29,13 +29,20 @@ from beatforge.planner import Shot
 from beatforge.renderer import render
 from beatforge.runtime import command
 
-# Two lines with a breath in the middle, one with a comma, one with neither - so the
-# sheet shows all three split paths and the single-fragment fallback.
+# Ten lines, because the free layout rotates through ten patterns and a shorter sheet
+# would show only part of the vocabulary. The split paths are covered too: breaths, a
+# comma, and one line with neither, which stays whole.
 LINES: list[tuple[str, list[tuple[str, float, float]]]] = [
     ("你反正不会再担心", [("你反正", 0.0, 1.1), ("不会再", 1.6, 2.5), ("担心", 2.5, 3.4)]),
     ("我隐隐作疼的心脏", [("我隐隐", 0.0, 1.2), ("作疼的", 1.7, 2.6), ("心脏", 2.6, 3.6)]),
     ("那天的天气，难得放晴", [("那天的天气", 0.0, 1.9), ("难得放晴", 2.3, 4.0)]),
     ("城市亮起灯光", [("城市亮起灯光", 0.0, 2.6)]),
+    ("不爱我的非要上", [("不爱我的", 0.0, 1.4), ("非要上", 1.9, 3.1)]),
+    ("那么硬的南墙非要撞", [("那么硬的", 0.0, 1.5), ("南墙非要撞", 2.0, 3.5)]),
+    ("你说的 放晴", [("你说的", 0.0, 1.2), ("放晴", 1.8, 2.9)]),
+    ("劫后余生好难呼吸", [("劫后余生", 0.0, 1.6), ("好难呼吸", 2.1, 3.4)]),
+    ("一场疯狂", [("一场疯狂", 0.0, 2.4)]),
+    ("你曾给我", [("你曾给我", 0.0, 1.3), ("给我", 1.9, 3.0)]),
 ]
 LINE_SECONDS = 4.0
 
@@ -82,7 +89,13 @@ def shots(tmp: Path, cfg: RenderConfig) -> list[Shot]:
     shots cover a centred subject (the patterns apply), a high one (text drops) and a
     low one (text rises).
     """
-    focuses = ([.5, .5], [.5, .5], [.5, .28], [.5, .74])
+    # A mix of centred subjects (where the patterns apply unmodified), high and low
+    # ones (where the layout slides), and off-centre ones (where the rotation has to
+    # skip a pattern to find one that clears).
+    focuses = [
+        (.50, .50), (.50, .50), (.50, .28), (.50, .74), (.50, .50),
+        (.30, .40), (.70, .62), (.50, .50), (.50, .86), (.50, .14),
+    ]
     return [
         Shot(
             index, index * LINE_SECONDS, (index + 1) * LINE_SECONDS, LINE_SECONDS,
@@ -115,7 +128,7 @@ def sheet(video: Path, tmp: Path, columns: int = 4) -> Image.Image:
              str(frames_dir / "%04d.png")])
     frames = sorted(frames_dir.glob("*.png"))
     picks = [round((index + fraction) * LINE_SECONDS * 4)
-             for index in range(len(LINES)) for fraction in (.35, .62, .88)]
+             for index in range(len(LINES)) for fraction in (.30, .60, .90)]
     tiles = []
     for index in picks:
         if index >= len(frames):

@@ -73,8 +73,17 @@
   **每片在自己被唱到的时刻淡入**（参考片：利比《跳楼机》官方歌词 MV 的核心）。
 - **断句不能按字数平分**：中文没有词间空格，"黎明照亮天空"对半分会把"照亮"劈开。断点取**逐字
   时间轴里最长的静音**（`_MIN_BREAK_SECONDS=0.22`）→ 退到标点 → 都没有则整句不拆。
-- 落点用 `shot.focus_point` 避让主体：偏上整组下压、偏下上抬，居中才用完整版式。三种版式
-  `sandwich`/`diagonal`/`gap`，靠 `line_index` 固定轮转。
+- **版式表 10 套**（上下夹持/升降对角/同基线拉开/左右堆叠/居中紧堆/对角两角/两侧贴边/下沉居中），
+  轮转用**与表长互质的步长**（`_FREE_STEP=3`）而非手写循环：十套走完才重复，表按"给中间留多少
+  空间"排序，相邻两句构图必然不同。每套混用 4/5/6 对齐——只换位置不换对齐仍是同一套构图。
+- **避让主体是"整体平移 + 跳版式"，不是"替换成固定位置"**。早先主体一偏就把所有行换成两组固定
+  锚点，一支主体偏侧的歌整首都只有 2 种落点——这才是"太死板"的真正原因。现在先平移出主体方框，
+  平移不了就换轮转里的下一套（最多 `_FREE_TRIES` 套）。
+- **避让判定必须是二维方框**（`_CLEAR_X=0.11` / `_CLEAR_Y=0.10`）。参考片把字摆在主体**旁边**的
+  次数和上下一样多，只按垂直避让会把这类版式全否掉。
+- 取整到像素会让"刚好达标"的间隙掉回框内（实测 .0994 < .10），`_fit` 要多留 `_CLEAR_MARGIN=0.005`。
+- 断言要写**真正的不变式**（没有任何一片落在主体方框内），别写实现细节的排序——
+  "偏上的版式整体高于偏下的版式"只在旧实现下成立。
 - **分片延迟出场**：`\alpha&HFF&` + `\t(delay, delay+260, \alpha&H00&)`，**必须追加在特效标签之后**
   （libass 按序应用 `\t` 链，后写的对同一属性胜出）；同时把特效自带 `\fad(in,out)` 的入场半边改成
   `\fad(0,out)`，否则两个 alpha 动画互相打架。
@@ -172,30 +181,3 @@ tokenizer、模型）→ 3 条。
 `scripts/director_model_probe.py` 加了第 5 项断言（`分层 RoPE`），把"警告是安全的"变成**被验证的事实**，
 而不是靠人记住。改 transformers 版本后跑一次探针即可。
 
-## 那条 `rope_parameters` 告警是什么意思（无害，但有静默失效风险）
-日志里每次加载导演模型会出现 1~3 条：
-```
-[transformers] Unrecognized keys in `rope_parameters` for 'rope_type'='default': {'full_attention', 'sliding_attention'}
-```
-**含义**：Spark-X2.5 用的是**分层 RoPE**，配置写成嵌套字典
-```json
-"rope_parameters": {"full_attention":    {"partial_rotary_factor": 0.25, "rope_theta": 5000000},
-                    "sliding_attention": {"partial_rotary_factor": 1.0,  "rope_theta": 10000}},
-"layer_types": ["sliding_attention", ... 36 项]，  // 27 个滑动 + 9 个全注意力
-```
-而 transformers 5.x 的 `rope_parameters` 期望的是**扁平的 RoPE 参数名**（`rope_type`/`rope_theta`/
-`partial_rotary_factor`）。`modeling_rope_utils._check_received_keys` 会往字典里注入扁平的
-`rope_type='default'`/`rope_theta`，然后把 `full_attention`/`sliding_attention` 判为"不认识的键"
-并告警。**每次 `AutoConfig` 实例化触发 1 条**，导演阶段加载 3 次配置（`_load_model_config`、
-tokenizer、模型）→ 3 条。
-
-**为什么无害**：模型根本不走 transformers 的 RoPE 机制。远程配置类自己提供了
-`Spark2_5Config.get_rope_theta(layer_type)` / `get_partial_rotary_factor(layer_type)`，
-`modeling_spark.py` 按 `set(config.layer_types)` 各建一套 cos/sin 缓存
-（`compute_rope_cos_sin`），逐层取用。实测两种层确实不同：
-`full_attention` cos.shape=(8, 64)（256 维里只旋转 25%）vs `sliding_attention` (8, 256)。
-
-**风险**：这属于"警告是噪音"的少数情况——如果哪天 transformers 不再把嵌套子字典透传下来，
-远程代码会**静默**回退到 θ=10000 + 全旋转，模型照样跑，只是变差。所以
-`scripts/director_model_probe.py` 加了第 5 项断言（`分层 RoPE`），把"警告是安全的"变成**被验证的事实**，
-而不是靠人记住。改 transformers 版本后跑一次探针即可。
