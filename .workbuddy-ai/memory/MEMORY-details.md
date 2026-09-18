@@ -136,12 +136,16 @@
 - 验证必须同时看**均值亮度 + 空间标准差 + 暖度**：噪点与通道分离几乎不改均值，只看平均亮度会得出
   "什么都没做"（第一版探针就踩了）。`scripts/cut_effect_probe.py` 在真实切点上测这三项。
 
-## 多图合成：每格必须全出血（`beatforge/renderer.py`）
+## 多图合成：留边处理只给单图和 beat_montage（`beatforge/renderer.py`）
 - `_adapt_image` 是给**一张填不满画面的图片**用的：92% 缩放居中，周围用**同一张图的虚化副本**
-  （`gblur` + 压暗）补满。**合成里不能用它**——每张图各带一片虚化底，一帧就有两个竞争背景；
-  同一张图还会以两个尺度出现两遍。
-- 四个多图效果（`split_screen`/`photo_stack`/`double_exposure`/`beat_montage`）一律用
-  `_fill_frame`（`increase` + `crop`，全出血）。堆叠的底图额外压暗去饱和让卡片读得出来。
+  （`gblur` + 压暗）补满。**"同时显示多张图"的合成里不能用它**——每张图各带一片虚化底，
+  一帧就有两个竞争背景；同一张图还会以两个尺度出现两遍。
+- `split_screen`/`photo_stack`/`double_exposure` 用 `_fill_frame`（`increase` + `crop`，全出血）。
+  堆叠的底图额外压暗去饱和让卡片读得出来。
+- **`beat_montage` 有意保留留边**（`_adapt_image`），这是用户拍板的决定：它一次只显示一张图，
+  没有两片虚化底竞争、也没有同图两个尺度并存——那两点才是"同时显示"类效果出问题的原因；
+  每帧内缩还让蒙太奇像一串照片而不是整帧硬切。**别去"统一"它**，
+  `test_beat_montage_keeps_its_letterbox_on_purpose` 正面断言了 `gblur` + `decrease` 必须在。
 - 症状对照：**堆叠乱** = 底图清晰自己叠自己虚化副本再压卡片，三个尺度同框；
   **并排割裂** = 一格留边、一格全出血，两边取景曝光不一致，像两张恰好挨着的图而不是一张切成两半。
 - 调色是在**合成之后**统一套的（`_image_filter_graph` 返回的标签才进 finishing），

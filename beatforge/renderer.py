@@ -655,8 +655,13 @@ def _image_filter_graph(
 
     if effect == "beat_montage":
         count = min(input_count, 4)
+        # Deliberately the one composite that keeps the letterbox treatment: it shows
+        # one image at a time rather than several at once, so there is no second blurred
+        # field to compete with and no duplicate at a second scale. Keeping each frame
+        # inset also makes the montage read as a sequence of photographs rather than as
+        # a hard cut between full frames.
         for index in range(count):
-            _fill_frame(filters, index, f"montage{index}", cfg.width, cfg.height)
+            _adapt_image(filters, index, f"montage{index}", cfg.width, cfg.height, cfg)
         current = "[montage0]"
         planned_starts = [0.0, *(layer.enter_offset for layer in shot.layers[:count - 1])]
         if any(value <= 0 for value in planned_starts[1:]):

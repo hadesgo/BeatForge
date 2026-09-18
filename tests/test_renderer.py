@@ -892,14 +892,14 @@ def _composite_filters(effect: str, tmp_path: Path) -> str:
     return ";".join(filters)
 
 
-@pytest.mark.parametrize("effect", ["split_screen", "photo_stack", "double_exposure", "beat_montage"])
-def test_a_composite_never_letterboxes_a_panel(effect: str, tmp_path: Path) -> None:
-    """Every panel fills its slot. The blurred backdrop belongs to single images only.
+@pytest.mark.parametrize("effect", ["split_screen", "photo_stack", "double_exposure"])
+def test_a_simultaneous_composite_never_letterboxes_a_panel(effect: str, tmp_path: Path) -> None:
+    """Every panel fills its slot, for the composites that show images at the same time.
 
-    Inside a composite the letterbox treatment is wrong twice over: each image brings
-    its own blurred field, so one frame carries two competing backgrounds, and the
-    picture is drawn twice at two scales. That is what made a photo stack look cluttered
-    and a split screen read as two pictures that happen to be adjacent.
+    The letterbox treatment is wrong there twice over: each image brings its own blurred
+    field, so one frame carries two competing backgrounds, and the picture is drawn
+    twice at two scales. That is what made a photo stack look cluttered and a split
+    screen read as two pictures that happen to be adjacent.
     """
     graph = _composite_filters(effect, tmp_path)
 
@@ -907,7 +907,7 @@ def test_a_composite_never_letterboxes_a_panel(effect: str, tmp_path: Path) -> N
     assert "force_original_aspect_ratio=increase" in graph, "nothing was made full-bleed"
 
 
-@pytest.mark.parametrize("effect", ["split_screen", "double_exposure", "beat_montage"])
+@pytest.mark.parametrize("effect", ["split_screen", "double_exposure"])
 def test_every_panel_of_a_split_covers_its_slot(effect: str, tmp_path: Path) -> None:
     """One panel letterboxed while the other filled its half is the mismatch that read
     as a seam: the two sides ended up framed and exposed differently."""
@@ -915,6 +915,23 @@ def test_every_panel_of_a_split_covers_its_slot(effect: str, tmp_path: Path) -> 
 
     assert "force_original_aspect_ratio=decrease" not in graph
     assert graph.count("force_original_aspect_ratio=increase") == 2
+
+
+def test_beat_montage_keeps_its_letterbox_on_purpose(tmp_path: Path) -> None:
+    """It is the one composite that is *not* full-bleed, and that is a decision.
+
+    It shows one image at a time, so there is no second blurred field to compete with
+    and no duplicate at a second scale - the two things that made the simultaneous
+    composites look wrong. Keeping each frame inset also reads as a sequence of
+    photographs rather than as a hard cut between full frames. Written down here so the
+    next person to notice the inconsistency does not "fix" it.
+    """
+    graph = _composite_filters("beat_montage", tmp_path)
+
+    assert "gblur" in graph, "beat_montage lost the inset treatment it is meant to keep"
+    # ``decrease`` is the inset foreground; the ``increase`` in the same chain is the
+    # blurred backdrop, which is how the treatment fills the letterbox at all.
+    assert "force_original_aspect_ratio=decrease" in graph
 
 
 def test_a_single_image_still_gets_its_blurred_backdrop(tmp_path: Path) -> None:
