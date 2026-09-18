@@ -98,7 +98,7 @@ def test_director_response_is_validated_and_sanitized(monkeypatch, tmp_path: Pat
     assets = [MediaAsset(1, Path("b.jpg"), "image", float("inf"), 100, 100)]
     treatment = direct_mv(
         _analysis(), [LyricLine(0, 4, "独自醒来")], assets, None,
-        AIConfig(), "cpu", tmp_path,
+        AIConfig(director_engine="transformers"), "cpu", tmp_path,
     )
     assert treatment.motif_asset_ids == [1]
     assert treatment.sections[0].preferred_asset_ids == [1]
@@ -160,7 +160,7 @@ def test_director_loads_in_process_with_memory_limit_and_releases_cuda(monkeypat
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 
     result = _generate_treatment(
-        {}, AIConfig(offline=True, director_backend="multimodal"), "cuda", tmp_path,
+        {}, AIConfig(offline=True, director_engine="transformers", director_backend="multimodal"), "cuda", tmp_path,
     )
 
     assert result.concept == _treatment().concept
@@ -229,7 +229,7 @@ def test_director_honours_an_explicit_gpu_index(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 
-    result = _generate_treatment({}, AIConfig(offline=True), "cuda:1", tmp_path)
+    result = _generate_treatment({}, AIConfig(offline=True, director_engine="transformers"), "cuda:1", tmp_path)
 
     assert result.concept == _treatment().concept
     assert calls["probed"] == 1
@@ -292,7 +292,12 @@ def test_spark_director_uses_text_causal_lm_without_contact_sheet(monkeypatch, t
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 
-    result = _generate_treatment({}, AIConfig(offline=True), "cpu", tmp_path)
+    # Named explicitly: this test is about Spark's in-process path, and the default
+    # checkpoint is no longer Spark.
+    config = AIConfig(
+        offline=True, director_engine="transformers", director_model="XHToken/Spark-X2.5-4B",
+    )
+    result = _generate_treatment({}, config, "cpu", tmp_path)
 
     assert result.concept == _treatment().concept
     assert calls["causal_model"][0] == "XHToken/Spark-X2.5-4B"
@@ -491,7 +496,7 @@ def test_director_retries_with_a_smaller_weight_budget_after_oom(monkeypatch, tm
         AutoTokenizer=Tokenizer,
     ))
 
-    result = _generate_treatment({}, AIConfig(offline=True), "cuda", tmp_path)
+    result = _generate_treatment({}, AIConfig(offline=True, director_engine="transformers"), "cuda", tmp_path)
 
     assert result.concept == _treatment().concept
     assert len(calls["budgets"]) == 2

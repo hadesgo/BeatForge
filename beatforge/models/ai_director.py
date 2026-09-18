@@ -88,7 +88,14 @@ TREATMENT_SPEC = """返回一个 JSON 对象，字段如下：
 # (lyric stride, candidates per lyric, assets). The per-lyric candidate rows are
 # the most redundant part, so they go first; sampling the lyrics is the last
 # resort because they carry the narrative the director is asked to shape.
+#: ``(lyric stride, candidates per lyric, asset cap)``, richest first. The top rungs
+#: exist for engines whose attention is not quadratic in prompt length: a 27B ternary
+#: checkpoint with a 262k window can read the whole brief, and the earlier ceiling of 24
+#: assets was a memory workaround rather than a judgement about what the director needs.
 PROMPT_LADDER: tuple[tuple[int, int, int], ...] = (
+    (1, 6, 96),
+    (1, 4, 64),
+    (1, 3, 40),
     (1, 2, 24),
     (1, 2, 16),
     (1, 1, 16),
@@ -97,6 +104,11 @@ PROMPT_LADDER: tuple[tuple[int, int, int], ...] = (
     (1, 0, 8),
     (2, 0, 8),
 )
+#: How many candidates to build the brief with, before the ladder trims it down. These
+#: are the widest rung's numbers; building with the maximum is what lets a big budget
+#: actually use it.
+CANDIDATE_ASSETS = PROMPT_LADDER[0][2]
+CANDIDATE_PER_LYRIC = PROMPT_LADDER[0][1]
 # bf16 score matrix plus the fp32 softmax copy and its bf16 cast.
 SCORE_BYTES_PER_ELEMENT = 6
 # Prompt tokens the JSON-repair round adds on top of the first attempt.
@@ -138,6 +150,79 @@ def _gpu_index(device: str) -> int:
 
 
 def _generate_treatment(
+    context: dict,
+    config: AIConfig,
+    device: str,
+    cache_dir: Path,
+    visual_reference: Path | None = None,
+) -> DirectorTreatment:
+    if config.director_engine == "llamacpp":
+        return _treat_with_llamacpp(context, config, cache_dir, visual_reference)
+    return _treat_with_transformers(context, config, device, cache_dir, visual_reference)
+
+
+def _treat_with_llamacpp(
+    context: dict,
+    config: AIConfig,
+    cache_dir: Path,
+    visual_reference: Path | None = None,
+) -> DirectorTreatment:
+    """Ask a llama-server-backed GGUF checkpoint for the treatment.
+
+    The shape of the exchange is the same as the in-process path - fit the prompt, ask,
+    validate, and give the model exactly one chance to repair its own JSON - so that the
+    two engines stay comparable and the retry logic is not written twice.
+    """
+    from beatforge.models.llama_server import open_server
+
+    if visual_reference is not None:
+        raise RuntimeError(
+            "llamacpp 引擎目前只支持文本后端。多模态导演请把 director_engine 设为 transformers，"
+            "或把 director_backend 改回 text。"
+        )
+    messages, prompt_tokens, trimmed_context = _fit_prompt_with(
+        _estimated_tokens, context, config, visual_reference,
+    )
+    (cache_dir / "director-context.json").write_text(
+        json.dumps(trimmed_context, ensure_ascii=False, indent=2), "utf-8",
+    )
+    schema = DirectorTreatment.model_json_schema()
+    with open_server(
+        binary=config.director_llama_server,
+        gguf=config.director_gguf,
+        cache_dir=cache_dir,
+        repo_id=config.director_model,
+        extra_args=list(config.director_llama_args),
+        port=config.director_llama_port,
+        url=config.director_llama_url or None,
+        log=cache_dir / "llama-server.log",
+    ) as server:
+        print(f"    导演提示词约 {prompt_tokens} tokens（估算）· llama-server {server.base_url}")
+        raw = server.chat(
+            messages, json_schema=schema,
+            temperature=config.director_temperature,
+            max_tokens=config.director_max_new_tokens,
+        )
+        try:
+            return DirectorTreatment.model_validate_json(_extract_json(raw))
+        except ValidationError as exc:
+            corrected = server.chat(
+                [
+                    *messages,
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": (
+                        "上一个结果未通过校验。修正后只返回完整 JSON，不要解释。\n"
+                        f"校验错误：{exc}"
+                    )},
+                ],
+                json_schema=schema,
+                temperature=config.director_temperature,
+                max_tokens=config.director_max_new_tokens,
+            )
+            return DirectorTreatment.model_validate_json(_extract_json(corrected))
+
+
+def _treat_with_transformers(
     context: dict,
     config: AIConfig,
     device: str,
@@ -329,10 +414,15 @@ def _gpu_budgets(torch, config: AIConfig, reserve_gb: float, index: int = 0) -> 
     return [round(budget, 1), round(max(1.0, budget * RETRY_BUDGET_SCALE), 1)]
 
 
-def _fit_prompt(
-    processor, context: dict, config: AIConfig, visual_reference: Path | None,
+def _fit_prompt_with(
+    count_tokens, context: dict, config: AIConfig, visual_reference: Path | None,
 ) -> tuple[list[dict], int, dict]:
-    """Trim the context until the rendered prompt fits the configured budget."""
+    """Trim the context until the rendered prompt fits the configured budget.
+
+    Takes a token counter rather than a processor, because the llama.cpp engine has no
+    tokenizer here and can only estimate. The ladder itself is the same either way, and
+    running it against an estimate is what keeps the two engines on one code path.
+    """
     budget = max(256, config.director_prompt_tokens)
     messages: list[dict] = []
     tokens = 0
@@ -342,10 +432,20 @@ def _fit_prompt(
             context, lyric_stride=stride, candidate_limit=candidates, asset_limit=assets,
         )
         messages = _prompt_messages(trimmed, visual_reference)
-        tokens = _prompt_tokens(processor, messages)
+        tokens = count_tokens(messages)
         if tokens <= budget:
             break
     return messages, tokens, trimmed
+
+
+def _fit_prompt(
+    processor, context: dict, config: AIConfig, visual_reference: Path | None,
+) -> tuple[list[dict], int, dict]:
+    """The transformers path, counting with the real tokenizer."""
+    return _fit_prompt_with(
+        lambda messages: _prompt_tokens(processor, messages),
+        context, config, visual_reference,
+    )
 
 
 def _prompt_messages(context: dict, visual_reference: Path | None) -> list[dict]:
@@ -631,9 +731,16 @@ def _build_context(
     similarities: np.ndarray | None,
     source_starts: np.ndarray | None = None,
 ) -> dict:
-    """Build the director brief. Kept compact: every character here becomes
-    prompt tokens, and prompt tokens are quadratic in attention memory."""
-    candidate_ids = _candidate_ids(assets, similarities)
+    """Build the director brief, at the widest detail the ladder can ask for.
+
+    It is built wide and trimmed down rather than built narrow: the ladder can only take
+    detail away, so anything not put in here is detail no engine can ever use. The old
+    version of this was kept deliberately sparse because prompt tokens were quadratic in
+    attention memory - true for the model it was written for, not for the one that
+    replaced it.
+    """
+    candidates = _ranked_candidates(assets, similarities)
+    candidate_ids = {asset.id for asset in candidates}
     return {
         "song": {
             "duration": analysis.duration,
@@ -664,10 +771,11 @@ def _build_context(
                 "shot_size": asset.shot_size,
                 "camera_motion": asset.camera_motion,
             }
-            for asset in assets if asset.id in candidate_ids
+            for asset in candidates
         ],
         "lyric_candidates": _lyric_candidates(
             lyrics, assets, similarities, source_starts, candidate_ids,
+            limit=CANDIDATE_PER_LYRIC,
         ),
         "instruction": (
             "lyrics 是 [起始秒, 歌词] 列表；lyric_candidates 的 i 是歌词在 lyrics 中的下标，"
@@ -705,16 +813,30 @@ def _lyric_candidates(
     return output
 
 
-def _candidate_ids(assets: list[MediaAsset], similarities: np.ndarray | None, limit: int = 24) -> set[int]:
-    if len(assets) <= limit:
-        return {asset.id for asset in assets}
-    semantic = np.max(similarities, axis=0) if similarities is not None and similarities.size else np.zeros(len(assets))
+def _ranked_candidates(
+    assets: list[MediaAsset], similarities: np.ndarray | None, limit: int = CANDIDATE_ASSETS,
+) -> list[MediaAsset]:
+    """Candidates best-first, capped at ``limit``.
+
+    Ranked unconditionally rather than only when the list is long enough to need
+    capping: the ladder trims this list with a plain slice, so a list in discovery order
+    drops the strongest material first. Ranking only when the cap bites left exactly that
+    hole for every project small enough to fit under it - which, with the cap now at 96,
+    is most of them.
+
+    ``sorted`` is stable, so equal scores keep discovery order and a project with no
+    retrieval signal at all is left alone.
+    """
+    if similarities is not None and similarities.size:
+        semantic = np.max(similarities, axis=0)
+    else:
+        semantic = np.zeros(len(assets))
     ranked = sorted(
         enumerate(assets),
         key=lambda item: float(semantic[item[0]]) * .75 + item[1].quality_score * .25,
         reverse=True,
     )
-    return {asset.id for _, asset in ranked[:limit]}
+    return [asset for _, asset in ranked[:limit]]
 
 
 def _build_contact_sheet(

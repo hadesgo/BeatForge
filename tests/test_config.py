@@ -15,7 +15,7 @@ def test_project_paths_and_cpu_defaults(tmp_path: Path) -> None:
     assert config.ai.vision_model == "tencent/WeMM-Embedding-2B"
     assert config.ai.vision_batch_size == 4
     assert config.ai.frame_samples == 8
-    assert config.ai.director_model == "XHToken/Spark-X2.5-4B"
+    assert config.ai.director_model == "prism-ml/Ternary-Bonsai-2-27B-gguf"
     assert config.ai.director_backend == "text"
     assert config.render.subtitle_effect == "auto"
     assert config.render.subtitle_font == "auto"

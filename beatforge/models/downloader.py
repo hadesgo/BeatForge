@@ -68,7 +68,12 @@ def required_models(config: AIConfig) -> list[ModelRequirement]:
     if config.vision_reranker_model:
         items.append(ModelRequirement("视觉语义精排", config.vision_reranker_model))
     if config.director_enabled:
-        items.append(ModelRequirement("AI 导演", config.director_model))
+        items.append(ModelRequirement(
+            "AI 导演", config.director_model,
+            # A snapshot would pull both packings - 13 GB to get one usable file - so the
+            # GGUF provider fetches the single quantisation by name instead.
+            provider="gguf" if config.director_engine == "llamacpp" else "snapshot",
+        ))
     if config.separate_vocals and config.separation_model:
         # Not a repository snapshot: audio-separator keeps its own catalogue and fetches
         # the checkpoint plus its config YAML itself.
@@ -131,6 +136,18 @@ def download_required_models(
     for item in required_models(config):
         if progress:
             progress("start", item, None)
+        if item.provider == "gguf":
+            try:
+                result = _download_gguf(item, config, cache_dir)
+            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+                failures.append((item, exc))
+                if progress:
+                    progress("failed", item, str(exc))
+            else:
+                completed.append(result)
+                if progress:
+                    progress("complete", item, f"gguf: {result.local_path}")
+            continue
         if item.provider == "audio-separator":
             fetch = separator_download_fn or _download_separator_model
             try:
@@ -187,6 +204,33 @@ def download_required_models(
     if failures:
         raise ModelDownloadError(completed, failures)
     return completed
+
+
+def _download_gguf(
+    item: ModelRequirement, config: AIConfig, cache_dir: Path | None,
+) -> DownloadedModel:
+    """Fetch one GGUF file out of a repository.
+
+    ``hf_hub_download`` rather than ``snapshot_download``: the checkpoint repository holds
+    both quantisations, and there is no reason to spend 13 GB of bandwidth and disk on a
+    choice the user already made.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError("下载 GGUF 需要 huggingface-hub；请先安装 ai extra") from exc
+
+    target_dir = (cache_dir or Path(".")) / "director"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = hf_hub_download(
+        repo_id=item.repo_id,
+        filename=config.director_gguf_file,
+        local_dir=str(target_dir),
+    )
+    resolved = Path(path)
+    if not resolved.is_file():
+        raise RuntimeError(f"下载后仍找不到 {resolved}")
+    return DownloadedModel(item.component, item.repo_id, str(resolved), "gguf")
 
 
 def _download_separator_model(

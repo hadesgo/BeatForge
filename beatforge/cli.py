@@ -57,8 +57,19 @@ def _supports_native_asr(version: str | None) -> bool:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    project: Path = typer.Argument(Path("project.toml"), help="用于读取导演与缓存配置的项目文件"),
+) -> None:
     """检查 FFmpeg、PyTorch、CUDA 和 AI 依赖。"""
+    # Optional: the AI rows are far more useful with the real config, but the machine
+    # checks should still work in a directory that has no project yet.
+    try:
+        loaded = load_project(project)
+        ai_config, cache = loaded.ai, loaded.cache_dir
+    except Exception:  # noqa: BLE001 - a missing project is not a doctor failure
+        from beatforge.config import AIConfig
+
+        ai_config, cache = AIConfig(), Path(".beatforge")
     table = Table("项目", "状态", "信息")
     table.add_row("Python", "OK", platform.python_version())
     for binary in ("ffmpeg", "ffprobe"):
@@ -103,6 +114,17 @@ def doctor() -> None:
         "Qwen3-ASR Native", "OK" if _supports_native_asr(transformers_version) else "未就绪",
         f"Transformers {transformers_version or '未安装'}",
     )
+    if ai_config.director_engine == "llamacpp":
+        try:
+            from beatforge.models.llama_server import find_gguf, find_server_binary
+
+            find_server_binary(ai_config.director_llama_server, cache)
+            model = find_gguf(ai_config.director_gguf, cache, ai_config.director_model)
+            table.add_row("AI 导演", "OK", f"llama.cpp · {model.name}")
+        except Exception as exc:  # noqa: BLE001 - this row reports, it does not raise
+            table.add_row("AI 导演", "未就绪", str(exc).splitlines()[0])
+    else:
+        table.add_row("AI 导演", "OK", f"transformers · {ai_config.director_model}")
     separation = importlib.util.find_spec("audio_separator")
     if separation and not torch_ready:
         # The package is installed but has nothing to run on - a state an interrupted

@@ -6,7 +6,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 
 ```text
 音乐 ── MelBand-RoFormer 人声分离 ── Qwen3-ASR + ForcedAligner ── 逐字时间轴 ──┐
-  └── All-In-One + CLAP ── 旋律/节拍/章节/意境 ──┼── Spark-X2.5 AI 导演 ── 确定性规划器 ── FFmpeg
+  └── All-In-One + CLAP ── 旋律/节拍/章节/意境 ──┼── Bonsai-2-27B AI 导演 ── 确定性规划器 ── FFmpeg
 图片/视频 ── WeMM-Embedding + Qwen3-VL Reranker ─────┘        │
                                                       导演方案 JSON
 ```
@@ -19,13 +19,13 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 - `Qwen/Qwen3-VL-Reranker-2B`：对初选画面进行歌词意境、构图和叙事适配精排；
 - `All-In-One-Infer`：识别 intro、verse、chorus、bridge、solo、outro 和强拍；
 - `Beat This!`：可选的高精度 beat/downbeat 后备；
-- `XHToken/Spark-X2.5-4B`：本地文本 AI 导演，负责全片概念、叙事弧、视觉母题和分段剪辑策略；
+- `prism-ml/Ternary-Bonsai-2-27B-gguf`：本地 AI 导演，负责全片概念、叙事弧、视觉母题和分段剪辑策略。三值量化 27B，262K 上下文，经 `llama-server` 提供服务；也可切回 `XHToken/Spark-X2.5-4B` 的 transformers 路径；
 - `librosa`：旋律变化、节拍密度、能量、音色亮度和章节边界；
 - `FFmpeg`：裁切、图片运镜、调色、字幕和最终编码。
 
 模型分阶段加载并释放，不会同时占用显存。完整 AI 流程以 **12GB 显存的 NVIDIA 显卡**作为最低目标规格，不限定具体型号；基准环境为 Python 3.13、PyTorch 2.14.0 + CUDA 13.0。无 NVIDIA 显卡的电脑仍可完成开发、单元测试和 `--no-ai` 渲染验证，但完整模型推理速度不作为支持目标。
 
-默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B、WeMM-Embedding-2B、Qwen3-VL-Reranker-2B 和 Spark-X2.5-4B 均使用原生 BF16/模型原始精度，不依赖 bitsandbytes 等运行时量化库。视觉召回完成后会先删除 WeMM 并释放 CUDA 缓存，再加载精排模型；导演又在整个视觉索引释放后加载，因此三个大模型不会同时驻留显存。CUDA运行时仍启用TF32、高精度矩阵乘策略和cuDNN形状调优。导演阶段额外限制提示词长度并为注意力矩阵预留显存，详见[提示词上限与显存预留](#提示词上限与显存预留)。
+默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B、WeMM-Embedding-2B 和 Qwen3-VL-Reranker-2B 使用原生 BF16/模型原始精度，不依赖 bitsandbytes 等运行时量化库；导演用 7.2GB 的三值量化 GGUF，以独立进程运行，与渲染不抢显存。视觉召回完成后会先删除 WeMM 并释放 CUDA 缓存，再加载精排模型；导演又在整个视觉索引释放后加载，因此三个大模型不会同时驻留显存。CUDA运行时仍启用TF32、高精度矩阵乘策略和cuDNN形状调优。导演阶段额外限制提示词长度并为注意力矩阵预留显存，详见[提示词上限与显存预留](#提示词上限与显存预留)。
 
 > 当前开发电脑没有 NVIDIA 显卡，也没有下载真实模型权重，因此12GB方案是项目的目标下限，并非已经在所有12GB显卡上实测通过的保证。代码、单元测试和无模型渲染链路可以在当前电脑验证；首次部署到GPU电脑时，请先执行 `doctor` 和 `--plan-only` 烟雾测试。若视觉编码出现瞬时显存不足，先把 `vision_batch_size` 降到1。
 
@@ -184,7 +184,7 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `vision_rerank_top_k` | `8` | 每句歌词进入精排的候选数；更高可能改善选镜，但更慢 | `8` |
 | `vision_input_pixels` | `1003520` | 每张图送进视觉编码器前的像素上限（= 1280×28×28） | 显存紧张时降到 `501760`（约 0.5MP） |
 | `frame_samples` | `8` | 长视频关键帧覆盖率；更高更容易找到对应画面，但分析更慢 | `8`，长素材可到 `12` |
-| `director_model` | `XHToken/Spark-X2.5-4B` | 统一叙事、色彩弧、母题与章节策略 | 保持4B原始精度 |
+| `director_engine` / `director_model` | `llamacpp` / `prism-ml/Ternary-Bonsai-2-27B-gguf` | 统一叙事、色彩弧、母题与章节策略 | 需要 PrismML 分支的 llama-server，见[本地 AI 导演](#本地-ai-导演) |
 | `director_prompt_tokens` | `2600` | 导演提示词的 token 上限；超长歌曲会自动抽样歌词并裁剪候选表 | 显存紧张时降到 `1600`–`2000` |
 | `director_gpu_memory_gb` | `9.0` | 导演阶段允许使用的显存上限，其余可卸载到内存/磁盘 | 不要直接填满12GB |
 | `director_contact_sheet_assets` | `0` | 仅供可选多模态导演观看联系表；Spark文本导演不会使用 | 保持 `0` |
@@ -208,16 +208,60 @@ uv run beatforge run my-mv/project.toml --no-ai
 
 ## 本地 AI 导演
 
-导演模型由 BeatForge 直接通过 Transformers 加载，不需要 llama.cpp、Ollama、LM Studio 或额外服务。视觉检索结束并释放显存后才加载导演；导演方案完成后立即删除模型、执行垃圾回收并清空 CUDA allocator，再进入 FFmpeg 渲染。加载或输出校验失败时自动使用规则导演，流程不会中断。
+默认导演是 **Ternary-Bonsai-2-27B**（三值量化，262K 上下文，Apache 2.0），通过 `llama-server` 提供服务。视觉检索结束并释放显存后才启动它，方案生成后立即停止进程，再进入 FFmpeg 渲染。启动失败或输出校验失败时自动回退规则导演，流程不会中断。
 
 ```toml
 [ai]
 director_enabled = true
+director_engine = "llamacpp"          # 或 "transformers"
+director_model = "prism-ml/Ternary-Bonsai-2-27B-gguf"
+director_gguf_file = "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+director_gguf = ""                    # 留空则用 download-models 放在 cache 里的那份
+director_llama_server = ""            # 留空则先在 PATH 找 llama-server，再找 cache/bin
+director_llama_url = ""               # 指向已启动的 llama-server 可省掉一次 7GB 加载
+director_llama_args = ["-ngl", "99", "-fa", "on", "-c", "16384"]
+director_llama_port = 8917
+director_temperature = 0.7
+director_max_new_tokens = 4096
+director_prompt_tokens = 16384
+```
+
+### 安装（llamacpp 引擎）
+
+两个前提，缺一不可：
+
+```bash
+# 1) 取权重。只下一个量化文件——整仓快照要 13GB，而只需要其中一个
+uv run beatforge download-models my-mv/project.toml
+
+# 2) 取客户端。必须用 PrismML 的分支，原版 llama.cpp 要么拒绝这种量化类型，
+#    要么加载后输出乱码（它没有三值混合注意力的 Hadamard 激活运行时）
+#    https://github.com/PrismML-Eng/llama.cpp/releases
+#    解压到项目缓存：<cache>/bin/llama-server(.exe)
+```
+
+`beatforge doctor` 会检查这两项并在缺失时说明原因。若你自己常驻一个 llama-server，把 `director_llama_url` 指过去即可，BeatForge 不会另起进程——这也避免同一份 7GB 权重在显存里存在两份。
+
+### 两个引擎
+
+| | `llamacpp`（默认） | `transformers` |
+| --- | --- | --- |
+| 权重 | GGUF，需 PrismML 分支 | HuggingFace 原始精度 |
+| 上下文 | 262K，以线性注意力为主 | 受平方注意力限制 |
+| 提示词上限 | 16384（可调到 131072） | 2600 |
+| 约束输出 | 服务端 JSON schema | 仅提示词约束 |
+| 多模态 | 暂不支持 | 支持联系表 |
+| 显存控制 | `-ngl` | `director_gpu_memory_gb` + 卸载 |
+
+想回到 Spark-X2.5 就把 `director_engine = "transformers"`、`director_model = "XHToken/Spark-X2.5-4B"`，下面的显存与提示词机制继续适用。
+
+```toml
+[ai]
+director_engine = "transformers"
 director_model = "XHToken/Spark-X2.5-4B"
 director_backend = "text"
 director_temperature = 0.18
 director_max_new_tokens = 3072
-director_prompt_tokens = 2600
 director_gpu_memory_gb = 9.0
 director_cpu_memory_gb = 20.0
 director_offload = true
@@ -234,11 +278,16 @@ uv run python scripts/director_model_probe.py
 
 ### 提示词上限与显存预留
 
-导演是整条链路里唯一会把超长序列喂给语言模型的一步，而 Spark-X2.5 的注意力是手写的 `torch.matmul` + softmax：没有 SDPA 或 flash-attn 后端，滑动窗口层也只是给完整的 `[头数, 提示词, 提示词]` 分数矩阵加掩码，并不切掉 KV。这个开销随提示词长度平方增长，因此提示词必须限长，且显存预算必须为它单独留出空间。
+导演是整条链路里唯一会把超长序列喂给语言模型的一步。**两个引擎的约束完全不同**：
+
+- `llamacpp`：Bonsai 约 75% 的层是线性注意力，KV 状态是常数大小；只有约 25% 的全注意力层随长度增长。提示词长度的瓶颈因此从"平方注意力矩阵"变成了 **KV 缓存**——由 `-c` 决定，llama.cpp 会按整个窗口一次性分配。默认 `-c 16384` 配 `director_prompt_tokens = 16384` 是自洽的：预算给到 KV 能装下的上限，再大就得同时抬 `-c`。
+- `transformers`：Spark-X2.5 的注意力是手写的 `torch.matmul` + softmax，没有 SDPA 或 flash-attn 后端，滑动窗口层也只是给完整的 `[头数, 提示词, 提示词]` 分数矩阵加掩码，并不切掉 KV。开销随提示词长度**平方**增长，所以提示词必须限长，且显存预算必须为它单独留出空间。
+
+**候选素材与逐句候选表按最宽的规格构建**，再由阶梯逐级裁剪——阶梯只能做减法，所以没放进去的细节任何引擎都用不到。上限从 24 个素材提到 96、每句候选从 2 条提到 6 条，且候选列表按检索得分排序，裁剪时先丢最弱的而不是先丢发现顺序靠后的。
 
 BeatForge 用两道闸门处理：
 
-- `director_prompt_tokens`（默认 `2600`）限制提示词长度。超长歌曲会按阶梯逐级降级——先裁剪逐句候选表，再减少送入的素材条数，最后才对歌词抽样——每一级都用 tokenizer 实测 token 数，直到装进预算为止。被裁掉候选表时，提示词里的字段说明会同步改写，不会指向已经不存在的表。
+- `director_prompt_tokens`（默认 `16384`）限制提示词长度。超长歌曲会按阶梯逐级降级——先裁剪逐句候选表，再减少送入的素材条数，最后才对歌词抽样——直到装进预算为止。llamacpp 引擎没有 tokenizer，用字符数估算；transformers 引擎用 tokenizer 实测。被裁掉候选表时，提示词里的字段说明会同步改写，不会指向已经不存在的表。
 - 加载前先按公式估算序列侧开销（注意力分数矩阵、掩码、保守估的 logits、KV 缓存、激活），再从**当前空闲显存**而不是显卡总容量里扣除，剩下的才是权重预算，并且权重预算不会超过 `director_gpu_memory_gb`。加载和生成期间若仍抛显存不足，会自动用更小的权重预算重试一次。
 
 启动时会打印一行诊断，例如：
@@ -476,6 +525,8 @@ vision_batch_size = 2
 music_structure_backend = "allin1"
 frame_samples = 3
 director_enabled = true
+# 小显存下用 4B 的 Spark 在进程内跑，比 27B 的 GGUF 更容易塞进显存
+director_engine = "transformers"
 director_model = "XHToken/Spark-X2.5-4B"
 director_backend = "text"
 director_prompt_tokens = 2000

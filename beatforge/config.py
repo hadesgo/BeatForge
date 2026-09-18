@@ -103,15 +103,43 @@ class AIConfig(BaseModel):
     vision_input_pixels: int = Field(default=1280 * 28 * 28, ge=224 * 224, le=4_000_000)
     frame_samples: int = Field(default=8, ge=1, le=12)
     director_enabled: bool = True
-    director_model: str = "XHToken/Spark-X2.5-4B"
+    #: Which runtime serves the director. ``llamacpp`` talks to a llama-server process
+    #: running a GGUF checkpoint; ``transformers`` is the older in-process path, kept
+    #: for Spark-X2.5 and for machines that already have that model.
+    director_engine: Literal["llamacpp", "transformers"] = "llamacpp"
+    director_model: str = "prism-ml/Ternary-Bonsai-2-27B-gguf"
+    #: Which quantisation to fetch. The repository holds both packings - PTQ1_0 at
+    #: 5.95 GB and PQ2_0 at 7.21 GB - so a snapshot download would cost 13 GB to get
+    #: one usable file. PQ2_0 decodes faster on Hopper and Blackwell; PTQ1_0 is the
+    #: better pick on Ada and when memory is tightest.
+    director_gguf_file: str = "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+    #: The GGUF file to serve. Empty means "find the configured quant under the cache
+    #: directory", which is where ``download-models`` puts it.
+    director_gguf: Path | None = None
+    #: The llama-server executable. Empty means "look on PATH, then in the cache".
+    director_llama_server: Path | None = None
+    #: Point at an already-running server instead of starting one. Any llama.cpp build
+    #: serving the same checkpoint will do, which is how you avoid a second copy of a
+    #: 7 GB model in memory.
+    director_llama_url: str | None = None
+    #: Passed straight through to llama-server. ``-ngl 99`` offloads every layer; the
+    #: context only has to cover the prompt, and llama.cpp allocates the KV cache for
+    #: the whole ``-c`` window up front.
+    director_llama_args: list[str] = Field(
+        default_factory=lambda: ["-ngl", "99", "-fa", "on", "-c", "16384"]
+    )
+    director_llama_port: int = Field(default=8917, ge=1024, le=65535)
     director_backend: Literal["text", "multimodal"] = "text"
-    director_temperature: float = Field(default=0.18, ge=0, le=1.5)
-    director_max_new_tokens: int = Field(default=3072, ge=256, le=8192)
+    director_temperature: float = Field(default=0.7, ge=0, le=1.5)
+    director_max_new_tokens: int = Field(default=4096, ge=256, le=32768)
     director_gpu_memory_gb: float = Field(default=9.0, ge=1, le=80)
     director_cpu_memory_gb: float = Field(default=20.0, ge=4, le=256)
     director_offload: bool = True
     director_contact_sheet_assets: int = Field(default=0, ge=0, le=48)
-    director_prompt_tokens: int = Field(default=2600, ge=256, le=32000)
+    #: Prompt ceiling. The old 2600 existed because Spark-X2.5's attention is quadratic
+    #: in prompt length; the ternary checkpoint is 75% linear attention with a 262k
+    #: window, so the ceiling is now about KV-cache room rather than arithmetic.
+    director_prompt_tokens: int = Field(default=16384, ge=256, le=131072)
 
 
 class ProjectConfig(BaseModel):
@@ -173,15 +201,22 @@ vision_rerank_top_k = 8
 vision_input_pixels = 1003520 # 每张图送进编码器前的像素上限（默认 = 1280*28*28）
 frame_samples = 8 # WeMM 默认增加长视频覆盖率
 director_enabled = true # BeatForge 分阶段加载并释放模型；失败会回退规则导演
-director_model = "XHToken/Spark-X2.5-4B"
-director_backend = "text"
-director_temperature = 0.18
-director_max_new_tokens = 3072
-director_gpu_memory_gb = 9.0 # 12GB 显卡为渲染和临时张量预留约 3GB
+director_engine = "llamacpp" # llamacpp（Ternary-Bonsai）或 transformers（Spark-X2.5）
+director_model = "prism-ml/Ternary-Bonsai-2-27B-gguf"
+director_gguf = "" # 留空则自动找 cache 目录下 download-models 放好的量化文件
+director_gguf_file = "Ternary-Bonsai-2-27B-PQ2_0.gguf" # PTQ1_0 更省内存，PQ2_0 在较新显卡上更快
+director_llama_server = "" # 留空则先在 PATH 找 llama-server，再找 cache/bin
+director_llama_url = "" # 指向已启动的 llama-server 可省掉一次 7GB 加载
+director_llama_args = ["-ngl", "99", "-fa", "on", "-c", "16384"] # -ngl 0 为纯 CPU；-c 决定 KV 缓存大小
+director_llama_port = 8917
+director_backend = "text" # llamacpp 引擎目前只走文本；多模态需要 mmproj 视觉塔
+director_temperature = 0.7
+director_max_new_tokens = 4096
+director_gpu_memory_gb = 9.0 # 仅 transformers 引擎使用；llamacpp 由 -ngl 决定卸载
 director_cpu_memory_gb = 20.0
 director_offload = true
-director_contact_sheet_assets = 0 # Spark 是文本模型；改用多模态导演时可设为 24~32
-director_prompt_tokens = 2600 # 导演提示词上限；Spark 的注意力开销随提示词长度平方增长，12GB 显存不要调高
+director_contact_sheet_assets = 0 # 仅 transformers 引擎的多模态后端使用
+director_prompt_tokens = 16384 # 提示词上限；Bonsai 以线性注意力为主，瓶颈是 KV 缓存而非平方注意力
 
 [render]
 width = 1920

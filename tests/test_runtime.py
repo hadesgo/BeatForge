@@ -57,3 +57,23 @@ def test_release_gpu_survives_an_unusable_torch(monkeypatch) -> None:
 
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
     release_gpu()  # must not raise
+
+
+def test_doctor_reports_a_missing_director_runtime_instead_of_crashing(tmp_path, monkeypatch) -> None:
+    """The director needs a fork of llama.cpp that most machines do not have.
+
+    That is the normal state on a fresh checkout, so it has to come out as a table row
+    saying what is missing - not as a traceback from the command whose job is to tell you
+    what is missing.
+    """
+    from typer.testing import CliRunner
+
+    from beatforge.cli import app
+
+    monkeypatch.chdir(tmp_path)          # no project.toml, so the defaults are used
+    result = CliRunner().invoke(app, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert "AI 导演" in result.output
+    assert "llama-server" in result.output
+

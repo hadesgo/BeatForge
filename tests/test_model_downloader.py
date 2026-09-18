@@ -41,7 +41,6 @@ def test_default_manifest_contains_every_configured_huggingface_model_once() -> 
         "laion/clap-htsat-fused",
         "tencent/WeMM-Embedding-2B",
         "Qwen/Qwen3-VL-Reranker-2B",
-        "XHToken/Spark-X2.5-4B",
     ]
 
 
@@ -251,3 +250,32 @@ def test_a_missing_separation_extra_skips_instead_of_failing(tmp_path: Path, mon
     assert "skipped" in states, "the missing extra was not reported"
     assert all(item.source != "audio-separator" for item in models)
     assert models, "the other models must still have been fetched"
+
+
+def test_the_director_gguf_is_fetched_by_name_not_as_a_snapshot() -> None:
+    """The checkpoint repository holds both packings; a snapshot costs 13 GB for one file.
+
+    It also has to leave the snapshot provider, or the download loop would try to pull the
+    whole repository as well.
+    """
+    director = next(
+        item for item in required_models(AIConfig()) if item.component == "AI 导演"
+    )
+
+    assert director.provider == "gguf"
+    assert director.repo_id == "prism-ml/Ternary-Bonsai-2-27B-gguf"
+    assert director.repo_id not in {
+        item.repo_id for item in required_models(AIConfig()) if item.provider == "snapshot"
+    }
+
+
+def test_the_transformers_engine_still_asks_for_a_snapshot() -> None:
+    """Spark-X2.5 is a transformers checkpoint, not a single file."""
+    config = AIConfig(director_engine="transformers", director_model="XHToken/Spark-X2.5-4B")
+
+    director = next(
+        item for item in required_models(config) if item.component == "AI 导演"
+    )
+
+    assert director.provider == "snapshot"
+
