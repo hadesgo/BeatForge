@@ -17,7 +17,7 @@ from beatforge.audio import AudioAnalysis
 from beatforge.config import RenderConfig
 from beatforge.director import create_art_direction
 from beatforge.lyrics import LyricLine
-from beatforge.media import MediaAsset
+
 from beatforge.planner import Shot, ShotLayer
 from beatforge.renderer import _render_shot
 from beatforge.runtime import command

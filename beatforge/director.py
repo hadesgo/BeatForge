@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
-from beatforge.audio import AudioAnalysis
+from beatforge.audio import AudioAnalysis, section_at
 from beatforge.config import RenderConfig
 from beatforge.editing import EditStyle
 from beatforge.fonts import resolve_subtitle_font
@@ -70,7 +70,7 @@ def create_art_direction(
         midpoint = (line.start + line.end) / 2
         energy = analysis.energy_at(midpoint)
         melody = analysis.melody_at(midpoint)
-        section, section_index = _section_info(analysis, midpoint)
+        section, section_index = section_at(analysis, midpoint)
         section_direction = treatment.section(section_index) if treatment else None
         if config.subtitle_effect != "auto":
             effect = config.subtitle_effect
@@ -125,12 +125,3 @@ def create_art_direction(
     )
 
 
-def _section_at(analysis: AudioAnalysis, time: float) -> str:
-    return _section_info(analysis, time)[0]
-
-
-def _section_info(analysis: AudioAnalysis, time: float) -> tuple[str, int]:
-    for index, (start, end) in enumerate(zip(analysis.sections, analysis.sections[1:])):
-        if start <= time < end:
-            return (analysis.section_labels[index] if index < len(analysis.section_labels) else "unknown", index)
-    return "unknown", max(0, len(analysis.sections) - 2)

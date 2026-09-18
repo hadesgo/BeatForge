@@ -17,7 +17,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from beatforge.lyrics import SUBTITLE_EFFECTS, LyricLine, LyricToken, write_ass
-from beatforge.runtime import command, duration
+from beatforge.runtime import command
 
 WIDTH, HEIGHT, FPS, SECONDS = 480, 270, 12, 2.4
 TEXT = "夜色渐浓"

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from beatforge.audio import AudioAnalysis
+from beatforge.audio import AudioAnalysis, section_at
 from beatforge.editing import EditStyle
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
@@ -135,7 +135,7 @@ def create_plan(
         # Only this surplus may be spent on composite layers.
         spare_assets = len(least_used) - remaining_shots
         energy = analysis.energy_at(midpoint)
-        section, section_index = _section_info(analysis, midpoint)
+        section, section_index = section_at(analysis, midpoint)
         direction = treatment.section(section_index) if treatment else None
         shot_duration = end - start
         ranked: list[tuple[float, MediaAsset, float, int]] = []
@@ -397,7 +397,7 @@ def _boundaries(
     for target in anchors[1:]:
         cursor = output[-1]
         while target - cursor > maximum:
-            section, section_index = _section_info(analysis, cursor)
+            section, section_index = section_at(analysis, cursor)
             section_scale = .78 if section == "chorus" else 1.18 if section in {"intro", "outro", "bridge"} else 1.0
             direction = treatment.section(section_index) if treatment else None
             if direction:
@@ -501,16 +501,6 @@ def _lyric_key(text: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]+", "", text.casefold(), flags=re.UNICODE)
 
 
-def _section_at(analysis: AudioAnalysis, time: float) -> str:
-    return _section_info(analysis, time)[0]
-
-
-def _section_info(analysis: AudioAnalysis, time: float) -> tuple[str, int]:
-    for index, (start, end) in enumerate(zip(analysis.sections, analysis.sections[1:])):
-        if start <= time < end:
-            return (analysis.section_labels[index] if index < len(analysis.section_labels) else "unknown", index)
-    index = max(0, len(analysis.sections) - 2)
-    return (analysis.section_labels[-1] if analysis.section_labels else "unknown", index)
 
 
 def _director_asset_score(

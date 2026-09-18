@@ -172,6 +172,23 @@
 - **libass 会静默忽略不认识的标签**——渲染完美无缺却什么都没做。`scripts/subtitle_effect_probe.py`
   要同时查"墨量"（真画出来了吗）与"相邻帧差"（真在动吗），`--sheet` 出接触表。
 
+## 内置字体与可变字体的字重（`beatforge/fonts.py` + `fonts/`）
+- 仓库自带 4 个 **SIL OFL 1.1** 中文字体（约 67 MiB，**git-lfs**，见 `.gitattributes`）：
+  Noto Sans SC / Noto Serif SC（**可变字体**）、LXGW WenKai、Smiley Sans。
+  每份字体旁边必须有许可证原文，否则不能再分发。
+- **可变字体的字重不能用族名表达**：fontconfig 不暴露命名实例，
+  `Fontname: "Noto Sans SC Light"` 解析不到任何东西并**静默回退到系统字体**——
+  画面上只表现为"这个预设好像没生效"。预设表里写 `族名@字重`，
+  `resolve_subtitle_font()` 拆成 `FontChoice(family, weight)`，`write_ass(weight=)` 发 ASS 的 `\b`。
+- **PIL 的 `getname()` 报 `style='Thin'` 是误导**：它读 name 表里的第一个命名实例，
+  不是默认实例。实测 `Noto Sans SC` 的默认实例是 Regular(400)：
+  `\b100/200`→1958、`\b300`→2658、`\b400/500`→3565、`\b600`→4332、`\b700+`→5196（封顶），
+  单位是同句同字号的"墨量"（亮度>40 的像素数）。
+- 测试必须**查字体文件头魔数**：没装 git-lfs 时 `.ttf` 是几百字节的**文本指针**，
+  它本身能正常读，不查魔数就会一路跑到渲染才以"方框字"暴露。
+- 加新字体时族名必须出现在 `FONT_PRESETS` 里，否则没有任何预设能选中它——
+  `tests/test_fonts.py` 会检查这条。
+
 ## 那条 `rope_parameters` 告警是什么意思（无害，但有静默失效风险）
 日志里每次加载导演模型会出现 1~3 条：
 ```

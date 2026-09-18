@@ -42,6 +42,33 @@ class AudioAnalysis:
         return self.melody_values[max(0, min(index, len(self.melody_values) - 1))]
 
 
+def section_at(analysis: AudioAnalysis, time: float) -> tuple[str, int]:
+    """Which section a timestamp falls in, as ``(label, index)``.
+
+    This lives here because both the planner and the art director need it, and they used
+    to carry a copy each - with different fallbacks. Past the last boundary the director's
+    copy answered ``"unknown"`` while the planner's answered the real last label, so the
+    same timestamp could be "outro" for one of them and nothing at all for the other.
+    Section labels drive the edit intent, the effect family, colour continuity and the
+    motif choice, so the two disagreeing is not cosmetic.
+
+    The last label is the right answer: ``sections`` always spans the whole song, so a
+    time at or past the final boundary is still inside the final section. ``"unknown"``
+    is only for a track with no sections at all.
+    """
+    for index, (start, end) in enumerate(zip(analysis.sections, analysis.sections[1:])):
+        if start <= time < end:
+            label = (
+                analysis.section_labels[index]
+                if index < len(analysis.section_labels) else "unknown"
+            )
+            return label, index
+    index = max(0, len(analysis.sections) - 2)
+    if not analysis.section_labels:
+        return "unknown", index
+    return analysis.section_labels[-1], index
+
+
 def analyze_music(
     file: Path,
     mood_scores: dict[str, float] | None = None,
