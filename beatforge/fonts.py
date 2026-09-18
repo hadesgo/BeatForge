@@ -1,67 +1,99 @@
 from __future__ import annotations
 
 import platform
+import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 
-# Presets list open-source families first, then common system fonts. BeatForge does
-# not redistribute font binaries; users can put any matching TTF/OTF in fonts_dir.
+@dataclass(frozen=True, slots=True)
+class FontChoice:
+    """A resolved font family, and the weight to ask for when the family can vary.
+
+    The bundled Noto families are **variable** fonts: one file covers 100..900 and the
+    weight is picked with an ASS ``\\b`` tag rather than by naming a separate family.
+    That is why the weight travels beside the family instead of inside it - fontconfig
+    does not expose the named instances, so "Noto Sans SC Light" resolves to nothing and
+    silently falls back to a system font.
+    """
+
+    family: str
+    weight: int | None = None
+
+
+#: A preset entry may pin a weight: ``"Noto Sans SC@300"``. Only the bundled variable
+#: families use it; anything without the suffix is a plain family name.
+_WEIGHT_SUFFIX = re.compile(r"^(?P<family>.+?)@(?P<weight>\d{3})$")
+
+
+def _parse_entry(entry: str) -> FontChoice:
+    match = _WEIGHT_SUFFIX.match(entry)
+    if match:
+        return FontChoice(match["family"], int(match["weight"]))
+    return FontChoice(entry)
+
+
+# Presets list the bundled open-source families first, then common system fonts, so a
+# machine with none of them installed still gets the bundled face rather than tofu.
+# Everything under ``fonts/`` is SIL OFL 1.1 and redistributable; see fonts/README.md.
 FONT_PRESETS: dict[str, tuple[str, ...]] = {
     "modern": (
-        "Source Han Sans SC", "Noto Sans CJK SC", "MiSans", "HarmonyOS Sans SC",
-        "Microsoft YaHei", "PingFang SC", "WenQuanYi Micro Hei",
+        "Noto Sans SC", "Source Han Sans SC", "Noto Sans CJK SC", "MiSans",
+        "HarmonyOS Sans SC", "Microsoft YaHei", "PingFang SC", "WenQuanYi Micro Hei",
     ),
     "cinematic": (
-        "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun",
-        "Source Han Sans SC", "Microsoft YaHei",
+        "Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC",
+        "SimSun", "Source Han Sans SC", "Microsoft YaHei",
     ),
     "lyrical": (
         "LXGW WenKai", "Kaiti SC", "STKaiti", "KaiTi", "FangSong",
-        "Source Han Serif SC", "Noto Serif CJK SC",
+        "Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC",
     ),
     "energetic": (
-        "Smiley Sans", "Alimama ShuHeiTi", "Source Han Sans SC Heavy",
-        "Noto Sans CJK SC Black", "Microsoft YaHei UI", "SimHei",
+        "Smiley Sans", "Noto Sans SC@700", "Alimama ShuHeiTi",
+        "Source Han Sans SC Heavy", "Noto Sans CJK SC Black",
+        "Microsoft YaHei UI", "SimHei",
     ),
     "dreamy": (
-        "Source Han Sans SC Light", "Noto Sans CJK SC Light", "MiSans Light",
-        "Microsoft YaHei Light", "PingFang SC Light", "LXGW WenKai Light",
+        "Noto Sans SC@300", "Source Han Sans SC Light", "Noto Sans CJK SC Light",
+        "MiSans Light", "Microsoft YaHei Light", "PingFang SC Light", "LXGW WenKai",
     ),
     "minimal": (
-        "MiSans", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans CJK SC",
-        "Microsoft YaHei", "PingFang SC",
+        "Noto Sans SC", "MiSans", "HarmonyOS Sans SC", "Source Han Sans SC",
+        "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC",
     ),
     "dark": (
-        "Source Han Sans SC Heavy", "Noto Sans CJK SC Black", "Smiley Sans",
-        "Microsoft YaHei UI", "SimHei",
+        "Smiley Sans", "Noto Sans SC@700", "Source Han Sans SC Heavy",
+        "Noto Sans CJK SC Black", "Microsoft YaHei UI", "SimHei",
     ),
 }
 
 
-def resolve_subtitle_font(requested: str, fonts_dir: Path | None = None) -> str:
-    """Resolve ``preset:name`` to an installed/custom font family."""
+def resolve_subtitle_font(requested: str, fonts_dir: Path | None = None) -> FontChoice:
+    """Resolve ``preset:name`` to an installed or bundled font family."""
     if not requested.startswith("preset:"):
-        return requested
+        return FontChoice(requested)
     preset = requested.partition(":")[2].strip().lower()
     candidates = FONT_PRESETS.get(preset, FONT_PRESETS["modern"])
     available = _available_font_families(fonts_dir)
     if available:
         normalized = {_normalize_font(name): name for name in available}
         for candidate in candidates:
-            key = _normalize_font(candidate)
+            choice = _parse_entry(candidate)
+            key = _normalize_font(choice.family)
             if key in normalized:
-                return candidate
+                return choice
             if any(key in installed or installed in key for installed in normalized):
-                return candidate
+                return choice
     # Font discovery is not guaranteed on every FFmpeg build. A platform-native
     # Chinese family is a safer fallback than Arial, which may render tofu boxes.
     if platform.system() == "Windows":
-        return "Microsoft YaHei"
+        return FontChoice("Microsoft YaHei")
     if platform.system() == "Darwin":
-        return "PingFang SC"
-    return "Noto Sans CJK SC"
+        return FontChoice("PingFang SC")
+    return FontChoice("Noto Sans CJK SC")
 
 
 def _available_font_families(fonts_dir: Path | None) -> set[str]:

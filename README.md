@@ -199,6 +199,7 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `transition_density` | `0.35` | 段落内部使用可见转场的比例；`0` 只在段落切换时转场，`1` 每个切点都转场 | `0.25`–`0.45` |
 | `image_background_blur` | `26.0` | 原比例图片周围的满屏模糊背景强度 | 人像可用 `22`–`32` |
 | `subtitle_effect` / `subtitle_font` | `auto` / `auto` | AI按旋律、情绪和段落从 16 种字幕动效里选，并选择字体 | 保持 `auto`，也可固定成某个特效名 |
+| `subtitle_fonts_dir` | `fonts` | 自定义字体目录；仓库自带四个 OFL 中文字体（约 67 MiB，git-lfs 存储） | 保持默认即可开箱即用 |
 | `subtitle_layout` | `free` | `free` 分句自由排版并避开主体；`band` 为传统底部居中一行 | 想做成官方歌词 MV 那样就用 `free` |
 | `subtitle_fill` | `solid` | `knockout` 让文字从画面里镂空，字中透出提亮虚化的同一帧 | 想要"融入画面"就用 `knockout` |
 | `subtitle_outline` | `1.1` | 描边宽度；越小越融入画面，`0` 为无描边 | 画面偏暗时用 `0`，杂时用 `1.5`–`2.2` |
@@ -646,7 +647,12 @@ uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 
 ### 字幕乱码、方框字或自定义字体没有生效
 
-确认 FFmpeg 构建包含 libass，把 `.ttf`、`.otf` 或 `.ttc` 放入项目 `fonts/`，并让 `subtitle_fonts_dir = "fonts"`。固定字体时填写字体内部的家族名，而不是文件名；不确定时优先使用 `preset:cinematic`、`preset:modern` 等内置预设。字体授权由素材提供者自行确认。
+确认 FFmpeg 构建包含 libass。仓库 `fonts/` 已自带四个 OFL 中文字体（Noto Sans SC / Noto Serif SC / LXGW WenKai / Smiley Sans，约 67 MiB，用 git-lfs 存储），开箱即用；也可以再把自己的 `.ttf`/`.otf`/`.ttc` 放进同一目录，或改 `subtitle_fonts_dir` 指向别处。固定字体时填写**字体内部的家族名**而不是文件名，不确定时优先用 `preset:cinematic`、`preset:modern` 等内置预设。
+
+两个容易踩的点：
+
+- **`git clone` 后字体是几百字节的文本**，说明没装 git-lfs。`tests/test_fonts.py` 会直接报出来（它检查文件头魔数——指针文件本身是可读文本，不检查就会一路跑到渲染才以方框字暴露）。
+- **可变字体不能用"族名 + 字重"选择**。fontconfig 不暴露命名实例，`Fontname: Noto Sans SC Light` 解析不到任何东西并**静默回退到系统字体**。内置预设表用 `族名@字重` 表达（如 `"Noto Sans SC@300"`），由 `write_ass()` 发成 ASS 的 `\b` 标签。自己加可变字体时照这个写法。
 
 ### 成片能生成，但看起来像素材幻灯片
 

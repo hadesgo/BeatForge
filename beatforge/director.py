@@ -22,6 +22,9 @@ class ArtDirection:
     motifs: list[int]
     mood: str
     font: str
+    #: ASS weight to ask for, when the chosen family is a variable font. ``None`` leaves
+    #: the family's own default alone.
+    font_weight: int | None
     highlight_color: str
     base_subtitle_effect: str
     line_effects: list[str]
@@ -60,7 +63,7 @@ def create_art_direction(
         config.subtitle_font if config.subtitle_font != "auto"
         else config.subtitle_fonts.get(mood, "preset:modern")
     )
-    font = resolve_subtitle_font(requested_font, config.subtitle_fonts_dir)
+    font_choice = resolve_subtitle_font(requested_font, config.subtitle_fonts_dir)
     base_effect = config.subtitle_effect if config.subtitle_effect != "auto" else default_effect
     line_effects = []
     for line_index, line in enumerate(lyrics):
@@ -107,7 +110,8 @@ def create_art_direction(
         visual_style=treatment.visual_style if treatment else profile,
         color_arc=(treatment.color_arc or [profile]) if treatment else [profile],
         motifs=treatment.motif_asset_ids if treatment else [],
-        mood=mood, font=font, highlight_color=config.subtitle_highlight_color,
+        mood=mood, font=font_choice.family, font_weight=font_choice.weight,
+        highlight_color=config.subtitle_highlight_color,
         base_subtitle_effect=base_effect, line_effects=line_effects,
         grade_filter=grade,
         # The style scales the mood's camera energy: a documentary and an impact edit

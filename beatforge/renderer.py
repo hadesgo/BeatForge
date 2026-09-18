@@ -62,7 +62,7 @@ def render(
     placements = _subtitle_placements(lyrics, shots, config)
     write_ass(
         lyrics, subtitle, width=config.width, height=config.height,
-        font=art.font, size=config.subtitle_size,
+        font=art.font, size=config.subtitle_size, weight=art.font_weight,
         margin=config.subtitle_margin, effect=art.base_subtitle_effect,
         highlight_color=art.highlight_color, line_effects=art.line_effects,
         placements=placements, outline=config.subtitle_outline,

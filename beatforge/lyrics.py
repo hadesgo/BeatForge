@@ -371,12 +371,18 @@ def write_ass(
     effect: str = "karaoke",
     highlight_color: str = "&H0000D7FF",
     line_effects: list[str] | None = None,
+    weight: int | None = None,
     placements: list[list[Placement]] | None = None,
     outline: float = 2.2,
     shadow: float = 0.0,
     mask_only: bool = False,
 ) -> None:
     """Write the lyric script.
+
+    ``weight`` asks for a specific weight on a variable font. The ASS style's own Bold
+    field only offers on or off, so a family that can be anything from 100 to 900 needs
+    the number on every event - which is the whole reason the bundled Noto families are
+    shipped as variable fonts rather than as five static ones.
 
     ``placements`` switches the layout: without it every line is one centred line in
     the bottom band, and with it each line is drawn as the freely positioned fragments
@@ -402,6 +408,7 @@ Style: Lyric,{font},{size},{primary},&H00FFFFFF,{outline_colour},&H50000000,-1,0
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+    weight_tag = f"{{\\b{weight}}}" if weight else ""
     events = []
     for index, line in enumerate(lines):
         fit = _fit_font_size(line.text, width, size)
@@ -418,7 +425,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 placement=fragment, mask_only=mask_only,
             )
             events.append(
-                f"Dialogue: 0,{ass_timestamp(line.start)},{ass_timestamp(line.end)},Lyric,,0,0,0,,{fit}{prefix}{text}"
+                f"Dialogue: 0,{ass_timestamp(line.start)},{ass_timestamp(line.end)},Lyric,,0,0,0,,{fit}{weight_tag}{prefix}{text}"
             )
     file.write_text(header + "\n".join(events) + "\n", "utf-8-sig")
 
