@@ -180,6 +180,17 @@
   `Fontname: "Noto Sans SC Light"` 解析不到任何东西并**静默回退到系统字体**——
   画面上只表现为"这个预设好像没生效"。预设表里写 `族名@字重`，
   `resolve_subtitle_font()` 拆成 `FontChoice(family, weight)`，`write_ass(weight=)` 发 ASS 的 `\b`。
+- **族名读取不能只靠 PIL**：`ImageFont.getname()` 返回字体**默认语言**的族名，
+  中文商业字体的默认族名常常是中文，PIL 解码失败得到 `"?????"` → 发现阶段读不到 →
+  **永远匹配不上预设**，但字体本身完全能用（fontconfig 认得它的英文名）。
+  实测 ZCOOL XiaoWei：`Fontname: ZCOOL XiaoWei` 墨量 4019（正常），
+  `Fontname: 站酷小薇体` 墨量 5425（= Smiley Sans 的回退值）。
+  `_font_families()` 现在直接读 name 表（ID 1 和 16，所有平台与语言；
+  platform 0/3 用 utf-16-be，platform 1 依次试 utf-8/gb18030/latin-1），
+  副作用是中文族名也可寻址。
+- **测试要查"被选中"而不是"被声明"**：字体声明在一个永远选不中的位置等于没加，
+  白占仓库体积。`test_every_bundled_font_is_reachable_from_some_preset` 查的是
+  解析结果的集合是否覆盖每个字体文件。
 - **PIL 的 `getname()` 报 `style='Thin'` 是误导**：它读 name 表里的第一个命名实例，
   不是默认实例。实测 `Noto Sans SC` 的默认实例是 Regular(400)：
   `\b100/200`→1958、`\b300`→2658、`\b400/500`→3565、`\b600`→4332、`\b700+`→5196（封顶），
