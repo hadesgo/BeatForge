@@ -602,8 +602,12 @@ def _image_filter_graph(
         gap = max(2, round(cfg.width * .004))
         left_width = (cfg.width - gap) // 2
         right_width = cfg.width - gap - left_width
-        _adapt_image(filters, 0, "left", left_width, cfg.height, cfg)
-        _adapt_image(filters, 1, "right", right_width, cfg.height, cfg)
+        # Both panels full-bleed. Letting one keep the letterbox treatment while the
+        # other filled its half gave the two sides visibly different framing and
+        # exposure, which is what made a split screen read as two pictures that happen
+        # to be adjacent rather than one picture cut in two.
+        _fill_frame(filters, 0, "left", left_width, cfg.height)
+        _fill_frame(filters, 1, "right", right_width, cfg.height)
         filters.append(f"[left][right]hstack=inputs=2[panels]")
         filters.append(
             f"color=c=white@0.22:s={gap}x{cfg.height}:r={cfg.fps}:d={_plane_duration(duration, cfg):.4f}[divider];"
@@ -612,8 +616,13 @@ def _image_filter_graph(
         return filters, "[composite]"
 
     if effect == "photo_stack":
-        _adapt_image(filters, 0, "base", cfg.width, cfg.height, cfg)
-        current = "[base]"
+        # A full-bleed backdrop, pushed down so the cards read against it. Using the
+        # letterbox treatment here put a sharp copy of the same picture at 92% *on top
+        # of* its own blurred copy, and then stacked cards over that - three scales of
+        # the same frame, which is what made a stack look cluttered.
+        _fill_frame(filters, 0, "base", cfg.width, cfg.height)
+        filters.append("[base]eq=brightness=-.085:saturation=.74[backdrop]")
+        current = "[backdrop]"
         card_width, card_height = round(cfg.width * .56), round(cfg.height * .64)
         for layer_index in range(1, min(input_count, 3)):
             angle = -.026 if layer_index % 2 else .022
@@ -636,15 +645,18 @@ def _image_filter_graph(
         return filters, current
 
     if effect == "double_exposure":
-        _adapt_image(filters, 0, "exposure0", cfg.width, cfg.height, cfg)
-        _adapt_image(filters, 1, "exposure1", cfg.width, cfg.height, cfg)
+        # Two full-bleed exposures. Blending two letterboxed frames meant screen-blending
+        # two blurred backdrops as well, and the result was a wash of out-of-focus
+        # colour with the actual pictures buried in it.
+        _fill_frame(filters, 0, "exposure0", cfg.width, cfg.height)
+        _fill_frame(filters, 1, "exposure1", cfg.width, cfg.height)
         filters.append("[exposure0][exposure1]blend=all_mode=screen:all_opacity=0.34[composite]")
         return filters, "[composite]"
 
     if effect == "beat_montage":
         count = min(input_count, 4)
         for index in range(count):
-            _adapt_image(filters, index, f"montage{index}", cfg.width, cfg.height, cfg)
+            _fill_frame(filters, index, f"montage{index}", cfg.width, cfg.height)
         current = "[montage0]"
         planned_starts = [0.0, *(layer.enter_offset for layer in shot.layers[:count - 1])]
         if any(value <= 0 for value in planned_starts[1:]):
@@ -773,6 +785,24 @@ def _adapt_image(
     _adapt_image_layers(filters, input_index, label, width, height, cfg)
     filters.append(
         f"[{label}bg][{label}fg]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1[{label}]"
+    )
+
+
+def _fill_frame(
+    filters: list[str], input_index: int, label: str, width: int, height: int,
+) -> None:
+    """Scale to cover the frame and crop the overflow, leaving no letterbox at all.
+
+    The blurred-backdrop treatment exists for one image that does not fill the frame,
+    and it is the wrong tool inside a composite twice over: each image brings its own
+    blurred field, so the frame ends up carrying two competing backgrounds, and the
+    picture appears twice at two different scales. A composite wants every panel
+    full-bleed, so the frame reads as one picture divided rather than as a collage.
+    """
+    filters.append(
+        f"[{input_index}:v]scale={width}:{height}:"
+        f"force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={width}:{height},setsar=1[{label}]"
     )
 
 

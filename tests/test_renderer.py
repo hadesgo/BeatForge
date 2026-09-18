@@ -863,3 +863,83 @@ def test_the_knockout_fill_renders_and_differs_from_solid(tmp_path: Path) -> Non
     assert frames["knockout"] != frames["solid"], "the knockout drew the same frame"
     assert frames["knockout"] > 0, "the knockout drew nothing"
 
+
+
+def _composite_filters(effect: str, tmp_path: Path) -> str:
+    """The filter chain a two-image shot of this effect builds."""
+    files = []
+    for index, size in enumerate(((320, 180), (180, 320))):
+        file = tmp_path / f"src-{index}.jpg"
+        Image.new("RGB", size, (60 + index * 90, 90, 140)).save(file)
+        files.append(file)
+    shot = Shot(
+        0, 0, 1, 1, 0, str(files[0]), "image", 0, "", .7, "steady", "cut", .8,
+        image_effect=effect, source_width=320, source_height=180,
+        layers=[ShotLayer(1, str(files[1]), "image", "secondary",
+                          source_width=180, source_height=320)],
+    )
+    cfg = RenderConfig(width=320, height=180, fps=10, crf=35, preset="ultrafast",
+                       film_grain=0, vignette=False, image_background_blur=8)
+    art = create_art_direction(
+        AudioAnalysis(
+            duration=1, bpm=120, beats=[0, 1], sections=[0, 1],
+            energy_times=[0], energy_values=[.6], average_energy=.6,
+            brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+        ),
+        [], cfg,
+    )
+    filters, _ = _image_filter_graph(shot, cfg, art, 1.0, 2)
+    return ";".join(filters)
+
+
+@pytest.mark.parametrize("effect", ["split_screen", "photo_stack", "double_exposure", "beat_montage"])
+def test_a_composite_never_letterboxes_a_panel(effect: str, tmp_path: Path) -> None:
+    """Every panel fills its slot. The blurred backdrop belongs to single images only.
+
+    Inside a composite the letterbox treatment is wrong twice over: each image brings
+    its own blurred field, so one frame carries two competing backgrounds, and the
+    picture is drawn twice at two scales. That is what made a photo stack look cluttered
+    and a split screen read as two pictures that happen to be adjacent.
+    """
+    graph = _composite_filters(effect, tmp_path)
+
+    assert "gblur" not in graph, "a panel brought its own blurred backdrop"
+    assert "force_original_aspect_ratio=increase" in graph, "nothing was made full-bleed"
+
+
+@pytest.mark.parametrize("effect", ["split_screen", "double_exposure", "beat_montage"])
+def test_every_panel_of_a_split_covers_its_slot(effect: str, tmp_path: Path) -> None:
+    """One panel letterboxed while the other filled its half is the mismatch that read
+    as a seam: the two sides ended up framed and exposed differently."""
+    graph = _composite_filters(effect, tmp_path)
+
+    assert "force_original_aspect_ratio=decrease" not in graph
+    assert graph.count("force_original_aspect_ratio=increase") == 2
+
+
+def test_a_single_image_still_gets_its_blurred_backdrop(tmp_path: Path) -> None:
+    """The fix must not take the letterbox treatment away from the case it is for.
+
+    A lone portrait photo on a landscape canvas is exactly what the blurred fill exists
+    to handle, and cropping it to fill would throw away most of the picture.
+    """
+    source = tmp_path / "portrait.jpg"
+    Image.new("RGB", (180, 320), (70, 90, 140)).save(source)
+    shot = Shot(0, 0, 1, 1, 0, str(source), "image", 0, "", .6, "steady", "cut", .8,
+                image_effect="cinematic_depth", source_width=180, source_height=320)
+    cfg = RenderConfig(width=320, height=180, fps=10, crf=35, preset="ultrafast",
+                       film_grain=0, vignette=False, image_background_blur=8)
+    art = create_art_direction(
+        AudioAnalysis(
+            duration=1, bpm=120, beats=[0, 1], sections=[0, 1],
+            energy_times=[0], energy_values=[.6], average_energy=.6,
+            brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+        ),
+        [], cfg,
+    )
+
+    graph = ";".join(_image_filter_graph(shot, cfg, art, 1.0, 1)[0])
+
+    assert "gblur" in graph, "the single-image backdrop treatment was removed"
+    assert "force_original_aspect_ratio=decrease" in graph
+
