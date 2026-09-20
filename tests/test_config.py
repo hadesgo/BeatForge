@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 
 from beatforge.config import PROJECT_TEMPLATE, load_project
 
@@ -16,12 +17,45 @@ def test_project_paths_and_cpu_defaults(tmp_path: Path) -> None:
     assert config.ai.vision_batch_size == 4
     assert config.ai.frame_samples == 8
     assert config.ai.director_model == "prism-ml/Ternary-Bonsai-2-27B-gguf"
-    assert config.ai.director_backend == "text"
+    assert config.ai.director_gguf_file == "Ternary-Bonsai-2-27B-PQ2_0.gguf"
     assert config.render.subtitle_effect == "auto"
     assert config.render.subtitle_font == "auto"
     assert config.render.subtitle_fonts["energetic"] == "preset:energetic"
     assert config.render.visual_effects is True
     assert config.render.intermediate_crf < config.render.crf
+
+
+def test_the_template_only_names_real_config_fields() -> None:
+    """A stale key in the template is invisible at runtime.
+
+    Pydantic ignores unknown keys by default, so a renamed or removed option would sit
+    in every generated project looking authoritative while doing nothing at all.
+    """
+    from beatforge.config import AIConfig, RenderConfig
+
+    template = tomllib.loads(PROJECT_TEMPLATE)
+
+    assert set(template["ai"]) <= set(AIConfig.model_fields)
+    assert set(template["render"]) <= set(RenderConfig.model_fields)
+
+
+def test_the_shipped_project_files_only_name_real_config_fields() -> None:
+    """The demo and working projects are templates too, and the same silent-typo risk
+    applies: an unknown key is ignored, so a removed option would sit there looking
+    authoritative while doing nothing - including the old director engine switch."""
+    from beatforge.config import AIConfig, RenderConfig
+
+    root = Path(__file__).resolve().parents[1]
+    projects = [
+        path for path in (root / "demo" / "project.toml", root / "my-mv" / "project.toml")
+        if path.is_file()
+    ]
+
+    assert projects, "no shipped project file found to check"
+    for path in projects:
+        data = tomllib.loads(path.read_text("utf-8"))
+        assert set(data["ai"]) <= set(AIConfig.model_fields), path
+        assert set(data["render"]) <= set(RenderConfig.model_fields), path
 
 
 def test_intermediate_crf_cannot_be_worse_than_delivery() -> None:

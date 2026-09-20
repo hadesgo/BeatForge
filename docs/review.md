@@ -92,12 +92,12 @@ models/music_structure.py      （All-In-One 自己再读一次）
 三次全量解码。对 4 分钟的歌各约 20 MB PCM，**属于可接受但没必要**。
 可改为解一次 48k、降采样给分析用。收益不大，改动会碰到三个模块的接口，**优先级低**。
 
-### P5 · `ai_director.py:592` 的 `except Exception: pass`
+### P5 · `ai_director.py:592` 的 `except Exception: pass`（已随代码删除）
 
-在 `_remote_module_paths()` 里，是**可选的** transformers 模块缓存查找（本地目录那条是主路径），
-所以吞掉是合理的，但 `Exception` 太宽——一个拼错的属性名也会被静默吃掉。
-建议收窄到 `(ImportError, OSError, AttributeError)`。同类还有 `media.py:136`
-（校验回退，建议直接 `return [.5,.5]` 而不是 `pass` 后落空）。
+原文指的是 `_remote_module_paths()` 里**可选的** transformers 模块缓存查找。该函数属于
+Spark-X2.5 的 in-process `transformers` 引擎，**这条路径已整体删除**（连同远程代码兼容层、
+Accelerate 显存预算、多模态联系表），所以这条建议无需再执行。同类还有 `media.py:136`
+（校验回退，建议直接 `return [.5,.5]` 而不是 `pass` 后落空）——**这一条仍然有效**。
 
 ---
 

@@ -237,6 +237,14 @@ def test_a_missing_separation_extra_skips_instead_of_failing(tmp_path: Path, mon
     states: list[str] = []
 
     def snapshot_download(**options):
+        # The director's GGUF is fetched by name rather than as a snapshot, so it carries
+        # allow_patterns plus a local_dir; everything else is a plain repository snapshot.
+        if "allow_patterns" in options:
+            target = Path(options["local_dir"])
+            target.mkdir(parents=True, exist_ok=True)
+            for name in options["allow_patterns"]:
+                (target / name).write_bytes(b"gguf")
+            return str(target)
         target = Path(options.get("cache_dir", tmp_path)) / options["repo_id"].replace("/", "_")
         target.mkdir(parents=True, exist_ok=True)
         return str(target)
@@ -269,13 +277,107 @@ def test_the_director_gguf_is_fetched_by_name_not_as_a_snapshot() -> None:
     }
 
 
-def test_the_transformers_engine_still_asks_for_a_snapshot() -> None:
-    """Spark-X2.5 is a transformers checkpoint, not a single file."""
-    config = AIConfig(director_engine="transformers", director_model="XHToken/Spark-X2.5-4B")
+def test_the_director_gguf_is_fetched_from_modelscope_by_default(tmp_path: Path) -> None:
+    """The checkpoint is mirrored on ModelScope, which is the faster mirror for the
+    project's target network, so that has to be the provider that answers first."""
+    calls = []
 
-    director = next(
-        item for item in required_models(config) if item.component == "AI 导演"
+    def fake_modelscope_download(**options):
+        target = Path(options["local_dir"])
+        target.mkdir(parents=True, exist_ok=True)
+        if "allow_patterns" not in options:
+            return str(target)  # a plain repository snapshot
+        calls.append(options)
+        # Only the single quantisation, via allow_patterns - never the whole repository.
+        (target / options["allow_patterns"]).write_bytes(b"gguf")
+        return str(target)
+
+    def unexpected_huggingface(**options):
+        raise AssertionError(f"should not have fallen back: {options}")
+
+    config = AIConfig(vision_reranker_model=None, separate_vocals=False)
+    models = download_required_models(
+        config,
+        cache_dir=tmp_path / "models",
+        source="auto",
+        snapshot_download_fn=unexpected_huggingface,
+        modelscope_snapshot_download_fn=fake_modelscope_download,
     )
 
-    assert director.provider == "snapshot"
+    director = next(model for model in models if model.component == "AI 导演")
+    assert director.repo_id == "prism-ml/Ternary-Bonsai-2-27B-gguf"
+    assert director.source == "modelscope"
+    assert Path(director.local_path).name == config.director_gguf_file
+    assert calls == [{
+        "model_id": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+        "allow_patterns": config.director_gguf_file,
+        "local_dir": str(tmp_path / "models" / "director"),
+    }]
+    # The other snapshots still go through the snapshot provider.
+    assert {model.component for model in models} == {
+        "歌词识别", "歌词强制对齐", "音乐情绪分析", "视觉语义检索", "AI 导演",
+    }
+    # The download has to leave the file where the runtime then looks for it.
+    from beatforge.models.llama_server import find_gguf
+
+    assert find_gguf(None, tmp_path, config.director_model) == Path(director.local_path)
+
+
+def test_the_director_gguf_falls_back_to_huggingface(tmp_path: Path) -> None:
+    """Same fallback contract as the snapshots, with one provider-specific wrinkle:
+    ``allow_patterns`` must be a list for Hugging Face, which iterates it as patterns
+    and would match a bare string one character at a time."""
+    calls = []
+
+    def failed_modelscope(**options):
+        raise OSError(f"missing: {options.get('model_id')}")
+
+    def fake_huggingface(**options):
+        calls.append(options)
+        if "allow_patterns" not in options:
+            return str(options["cache_dir"])  # a plain repository snapshot
+        target = Path(options["local_dir"])
+        target.mkdir(parents=True, exist_ok=True)
+        (target / options["allow_patterns"][0]).write_bytes(b"gguf")
+        return str(target)
+
+    config = AIConfig(vision_reranker_model=None, separate_vocals=False)
+    models = download_required_models(
+        config,
+        cache_dir=tmp_path / "models",
+        source="auto",
+        snapshot_download_fn=fake_huggingface,
+        modelscope_snapshot_download_fn=failed_modelscope,
+    )
+
+    director = next(model for model in models if model.component == "AI 导演")
+    assert director.source == "huggingface"
+    gguf_call = next(call for call in calls if "allow_patterns" in call)
+    assert gguf_call["allow_patterns"] == [config.director_gguf_file]
+    assert gguf_call["repo_id"] == config.director_model
+
+
+def test_the_director_gguf_reports_a_provider_that_downloads_nothing(tmp_path: Path) -> None:
+    """A provider that returns cleanly but leaves no file must not be treated as success.
+
+    Otherwise the manifest would point at a path that is not there, and the failure
+    would only surface much later as a missing checkpoint.
+    """
+    def empty_download(**options):
+        target = Path(options["local_dir"])
+        target.mkdir(parents=True, exist_ok=True)
+        return str(target)
+
+    config = AIConfig(vision_reranker_model=None, separate_vocals=False)
+    with pytest.raises(ModelDownloadError) as captured:
+        download_required_models(
+            config,
+            cache_dir=tmp_path / "models",
+            source="modelscope",
+            fallback_to_huggingface=False,
+            modelscope_snapshot_download_fn=empty_download,
+        )
+
+    assert "下载后仍找不到" in str(captured.value)
+    assert captured.value.failures[0][0].component == "AI 导演"
 

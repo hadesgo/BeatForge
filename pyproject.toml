@@ -17,7 +17,6 @@ dependencies = [
 
 [project.optional-dependencies]
 ai = [
-  "accelerate>=1.5",
   "huggingface-hub>=0.29",
   "modelscope>=1.22",
   "sentencepiece>=0.2",

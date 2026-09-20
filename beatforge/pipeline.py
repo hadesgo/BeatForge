@@ -130,7 +130,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
                 "director_model": model_path(project.ai.director_model),
             })
             treatment = direct_mv(
-                analysis, lyrics, assets, similarities, director_config, device, project.cache_dir,
+                analysis, lyrics, assets, similarities, director_config, project.cache_dir,
                 source_starts,
             )
             print(f"    导演概念：{treatment.concept}")

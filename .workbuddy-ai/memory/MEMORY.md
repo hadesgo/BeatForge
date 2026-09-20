@@ -2,7 +2,7 @@
 
 > 只放高频规则与坑。**保持当前量级（约 15k 字符）**——再长会在注入时被截断，后半部分等于不存在。
 > 长尾细节（人声分离、视觉检索预算、剪辑风格、字幕版式/镂空、抖动测量、素材复用推导、
-> 效果型转场与合成平面、字幕特效明细、提示词实测值）在 **`MEMORY-details.md`**，
+> 效果型转场与合成平面、字幕特效明细、提示词阶梯）在 **`MEMORY-details.md`**，
 > 改对应模块前先读那一节。
 
 ## 本机环境
@@ -17,8 +17,8 @@
   `.git/logs/refs/**` 的 reflog 末尾哈希用 `printf` 重建 `refs/heads/*`、`refs/remotes/origin/*`。
   临时验证改用**运行时替换函数**，别碰 git 索引。
 - `AIConfig.device` 只允许 `auto|cuda|cpu`；但 `transcriber.py`、`vision_index.py`、
-  `audio_semantics.py` 仍用 `device == "cuda"` 判断，放开 `cuda:N` 会静默退回 fp32/CPU
-  （导演模块已改 `_is_cuda()` 前缀匹配）。
+  `audio_semantics.py` 仍用 `device == "cuda"` 判断，放开 `cuda:N` 会静默退回 fp32/CPU。
+  **导演模块不再接收 device**——它走 `llama-server` 子进程，显存由 `-ngl` 决定。
 - All-In-One-Infer 在 **CWD** 建 `demix/`、`spec/`（正常结束自清，中断则留下），已 gitignore。
   它批量生成/删临时文件，**在 agent 会话里会被安全钩子按 turn 统计删除数后中止**
   （`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）——用户自己终端不受影响。所以本会话验证流水线时，
@@ -41,50 +41,30 @@
   **加新选择分支要一起扩充**。
 - "某族扫不到"未必是 bug：固定段落布局下副歌边界能量恒 >.78 会被 `flash` 抢占。先换布局再下结论。
 
-## AI 导演：显存（`beatforge/models/ai_director.py`）
-remote code 有两个必须外部兜住的特性：
-1. 注意力是手写 `torch.matmul` + softmax，**无 SDPA / flash-attn**；滑动窗口层（27/36 层，
-   window=512）给完整 `[heads, n, n]` 矩阵加掩码，**不切 KV**。峰值按 `heads * n² * 6 字节` 估。
-2. `logits_to_keep` **不是**瓶颈：remote `forward` 默认 0，但 transformers 5.16 的 `generate` 在
-   `_supports_logits_to_keep()` 为真时显式传 `1`（已 spy 到 `[1,1]`）。`_sequence_reserve_gb` 里的
-   `prefill * vocab * dtype_bytes` 是**刻意的保守余量**（≈0.66GiB @2600 tokens），别为省显存删掉。
+## AI 导演：只剩一条路径（`beatforge/models/ai_director.py`）
+- **只有 `llama-server` 子进程跑 GGUF**。曾经的 in-process `transformers` 引擎（Spark-X2.5 +
+  `_repair_remote_model_code` 远程代码兼容层 + Accelerate 显存预算/`_gpu_budgets`/卸载 +
+  多模态联系表 + `director_gpu_memory_gb`/`director_offload`/`director_backend` 等配置项）
+  **已整体删除**。看到旧文档讲"两个引擎"、`XHToken/Spark-X2.5-4B`、`_sequence_reserve_gb`
+  的一律当成过时内容。
+- **提示词上限的约束是 KV 缓存**（不是平方注意力）：Bonsai 约 75% 层是线性注意力，瓶颈由 `-c`
+  决定——llama.cpp 按整个窗口一次性分配。默认 `-c 16384` 配 `director_prompt_tokens = 16384`
+  是自洽的，再大必须同时抬 `-c`。
+- **客户端没有 tokenizer**：`_fit_prompt` 用 `_estimated_tokens`（字符数 / 1.8 + 64）估算，
+  所以阶梯在本地一次跑完，不必为每一级都发一次请求。
+- **上下文按最宽规格构建再由阶梯裁剪**——阶梯只能做减法，没放进去的细节用不到；裁剪顺序是
+  先清逐句候选表、再减素材、最后才抽样歌词。**候选列表必须按检索得分排序**：裁剪是普通切片，
+  按发现顺序排会先丢最强的。裁掉候选表时 `_trim_context` 必须同步改写 `instruction`。
+- 三值 GGUF 必须用 **PrismML 的 llama.cpp 分支**，否则要么拒绝该量化类型、要么**加载成功但输出乱码**。
 
-真正平方增长的是 1，所以提示词必须限长。
-- `director_prompt_tokens`（2600）+ `PROMPT_LADDER` 逐级降级（先裁候选表 → 再减素材 → 最后才抽样），
-  每级用 tokenizer 实测。裁掉候选表时 `_trim_context` 必须同步改写 `instruction`。
-  实测值见 `MEMORY-details.md`。
-- `_gpu_budgets` 用 **`torch.cuda.mem_get_info` 的空闲显存**减 `_sequence_reserve_gb`，再与
-  `director_gpu_memory_gb` 取小。Accelerate 的 `max_memory` 只预算权重，不能替代这一步。
-- OOM 时用 `RETRY_BUDGET_SCALE`（0.65）重试一次。`scripts/director_memory_probe.py` 是纯算术探针。
-- `_dtype_bytes` 要**先读 `dtype`**：`config.torch_dtype` 在 5.x 是弃用属性，一读就告警
-  （而 `from_pretrained(torch_dtype=...)` 不告警）。
-
-## AI 导演：远程代码兼容层（`_repair_remote_model_code`）
-`modeling_spark.py` 按 `transformers==4.57` 写（config 里 `transformers_version: 4.57.1`），
-项目锁 `>=5.16.1`。加载前必须就地改写**本地模型目录**里的这份文件，两处：
-1. `_tied_weights_keys` 列表 → `{target: source}` 映射（否则权重加载就炸）。
-2. `create_causal_mask(input_embeds=..., cache_position=...)` → 5.16 改名 `inputs_embeds` 且删了
-   `cache_position`，否则首次前向报 `TypeError: ... unexpected keyword argument 'input_embeds'`。
-- 改写依据**已安装**签名（`inspect.signature` 过滤 + `MASK_KWARG_ALIASES` 别名），新旧都对且幂等；
-  签名带 `**kwargs` 时不动。`mask_kwargs` 同时喂给 `create_causal_mask` 与
-  `create_sliding_window_causal_mask`，所以取两者签名的**交集**。
-- 只补到 HF modules 缓存目录没用：缓存目录名是源码哈希，改本地文件就换目录重建。
-- **`config._attn_implementation` 必须是 `eager`**：remote 手工加 4D float 掩码，落到 sdpa 时
-  `create_causal_mask` 返回 `None`，注意力**静默失去掩码**。`Spark2_5PreTrainedModel` 没声明
-  `_supports_sdpa`，所以现在默认就是 eager；改模型/改 transformers 后用探针复核。
-- `scripts/director_model_probe.py`：config 缩到几百万参数在 **CPU** 跑同一份远程代码，无需 7.7GB
-  权重即可验：注意力实现、因果性（前缀一致）、滑动窗口、带缓存/无缓存贪心一致、**分层 RoPE**。
-  滑动窗口那项**必须用单层**（感受野 = 层数 × window，多层会掩盖窗口外 token）。
-- 日志里的 `Unrecognized keys in rope_parameters ... {'full_attention','sliding_attention'}`
-  **是噪音但值得理解**（分层 RoPE 的嵌套 schema 与 transformers 的扁平 schema 不匹配）——
-  含义、为什么无害、以及它掩盖的静默失效风险见 `MEMORY-details.md`。
-
-## AI 导演：提示词长度测量
-`processor.apply_chat_template(..., tokenize=True)` 返回含 `input_ids`/`attention_mask` 的
-`BatchEncoding`，`len()` 是**键的个数（2）**不是 token 数。曾把 `_prompt_tokens` 写成
-`len(rendered)`：提示词上限全程失效（`_fit_prompt` 每级都判"装得下"）、预留按 2 tokens 算成
-1.5GiB 下限（日志「约 2 tokens · 预算 9.0GiB」）。修复后同场景「2848 tokens · 预留 3.5GiB ·
-预算 7.3GiB」。`_rendered_token_count` 要覆盖 BatchEncoding / 张量 / 列表 / 嵌套列表四种形态。
+## 模型下载：导演 GGUF 默认走魔搭
+- 导演 GGUF 与快照走**同一套 provider 顺序**（`auto` = modelscope → huggingface 回退），
+  但选项不同：`_gguf_options` 给它 `allow_patterns` + `local_dir`，只下一个量化文件
+  （整仓快照要 13GB 而只需要其中一个）。
+- **`allow_patterns` 对 Hugging Face 必须是 list**：它按 pattern 迭代，传裸字符串会逐字符匹配、
+  一个文件都下不到（modelscope 两种都吃）。
+- 落盘目录 `cache_dir/director` 必须与 `llama_server.find_gguf` 的查找目录一致，
+  否则下载成功但运行时找不到、首次使用又被重拉一遍。
 
 ## 图片运镜：四边形与 `perspective`
 - **禁止 `zoompan`**：它把 `x`/`y` 截断到整数像素，而本项目运镜只有 0.03–0.1 px/帧 → "多帧静止 +

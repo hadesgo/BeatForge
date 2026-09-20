@@ -72,7 +72,7 @@ def required_models(config: AIConfig) -> list[ModelRequirement]:
             "AI 导演", config.director_model,
             # A snapshot would pull both packings - 13 GB to get one usable file - so the
             # GGUF provider fetches the single quantisation by name instead.
-            provider="gguf" if config.director_engine == "llamacpp" else "snapshot",
+            provider="gguf",
         ))
     if config.separate_vocals and config.separation_model:
         # Not a repository snapshot: audio-separator keeps its own catalogue and fetches
@@ -138,7 +138,7 @@ def download_required_models(
             progress("start", item, None)
         if item.provider == "gguf":
             try:
-                result = _download_gguf(item, config, cache_dir)
+                result = _download_gguf(item, config, cache_dir, providers)
             except Exception as exc:  # noqa: BLE001 - reported, not swallowed
                 failures.append((item, exc))
                 if progress:
@@ -207,30 +207,58 @@ def download_required_models(
 
 
 def _download_gguf(
-    item: ModelRequirement, config: AIConfig, cache_dir: Path | None,
+    item: ModelRequirement,
+    config: AIConfig,
+    cache_dir: Path | None,
+    providers: list[tuple[str, Callable[..., str]]],
 ) -> DownloadedModel:
-    """Fetch one GGUF file out of a repository.
+    """Fetch one GGUF file out of a repository, first provider that answers wins.
 
-    ``hf_hub_download`` rather than ``snapshot_download``: the checkpoint repository holds
-    both quantisations, and there is no reason to spend 13 GB of bandwidth and disk on a
-    choice the user already made.
+    ``allow_patterns`` rather than a bare snapshot: the checkpoint repository holds both
+    packings - PTQ1_0 and PQ2_0 - so a snapshot would spend 13 GB of bandwidth and disk
+    on a choice the user already made. ModelScope goes first because that is where the
+    checkpoint is mirrored for the project's target network; Hugging Face is the
+    fallback, and both drop the file in the same directory so the runtime finds it there
+    whichever one supplied it.
     """
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise RuntimeError("下载 GGUF 需要 huggingface-hub；请先安装 ai extra") from exc
-
     target_dir = (cache_dir or Path(".")) / "director"
     target_dir.mkdir(parents=True, exist_ok=True)
-    path = hf_hub_download(
-        repo_id=item.repo_id,
-        filename=config.director_gguf_file,
-        local_dir=str(target_dir),
-    )
-    resolved = Path(path)
-    if not resolved.is_file():
-        raise RuntimeError(f"下载后仍找不到 {resolved}")
-    return DownloadedModel(item.component, item.repo_id, str(resolved), "gguf")
+    errors: list[str] = []
+    for provider, download in providers:
+        try:
+            download(**_gguf_options(provider, item, config, target_dir))
+        except Exception as exc:  # noqa: BLE001 - the next provider gets a turn
+            errors.append(f"{provider}: {exc}")
+            continue
+        resolved = target_dir / config.director_gguf_file
+        if not resolved.is_file():
+            errors.append(f"{provider}: 下载后仍找不到 {resolved}")
+            continue
+        return DownloadedModel(item.component, item.repo_id, str(resolved), provider)
+    raise RuntimeError("；".join(errors) or "没有可用的 GGUF 下载源")
+
+
+def _gguf_options(
+    provider: str, item: ModelRequirement, config: AIConfig, target_dir: Path,
+) -> dict[str, object]:
+    """Single-file download options for one provider.
+
+    The two SDKs spell the repository argument differently, and ``allow_patterns`` has
+    to be a list for Hugging Face: it iterates patterns, so a bare string is matched one
+    character at a time and downloads nothing at all.
+    """
+    filename = config.director_gguf_file
+    if provider == "modelscope":
+        return {
+            "model_id": MODELSCOPE_REPO_ALIASES.get(item.repo_id, item.repo_id),
+            "allow_patterns": filename,
+            "local_dir": str(target_dir),
+        }
+    return {
+        "repo_id": item.repo_id,
+        "allow_patterns": [filename],
+        "local_dir": str(target_dir),
+    }
 
 
 def _download_separator_model(

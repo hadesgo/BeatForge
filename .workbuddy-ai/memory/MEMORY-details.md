@@ -118,14 +118,15 @@
   默认约 24% 图片镜头使用多图，副歌与导演冲击段提高、呼吸段降低。
 - 细节与示例见 README「素材复用规则」。
 
-## AI 导演：提示词阶梯与实测值
-- `PROMPT_LADDER` 逐级降级顺序：先裁逐句候选表 → 再减送入的素材条数 → 最后才对歌词抽样。
-  理由：候选表是最冗余的部分；歌词承载叙事，最后才动。
-- 实测：一首 68 句歌词、24 个素材的歌曲，未裁剪提示词 **6390 tokens**；阶梯裁剪后 **2285 tokens**
-  （34 句歌词、候选表清空、8 个素材），`instruction` 同步改写。
-- 显存后果（空闲 10.78GiB）：未裁剪时预留 8.3GiB → 权重预算只剩 2.5GiB（8GB 权重约 5.5GB 被压到
-  CPU，慢到不可用）；裁剪后预留 3.0GiB → 预算 7.8GiB。**别用"预算 < 权重体积"判 OOM**：
-  `director_offload = true` 本来就靠卸载兜底，7.3GiB 预算的实机运行正常跑完。
+## AI 导演：提示词阶梯（`PROMPT_LADDER`）
+- 逐级降级顺序：先裁逐句候选表 → 再减送入的素材条数 → 最后才对歌词抽样。
+  理由：候选表是最冗余的部分；歌词承载叙事，最后才动。裁掉候选表时 `_trim_context` 必须同步
+  改写 `instruction`，不能指向已经不存在的表。
+- 每一级用 `_estimated_tokens`（字符数 / 1.8 + 64）判断，**不再有 tokenizer 实测**——
+  引擎换成 llama.cpp 后客户端没有分词器，而估算换来的是阶梯能在本地一次跑完，
+  不必为每一级各发一次请求。估算偏保守（宁可早一级降级）。
+- 预算与实际长度的实测对比（68 句歌词 / 24 素材那首歌）已随 Spark 引擎一并作废；
+  现在值得看的是 `director_prompt_tokens` 与 `director_llama_args` 里的 `-c` 是否匹配。
 
 ## 效果型转场（`glitch` / `light_leak` / `film_burn`）
 不用 xfade：滤镜直接烧进两个镜头各自的帧，时间线上是硬切——冲击发生在切点**上**而非横跨切点，
@@ -200,45 +201,26 @@
 - 加新字体时族名必须出现在 `FONT_PRESETS` 里，否则没有任何预设能选中它——
   `tests/test_fonts.py` 会检查这条。
 
-## AI 导演：两个引擎（`beatforge/models/ai_director.py` + `llama_server.py`）
-- **默认 `llamacpp`**：`llama-server` 子进程跑 GGUF，`/v1/chat/completions` +
-  **服务端 JSON schema** 约束输出。`director_llama_url` 指向已运行的 server 可省一次 7GB 加载。
+## AI 导演：唯一的引擎（`beatforge/models/ai_director.py` + `llama_server.py`）
+- **`llama-server` 子进程跑 GGUF**，`/v1/chat/completions` + **服务端 JSON schema** 约束输出。
+  `director_llama_url` 指向已运行的 server 可省一次 7GB 加载。
 - **三值 GGUF 必须用 PrismML 的 llama.cpp 分支**：原版要么拒绝该量化类型，要么**加载成功但输出乱码**
   （缺 Hadamard 激活运行时）。报错信息里直接点名分支和下载地址。
-- **提示词上限的约束换了**：Spark 是手写 `torch.matmul`+softmax、开销**平方增长**（旧上限 2600 由此而来）；
-  Bonsai 约 75% 层是线性注意力，瓶颈变成 **KV 缓存**（由 `-c` 决定，按整个窗口一次性分配）。
-  默认 `-c 16384` 配 `director_prompt_tokens = 16384` 是自洽的，再大要同时抬 `-c`。
-- **上下文按最宽规格构建再由阶梯裁剪**——阶梯只能做减法，没放进去的细节任何引擎都用不到。
+- **提示词上限由 KV 缓存决定**（不是平方注意力）：Bonsai 约 75% 层是线性注意力，llama.cpp 按整个
+  `-c` 窗口一次性分配。默认 `-c 16384` 配 `director_prompt_tokens = 16384` 是自洽的，
+  再大要同时抬 `-c`。
+- **上下文按最宽规格构建再由阶梯裁剪**——阶梯只能做减法，没放进去的细节用不到。
   **候选列表必须按检索得分排序**：裁剪是普通切片，按发现顺序排会先丢最强的。
-- llamacpp 暂不支持多模态，且**显式报错而不是静默忽略联系表**——静默丢图会让导演对没看过的素材
-  给出自信的答案。
-- 下载走 `gguf` 提供方（`hf_hub_download` 单文件），整仓快照要 13GB 而只需要其中一个量化。
+- **曾经的第二条引擎已整体删除**（in-process `transformers` + Spark-X2.5 远程代码兼容层 +
+  Accelerate 显存预算与卸载 + 多模态联系表）。相关配置项
+  （`director_engine`/`director_backend`/`director_gpu_memory_gb`/`director_cpu_memory_gb`/
+  `director_offload`/`director_contact_sheet_assets`）也已从 `AIConfig` 移除；
+  旧 `project.toml` 留着这些键不会报错（pydantic 默认忽略多余键）但**不会生效**。
+- 下载走独立的 `gguf` 提供方（`allow_patterns` 单文件），**默认 ModelScope、HF 回退**；
+  整仓快照要 13GB 而只需要其中一个量化。
 
-## 那条 `rope_parameters` 告警是什么意思（无害，但有静默失效风险）
-日志里每次加载导演模型会出现 1~3 条：
-```
-[transformers] Unrecognized keys in `rope_parameters` for 'rope_type'='default': {'full_attention', 'sliding_attention'}
-```
-**含义**：Spark-X2.5 用的是**分层 RoPE**，配置写成嵌套字典
-```json
-"rope_parameters": {"full_attention":    {"partial_rotary_factor": 0.25, "rope_theta": 5000000},
-                    "sliding_attention": {"partial_rotary_factor": 1.0,  "rope_theta": 10000}},
-"layer_types": ["sliding_attention", ... 36 项]，  // 27 个滑动 + 9 个全注意力
-```
-而 transformers 5.x 的 `rope_parameters` 期望的是**扁平的 RoPE 参数名**（`rope_type`/`rope_theta`/
-`partial_rotary_factor`）。`modeling_rope_utils._check_received_keys` 会往字典里注入扁平的
-`rope_type='default'`/`rope_theta`，然后把 `full_attention`/`sliding_attention` 判为"不认识的键"
-并告警。**每次 `AutoConfig` 实例化触发 1 条**，导演阶段加载 3 次配置（`_load_model_config`、
-tokenizer、模型）→ 3 条。
-
-**为什么无害**：模型根本不走 transformers 的 RoPE 机制。远程配置类自己提供了
-`Spark2_5Config.get_rope_theta(layer_type)` / `get_partial_rotary_factor(layer_type)`，
-`modeling_spark.py` 按 `set(config.layer_types)` 各建一套 cos/sin 缓存
-（`compute_rope_cos_sin`），逐层取用。实测两种层确实不同：
-`full_attention` cos.shape=(8, 64)（256 维里只旋转 25%）vs `sliding_attention` (8, 256)。
-
-**风险**：这属于"警告是噪音"的少数情况——如果哪天 transformers 不再把嵌套子字典透传下来，
-远程代码会**静默**回退到 θ=10000 + 全旋转，模型照样跑，只是变差。所以
-`scripts/director_model_probe.py` 加了第 5 项断言（`分层 RoPE`），把"警告是安全的"变成**被验证的事实**，
-而不是靠人记住。改 transformers 版本后跑一次探针即可。
+## `rope_parameters` 告警（已作废）
+这一节原本讲 Spark-X2.5 的分层 RoPE 与 transformers 的扁平 schema 不匹配、以及
+`scripts/director_model_probe.py` 的第 5 项断言。随着 Spark 引擎与那两个探针脚本一起删除，
+内容整体失效，**已移除**。现在不会再看到这条告警：导演走 llama.cpp，不再经过 transformers 加载。
 

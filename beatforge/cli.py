@@ -114,17 +114,14 @@ def doctor(
         "Qwen3-ASR Native", "OK" if _supports_native_asr(transformers_version) else "未就绪",
         f"Transformers {transformers_version or '未安装'}",
     )
-    if ai_config.director_engine == "llamacpp":
-        try:
-            from beatforge.models.llama_server import find_gguf, find_server_binary
+    try:
+        from beatforge.models.llama_server import find_gguf, find_server_binary
 
-            find_server_binary(ai_config.director_llama_server, cache)
-            model = find_gguf(ai_config.director_gguf, cache, ai_config.director_model)
-            table.add_row("AI 导演", "OK", f"llama.cpp · {model.name}")
-        except Exception as exc:  # noqa: BLE001 - this row reports, it does not raise
-            table.add_row("AI 导演", "未就绪", str(exc).splitlines()[0])
-    else:
-        table.add_row("AI 导演", "OK", f"transformers · {ai_config.director_model}")
+        find_server_binary(ai_config.director_llama_server, cache)
+        model = find_gguf(ai_config.director_gguf, cache, ai_config.director_model)
+        table.add_row("AI 导演", "OK", f"llama.cpp · {model.name}")
+    except Exception as exc:  # noqa: BLE001 - this row reports, it does not raise
+        table.add_row("AI 导演", "未就绪", str(exc).splitlines()[0])
     separation = importlib.util.find_spec("audio_separator")
     if separation and not torch_ready:
         # The package is installed but has nothing to run on - a state an interrupted

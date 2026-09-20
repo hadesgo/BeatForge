@@ -44,7 +44,6 @@ def _assets(count: int) -> list[MediaAsset]:
 
 def _config(**overrides) -> AIConfig:
     base = {
-        "director_engine": "llamacpp",
         "director_gguf": Path("model.gguf"),
         "director_llama_server": Path("llama-server.exe"),
     }
@@ -227,7 +226,7 @@ def test_the_llamacpp_engine_validates_and_returns_the_treatment(tmp_path, monke
 
 
 def test_a_bad_first_answer_gets_exactly_one_repair_round(tmp_path, monkeypatch) -> None:
-    """The same contract as the in-process engine: one correction, then give up."""
+    """One correction, then give up - a second round would be a retry loop."""
     payload = {"concept": "修好了", "narrative_arc": "a", "visual_style": "b", "grade_profile": "dark"}
     server = _FakeServer(["这不是 JSON", json.dumps(payload, ensure_ascii=False)])
     _patch_server(monkeypatch, server)
@@ -251,20 +250,6 @@ def test_two_bad_answers_fail_rather_than_loop(tmp_path, monkeypatch) -> None:
         _treat_with_llamacpp({}, _config(), tmp_path)
 
     assert len(server.requests) == 2, "a second repair round would be a retry loop"
-
-
-def test_multimodal_is_refused_rather_than_silently_ignored(tmp_path, monkeypatch) -> None:
-    """The llamacpp path is text-only; dropping the contact sheet quietly would be worse.
-
-    A director that silently loses the images it was told to look at produces a
-    confident answer about material it never saw.
-    """
-    _patch_server(monkeypatch, _FakeServer([]))
-
-    with pytest.raises(RuntimeError) as captured:
-        _treat_with_llamacpp({}, _config(), tmp_path, visual_reference=tmp_path / "sheet.jpg")
-
-    assert "transformers" in str(captured.value)
 
 
 def test_an_existing_server_url_skips_starting_one(monkeypatch) -> None:
