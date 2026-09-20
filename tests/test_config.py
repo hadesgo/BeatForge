@@ -62,3 +62,41 @@ def test_intermediate_crf_cannot_be_worse_than_delivery() -> None:
     from beatforge.config import RenderConfig
 
     assert RenderConfig(crf=16, intermediate_crf=24).intermediate_crf == 16
+
+
+def test_a_blank_optional_path_means_unset_not_the_current_directory() -> None:
+    """``""`` 必须表示"没配"，而不是 ``Path(".")``。
+
+    真机踩到：``director_llama_server = ""`` 被 pathlib 折叠成 ``Path(".")``，于是走了
+    "显式路径"分支，在 PATH 与 ``<cache>/bin`` 查找之前就报「指向的文件不存在：.」——
+    模板里每一个"留空即自动查找"的选项都被这一条静默废掉。
+    """
+    from beatforge.config import AIConfig, RenderConfig
+
+    ai = AIConfig(director_llama_server="", director_gguf="")
+
+    assert ai.director_llama_server is None
+    assert ai.director_gguf is None
+    assert RenderConfig(subtitle_fonts_dir="").subtitle_fonts_dir is None
+    # 真的给了路径就要保留，别把自动查找变成唯一选项。
+    assert AIConfig(director_llama_server="bin/llama-server.exe").director_llama_server == (
+        Path("bin/llama-server.exe")
+    )
+    # 只把空白和 "." 视为未配置；"./fonts" 这类相对路径照旧。
+    assert RenderConfig(subtitle_fonts_dir="./fonts").subtitle_fonts_dir == Path("./fonts")
+
+
+def test_a_blank_lyrics_path_is_unset_too(tmp_path: Path) -> None:
+    """``lyrics = ""`` 是文档里"改由 ASR 转写"的写法。
+
+    折叠成项目根目录更糟：它是个存在的目录，于是 pipeline 里"已经有歌词了吗"的检查答"有"，
+    接着把一个目录当 LRC 读。
+    """
+    project = tmp_path / "project.toml"
+    project.write_text(
+        PROJECT_TEMPLATE.replace('lyrics = "lyrics.lrc"', 'lyrics = ""'), "utf-8",
+    )
+
+    config = load_project(project)
+
+    assert config.lyrics is None

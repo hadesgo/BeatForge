@@ -12,7 +12,6 @@ from beatforge.config import AIConfig
 from beatforge.lyrics import SUBTITLE_EFFECTS, LyricLine
 from beatforge.media import MediaAsset
 
-
 # Built from the renderer's own list, so the model can only choose effects that exist.
 SubtitleEffect = Literal[*SUBTITLE_EFFECTS]
 
@@ -20,11 +19,16 @@ SubtitleEffect = Literal[*SUBTITLE_EFFECTS]
 class SectionDirection(BaseModel):
     section_index: int = Field(ge=0)
     narrative_role: str = Field(min_length=1, max_length=160)
-    lyric_relation: Literal["literal", "metaphorical", "emotional", "contrast", "abstract"] = "emotional"
-    cut_intensity: float = Field(default=.5, ge=0, le=1)
+    lyric_relation: Literal[
+        "literal", "metaphorical", "emotional", "contrast", "abstract"
+    ] = "emotional"
+    cut_intensity: float = Field(default=0.5, ge=0, le=1)
     preferred_media: Literal["any", "image", "video"] = "any"
-    preferred_shot_sizes: list[Literal["wide", "medium", "closeup", "detail", "unknown"]] = Field(
-        default_factory=list, max_length=3,
+    preferred_shot_sizes: list[
+        Literal["wide", "medium", "closeup", "detail", "unknown"]
+    ] = Field(
+        default_factory=list,
+        max_length=3,
     )
     preferred_asset_ids: list[int] = Field(default_factory=list, max_length=5)
     subtitle_effect: SubtitleEffect = "cinematic"
@@ -38,12 +42,22 @@ class DirectorTreatment(BaseModel):
     visual_style: str = Field(min_length=1, max_length=240)
     color_arc: list[str] = Field(default_factory=list, max_length=8)
     motif_asset_ids: list[int] = Field(default_factory=list, max_length=5)
-    grade_profile: Literal["energetic", "uplifting", "melancholic", "dreamy", "romantic", "dark", "cinematic"]
+    grade_profile: Literal[
+        "energetic",
+        "uplifting",
+        "melancholic",
+        "dreamy",
+        "romantic",
+        "dark",
+        "cinematic",
+    ]
     transition_tone: Literal["bright", "dark", "soft", "neutral"] = "neutral"
     sections: list[SectionDirection] = Field(default_factory=list)
 
     def section(self, index: int) -> SectionDirection | None:
-        return next((item for item in self.sections if item.section_index == index), None)
+        return next(
+            (item for item in self.sections if item.section_index == index), None
+        )
 
 
 SYSTEM_PROMPT = """你是一位经验丰富的音乐录影带导演和剪辑指导。根据已经完成的音乐分析、逐句歌词、素材元数据和视觉检索候选，制定一份可执行的导演方案。
@@ -99,6 +113,10 @@ PROMPT_LADDER: tuple[tuple[int, int, int], ...] = (
 #: actually use it.
 CANDIDATE_ASSETS = PROMPT_LADDER[0][2]
 CANDIDATE_PER_LYRIC = PROMPT_LADDER[0][1]
+#: Tokens kept free on top of ``director_max_new_tokens``. The prompt *and* the answer
+#: share the same ``-c`` window, and the measurement can land a token either side of the
+#: real request, so the budget stops just short of the edge.
+PROMPT_SAFETY_TOKENS = 64
 
 
 def direct_mv(
@@ -112,7 +130,9 @@ def direct_mv(
 ) -> DirectorTreatment:
     context = _build_context(analysis, lyrics, assets, similarities, source_starts)
     treatment = _treat_with_llamacpp(context, config, cache_dir)
-    return _sanitize(treatment, len(analysis.sections) - 1, {asset.id for asset in assets})
+    return _sanitize(
+        treatment, len(analysis.sections) - 1, {asset.id for asset in assets}
+    )
 
 
 def _treat_with_llamacpp(
@@ -122,16 +142,13 @@ def _treat_with_llamacpp(
 ) -> DirectorTreatment:
     """Ask a llama-server-backed GGUF checkpoint for the treatment.
 
-    The exchange is: fit the prompt, ask, validate, then give the model exactly one
-    chance to repair its own JSON. Constraining the answer with the pydantic schema
-    server-side is what keeps that repair round from being needed most of the time.
+    The exchange is: start the server, fit the prompt to the context it really has, ask,
+    validate, then give the model exactly one chance to repair its own JSON. The fit
+    happens *after* the server is up on purpose - only the server can measure a prompt,
+    and only the server knows how much of ``-c`` the answer still needs.
     """
     from beatforge.models.llama_server import open_server
 
-    messages, prompt_tokens, trimmed_context = _fit_prompt(context, config)
-    (cache_dir / "director-context.json").write_text(
-        json.dumps(trimmed_context, ensure_ascii=False, indent=2), "utf-8",
-    )
     schema = DirectorTreatment.model_json_schema()
     with open_server(
         binary=config.director_llama_server,
@@ -143,9 +160,25 @@ def _treat_with_llamacpp(
         url=config.director_llama_url or None,
         log=cache_dir / "llama-server.log",
     ) as server:
-        print(f"    导演提示词约 {prompt_tokens} tokens（估算）· llama-server {server.base_url}")
+        budget, budget_note = _prompt_budget(server, config)
+        messages, prompt_tokens, trimmed_context = _fit_prompt(
+            context,
+            config,
+            _server_counter(server),
+            budget,
+        )
+        (cache_dir / "director-context.json").write_text(
+            json.dumps(trimmed_context, ensure_ascii=False, indent=2),
+            "utf-8",
+        )
+        measured = "服务端实测" if server.tokenizer_available else "字符估算"
+        print(
+            f"    导演提示词 {prompt_tokens} tokens（{measured}）· {budget_note} · "
+            f"llama-server {server.base_url}"
+        )
         raw = server.chat(
-            messages, json_schema=schema,
+            messages,
+            json_schema=schema,
             temperature=config.director_temperature,
             max_tokens=config.director_max_new_tokens,
         )
@@ -156,10 +189,13 @@ def _treat_with_llamacpp(
                 [
                     *messages,
                     {"role": "assistant", "content": raw},
-                    {"role": "user", "content": (
-                        "上一个结果未通过校验。修正后只返回完整 JSON，不要解释。\n"
-                        f"校验错误：{exc}"
-                    )},
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一个结果未通过校验。修正后只返回完整 JSON，不要解释。\n"
+                            f"校验错误：{exc}"
+                        ),
+                    },
                 ],
                 json_schema=schema,
                 temperature=config.director_temperature,
@@ -168,31 +204,75 @@ def _treat_with_llamacpp(
             return DirectorTreatment.model_validate_json(_extract_json(corrected))
 
 
-def _fit_prompt(context: dict, config: AIConfig) -> tuple[list[dict], int, dict]:
-    """Trim the context until the rendered prompt fits the configured budget.
+def _server_counter(server):
+    """A token counter backed by the server's own tokenizer, with an estimate behind it."""
 
-    llama.cpp applies the chat template and tokenises inside the server, so the client
-    has no tokenizer to count with; the ladder runs against a character estimate
-    instead. Emitting one prompt for every rung would be a round trip each, so the
-    estimate is the only thing that can drive the loop.
+    def count(messages: list[dict]) -> int:
+        if server.tokenizer_available is not False:
+            measured = server.count_prompt_tokens(messages)
+            if measured is not None:
+                return measured
+        return _estimated_tokens(messages)
+
+    return count
+
+
+def _prompt_budget(server, config: AIConfig) -> tuple[int, str]:
+    """How long the prompt may be, and why - for the diagnostic line.
+
+    ``-c`` covers the prompt *and* the answer, so the prompt cannot have all of it:
+    a 16495-token prompt against a 24576-token context is rejected outright with
+    ``exceed_context_size_error``, and the request never even starts. The configured
+    ``director_prompt_tokens`` is therefore an upper bound, clamped by what the server
+    actually has room for.
     """
-    budget = max(256, config.director_prompt_tokens)
+    configured = max(256, config.director_prompt_tokens)
+    context = server.context_size()
+    if context is None:
+        return configured, f"提示词上限 {configured}（服务端未报告上下文长度）"
+    room = max(256, context - config.director_max_new_tokens - PROMPT_SAFETY_TOKENS)
+    if room < configured:
+        return room, (
+            f"提示词上限 {room}（上下文 {context} − 回复 {config.director_max_new_tokens} "
+            f"− 余量 {PROMPT_SAFETY_TOKENS}；被它压低，director_prompt_tokens={configured}）"
+        )
+    return configured, f"提示词上限 {configured}（上下文 {context}）"
+
+
+def _fit_prompt(
+    context: dict,
+    config: AIConfig,
+    count_tokens,
+    budget: int,
+) -> tuple[list[dict], int, dict]:
+    """Trim the context until the rendered prompt fits ``budget``.
+
+    ``count_tokens`` is whatever can measure the prompt: the server's own tokenizer when
+    the build has one, a character estimate when it does not. The ladder is the same
+    either way, and the loop accepts the widest rung that fits.
+    """
+    budget = max(256, budget)
     messages: list[dict] = []
     tokens = 0
     trimmed = context
     for stride, candidates, assets in PROMPT_LADDER:
         trimmed = _trim_context(
-            context, lyric_stride=stride, candidate_limit=candidates, asset_limit=assets,
+            context,
+            lyric_stride=stride,
+            candidate_limit=candidates,
+            asset_limit=assets,
         )
         messages = _prompt_messages(trimmed)
-        tokens = _estimated_tokens(messages)
+        tokens = count_tokens(messages)
         if tokens <= budget:
             break
     return messages, tokens, trimmed
 
 
 def _prompt_messages(context: dict) -> list[dict]:
-    project_text = f"{TREATMENT_SPEC}\n\n项目数据:\n{json.dumps(context, ensure_ascii=False)}"
+    project_text = (
+        f"{TREATMENT_SPEC}\n\n项目数据:\n{json.dumps(context, ensure_ascii=False)}"
+    )
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": project_text},
@@ -200,7 +280,11 @@ def _prompt_messages(context: dict) -> list[dict]:
 
 
 def _trim_context(
-    context: dict, *, lyric_stride: int, candidate_limit: int, asset_limit: int,
+    context: dict,
+    *,
+    lyric_stride: int,
+    candidate_limit: int,
+    asset_limit: int,
 ) -> dict:
     """Drop optional detail so a long song still fits the prompt budget."""
     trimmed = dict(context)
@@ -228,10 +312,11 @@ def _trim_context(
 
 
 def _estimated_tokens(messages: list[dict]) -> int:
-    """Conservative estimate, since the real tokenizer lives in llama-server.
+    """Conservative estimate, used only when the server cannot measure the prompt.
 
-    Chinese answers run roughly one to two characters per token, so dividing the
-    character count by 1.8 under-promises the budget rather than overrunning it.
+    Chinese runs about one character per token while the template's English boilerplate
+    runs nearer five, so a mixed brief lands on either side of this - which is why the
+    ladder prefers the server's own tokenizer and this is the fallback, not the default.
     """
     total = 0
     for message in messages:
@@ -239,7 +324,11 @@ def _estimated_tokens(messages: list[dict]) -> int:
         if isinstance(content, str):
             total += len(content)
         elif isinstance(content, list):
-            total += sum(len(str(item.get("text", ""))) for item in content if isinstance(item, dict))
+            total += sum(
+                len(str(item.get("text", "")))
+                for item in content
+                if isinstance(item, dict)
+            )
     return int(total / 1.8) + 64
 
 
@@ -249,7 +338,7 @@ def _extract_json(content: str) -> str:
         lines = text.splitlines()
         text = "\n".join(lines[1:-1])
     start, end = text.find("{"), text.rfind("}")
-    return text[start:end + 1] if start >= 0 and end > start else text
+    return text[start : end + 1] if start >= 0 and end > start else text
 
 
 def _build_context(
@@ -279,12 +368,18 @@ def _build_context(
         "sections": [
             {
                 "index": index,
-                "label": analysis.section_labels[index] if index < len(analysis.section_labels) else "unknown",
+                "label": (
+                    analysis.section_labels[index]
+                    if index < len(analysis.section_labels)
+                    else "unknown"
+                ),
                 "start": start,
                 "end": end,
                 "energy": round(analysis.energy_at((start + end) / 2), 3),
             }
-            for index, (start, end) in enumerate(zip(analysis.sections, analysis.sections[1:]))
+            for index, (start, end) in enumerate(
+                zip(analysis.sections, analysis.sections[1:])
+            )
         ],
         "lyrics": [[round(line.start, 2), line.text] for line in lyrics],
         "assets": [
@@ -299,7 +394,11 @@ def _build_context(
             for asset in candidates
         ],
         "lyric_candidates": _lyric_candidates(
-            lyrics, assets, similarities, source_starts, candidate_ids,
+            lyrics,
+            assets,
+            similarities,
+            source_starts,
+            candidate_ids,
             limit=CANDIDATE_PER_LYRIC,
         ),
         "instruction": (
@@ -312,8 +411,12 @@ def _build_context(
 
 
 def _lyric_candidates(
-    lyrics: list[LyricLine], assets: list[MediaAsset], similarities: np.ndarray | None,
-    source_starts: np.ndarray | None, candidate_ids: set[int], limit: int = 2,
+    lyrics: list[LyricLine],
+    assets: list[MediaAsset],
+    similarities: np.ndarray | None,
+    source_starts: np.ndarray | None,
+    candidate_ids: set[int],
+    limit: int = 2,
 ) -> list[dict]:
     if similarities is None or similarities.ndim != 2:
         return []
@@ -322,15 +425,18 @@ def _lyric_candidates(
     output = []
     for row in range(row_count):
         columns = [
-            int(column) for column in np.argsort(similarities[row, :column_count])[::-1]
+            int(column)
+            for column in np.argsort(similarities[row, :column_count])[::-1]
             if assets[int(column)].id in candidate_ids
         ][:limit]
         candidates = []
         for column in columns:
             item = [assets[column].id, round(float(similarities[row, column]), 4)]
             if (
-                assets[column].kind == "video" and source_starts is not None
-                and row < source_starts.shape[0] and column < source_starts.shape[1]
+                assets[column].kind == "video"
+                and source_starts is not None
+                and row < source_starts.shape[0]
+                and column < source_starts.shape[1]
             ):
                 item.append(round(float(source_starts[row, column]), 3))
             candidates.append(item)
@@ -339,7 +445,9 @@ def _lyric_candidates(
 
 
 def _ranked_candidates(
-    assets: list[MediaAsset], similarities: np.ndarray | None, limit: int = CANDIDATE_ASSETS,
+    assets: list[MediaAsset],
+    similarities: np.ndarray | None,
+    limit: int = CANDIDATE_ASSETS,
 ) -> list[MediaAsset]:
     """Candidates best-first, capped at ``limit``.
 
@@ -358,21 +466,27 @@ def _ranked_candidates(
         semantic = np.zeros(len(assets))
     ranked = sorted(
         enumerate(assets),
-        key=lambda item: float(semantic[item[0]]) * .75 + item[1].quality_score * .25,
+        key=lambda item: float(semantic[item[0]]) * 0.75 + item[1].quality_score * 0.25,
         reverse=True,
     )
     return [asset for _, asset in ranked[:limit]]
 
 
-def _sanitize(treatment: DirectorTreatment, section_count: int, asset_ids: set[int]) -> DirectorTreatment:
-    treatment.motif_asset_ids = list(dict.fromkeys(x for x in treatment.motif_asset_ids if x in asset_ids))
+def _sanitize(
+    treatment: DirectorTreatment, section_count: int, asset_ids: set[int]
+) -> DirectorTreatment:
+    treatment.motif_asset_ids = list(
+        dict.fromkeys(x for x in treatment.motif_asset_ids if x in asset_ids)
+    )
     seen: set[int] = set()
     valid_sections = []
     for section in treatment.sections:
         if section.section_index >= section_count or section.section_index in seen:
             continue
         seen.add(section.section_index)
-        section.preferred_asset_ids = list(dict.fromkeys(x for x in section.preferred_asset_ids if x in asset_ids))
+        section.preferred_asset_ids = list(
+            dict.fromkeys(x for x in section.preferred_asset_ids if x in asset_ids)
+        )
         valid_sections.append(section)
     treatment.sections = valid_sections
     return treatment

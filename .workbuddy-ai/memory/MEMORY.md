@@ -19,6 +19,11 @@
 - `AIConfig.device` 只允许 `auto|cuda|cpu`；但 `transcriber.py`、`vision_index.py`、
   `audio_semantics.py` 仍用 `device == "cuda"` 判断，放开 `cuda:N` 会静默退回 fp32/CPU。
   **导演模块不再接收 device**——它走 `llama-server` 子进程，显存由 `-ngl` 决定。
+- **llama.cpp 的 CUDA 构建不一定自带 CUDA 运行时**：实测 `ggml-cuda.dll` 静态导入
+  `cublas64_13.dll`，缺它就 `STATUS_DLL_NOT_FOUND (0xC0000135)`，进程在加载期死掉且**零输出**。
+  机器上没有独立 CUDA toolkit，但 `.venv\Lib\site-packages\torch\lib` 里有 cublas64_13 /
+  cublasLt64_13 / cudart64_13（torch 2.14+cu130 自带）。`llama_server._launch_environment`
+  会把它加到子进程 PATH（**bin 目录在前**，保证自带 DLL 优先），所以不用手工复制那 ~500MB。
 - All-In-One-Infer 在 **CWD** 建 `demix/`、`spec/`（正常结束自清，中断则留下），已 gitignore。
   它批量生成/删临时文件，**在 agent 会话里会被安全钩子按 turn 统计删除数后中止**
   （`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）——用户自己终端不受影响。所以本会话验证流水线时，
@@ -48,14 +53,37 @@
   **已整体删除**。看到旧文档讲"两个引擎"、`XHToken/Spark-X2.5-4B`、`_sequence_reserve_gb`
   的一律当成过时内容。
 - **提示词上限的约束是 KV 缓存**（不是平方注意力）：Bonsai 约 75% 层是线性注意力，瓶颈由 `-c`
-  决定——llama.cpp 按整个窗口一次性分配。默认 `-c 16384` 配 `director_prompt_tokens = 16384`
-  是自洽的，再大必须同时抬 `-c`。
-- **客户端没有 tokenizer**：`_fit_prompt` 用 `_estimated_tokens`（字符数 / 1.8 + 64）估算，
-  所以阶梯在本地一次跑完，不必为每一级都发一次请求。
+  决定——llama.cpp 按整个窗口一次性分配。**`-c` 同时装提示词和回复，提示词拿不到全部**：
+  实际预算 = `min(director_prompt_tokens, -c − director_max_new_tokens − PROMPT_SAFETY_TOKENS(64))`。
+  默认 `-c 16384` + `max_new_tokens 4096` → 约 **12224**。把 `-c` 当提示词预算就会得到
+  `exceed_context_size_error`（真机就是这么炸的：prompt 16495 > n_ctx 16384）。想让导演读更多
+  要抬 `-c`，不是抬 `director_prompt_tokens`（那只是上界）。
+- **提示词长度必须服务端实测，不能字符估算**：中文约 1 字符/token，模板自带英文样板接近
+  5 字符/token，所以估算两个方向都会错。**低估是致命的**——真机估 14240 / 实测 16495（低 16%），
+  "装得下"判定通过、llama.cpp 直接拒收整个请求。现在阶梯用 `/apply-template`（按真实模板渲染，
+  同样带 chat_template_kwargs 关闭思考）+ `/tokenize` 计数。**这两个端点在服务器起来之后才可能调用**，
+  所以 `_treat_with_llamacpp` 的顺序是「先起服务 → 算预算 → 拟合提示词 → 生成」，不是先拟合。
+  老构建没有这两个端点时退回 `_estimated_tokens`（`server.tokenizer_available is False`）。
 - **上下文按最宽规格构建再由阶梯裁剪**——阶梯只能做减法，没放进去的细节用不到；裁剪顺序是
   先清逐句候选表、再减素材、最后才抽样歌词。**候选列表必须按检索得分排序**：裁剪是普通切片，
   按发现顺序排会先丢最强的。裁掉候选表时 `_trim_context` 必须同步改写 `instruction`。
 - 三值 GGUF 必须用 **PrismML 的 llama.cpp 分支**，否则要么拒绝该量化类型、要么**加载成功但输出乱码**。
+- **每次请求都必须关掉思考**：`chat_template_kwargs = {"enable_thinking": false}`（`llama_server.chat` 已固定带上）。
+  Bonsai 是 R1 风格推理模型，开着思考它会把整个 token 预算烧在 `reasoning_content` 上、`content`
+  返回**空**（表现为 `finish_reason=length`，不是"变慢"）。实测同一句"返回一行 JSON"：
+  开思考 170 tokens 且可能拿不到答案，关掉只要 14 tokens 直接给 JSON，模板还会顺手去掉推理指令
+  让提示词更短。**`reasoning_budget: 0` 在 llama.cpp b10709 上无效**，只有模型自带 Jinja 模板的
+  `enable_thinking` 开关管用。
+
+## 配置里的 `Path | None`：空白值必须按"未配置"处理
+- pydantic 的 `Path | None` 会把 `""` 折叠成 `Path(".")`——**不是 None**，于是所有"留空即自动查找"
+  的选项静默失效。真机踩到：`director_llama_server = ""` 走了"显式路径"分支，在 PATH 与
+  `<cache>/bin` 查找之前就报「指向的文件不存在：.」，而权重和客户端其实都装好了。
+- 修法：`config._blank_path_is_none()` + 各模型的 `field_validator(mode="before")`，已覆盖
+  `director_gguf`、`director_llama_server`、`render.subtitle_fonts_dir`、`project.lyrics`。
+  **新增任何 `Path | None` 配置项都要挂上这个校验器**，否则同一个坑会再来一次。
+- 顺带：pydantic 默认**忽略**未知键，所以删掉的配置项留在旧 `project.toml` 里不报错也不生效。
+  守门测试 `test_the_shipped_project_files_only_name_real_config_fields` 就是防这个。
 
 ## 模型下载：导演 GGUF 默认走魔搭
 - 导演 GGUF 与快照走**同一套 provider 顺序**（`auto` = modelscope → huggingface 回退），

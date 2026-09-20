@@ -27,7 +27,7 @@ director_enabled = true
 director_model = "prism-ml/Ternary-Bonsai-2-27B-gguf"
 director_temperature = 0.7
 director_max_new_tokens = 4096
-director_prompt_tokens = 16384 # 与 director_llama_args 里的 -c 保持一致
+director_prompt_tokens = 24576 # 提示词上限，只是上界；实际预算 = -c 减去回复长度和余量
 
 [render]
 width = 1920

@@ -16,6 +16,22 @@ SubtitleEffect = Literal[*SUBTITLE_EFFECTS]
 SubtitleEffectChoice = Literal["auto", *SUBTITLE_EFFECTS]
 
 
+def _blank_path_is_none(value: object) -> object:
+    """Read a blank optional path as "not configured" instead of "the current directory".
+
+    ``pathlib`` folds ``""`` (and ``"."``) into ``Path(".")``, so a template that ships
+    ``director_llama_server = ""`` arrives as a *real* explicit path. That silently
+    breaks every "留空即自动查找" option: the lookup takes the explicit-path branch and
+    fails with ``指向的文件不存在：.`` before PATH or the cache directory is ever
+    consulted. Neither value can name a file, so both mean unset.
+    """
+    if isinstance(value, Path):
+        value = str(value)
+    if isinstance(value, str) and value.strip() in {"", "."}:
+        return None
+    return value
+
+
 class RenderConfig(BaseModel):
     width: int = 1920
     height: int = 1080
@@ -28,6 +44,12 @@ class RenderConfig(BaseModel):
     max_shot_seconds: float = 5.5
     subtitle_font: str = "auto"
     subtitle_fonts_dir: Path | None = None
+
+    @field_validator("subtitle_fonts_dir", mode="before")
+    @classmethod
+    def _blank_fonts_dir_is_unset(cls, value: object) -> object:
+        return _blank_path_is_none(value)
+
     subtitle_fonts: dict[str, str] = Field(
         default_factory=lambda: {
             "energetic": "preset:energetic",
@@ -46,8 +68,11 @@ class RenderConfig(BaseModel):
     @classmethod
     def _known_style(cls, value: str) -> str:
         if value not in style_choices():
-            raise ValueError(f"未知剪辑风格 {value!r}；可选：{'/'.join(style_choices())}")
+            raise ValueError(
+                f"未知剪辑风格 {value!r}；可选：{'/'.join(style_choices())}"
+            )
         return value
+
     subtitle_margin: int = 72
     #: Which editing craft to apply. See beatforge/editing.py for what each one means.
     edit_style: str = "auto"
@@ -109,29 +134,33 @@ class AIConfig(BaseModel):
     #: one usable file. PQ2_0 decodes faster on Hopper and Blackwell; PTQ1_0 is the
     #: better pick on Ada and when memory is tightest.
     director_gguf_file: str = "Ternary-Bonsai-2-27B-PQ2_0.gguf"
-    #: The GGUF file to serve. Empty means "find the configured quant under the cache
+    #: The GGUF file to serve. Blank means "find the configured quant under the cache
     #: directory", which is where ``download-models`` puts it.
     director_gguf: Path | None = None
-    #: The llama-server executable. Empty means "look on PATH, then in the cache".
+    #: The llama-server executable. Blank means "look on PATH, then in the cache".
     director_llama_server: Path | None = None
     #: Point at an already-running server instead of starting one. Any llama.cpp build
     #: serving the same checkpoint will do, which is how you avoid a second copy of a
     #: 7 GB model in memory.
     director_llama_url: str | None = None
     #: Passed straight through to llama-server. ``-ngl 99`` offloads every layer; the
-    #: context only has to cover the prompt, and llama.cpp allocates the KV cache for
-    #: the whole ``-c`` window up front.
+    #: context has to cover the prompt *and* the answer, which is why it is bigger than
+    #: ``director_prompt_tokens``.
     director_llama_args: list[str] = Field(
-        default_factory=lambda: ["-ngl", "99", "-fa", "on", "-c", "16384"]
+        default_factory=lambda: ["-ngl", "99", "-fa", "on", "-c", "24576"]
     )
     director_llama_port: int = Field(default=8917, ge=1024, le=65535)
     director_temperature: float = Field(default=0.7, ge=0, le=1.5)
     director_max_new_tokens: int = Field(default=4096, ge=256, le=32768)
-    #: Prompt ceiling. Bonsai is mostly linear attention, so the limit is the KV cache
-    #: llama.cpp allocates for the whole ``-c`` window rather than a quadratic score
-    #: matrix: raising this without raising ``-c`` in ``director_llama_args`` has nowhere
-    #: to put the extra tokens.
-    director_prompt_tokens: int = Field(default=16384, ge=256, le=131072)
+    #: Prompt ceiling, and only an *upper* bound: the real budget is clamped to whatever
+    #: the server's ``-c`` has left after ``director_max_new_tokens``, because the prompt
+    #: and the answer share one context window.
+    director_prompt_tokens: int = Field(default=24576, ge=256, le=131072)
+
+    @field_validator("director_gguf", "director_llama_server", mode="before")
+    @classmethod
+    def _blank_paths_are_unset(cls, value: object) -> object:
+        return _blank_path_is_none(value)
 
 
 class ProjectConfig(BaseModel):
@@ -143,6 +172,15 @@ class ProjectConfig(BaseModel):
     cache_dir: Path
     ai: AIConfig = AIConfig()
     render: RenderConfig = RenderConfig()
+
+    @field_validator("lyrics", mode="before")
+    @classmethod
+    def _blank_lyrics_is_unset(cls, value: object) -> object:
+        # ``lyrics = ""`` is a documented way to say "transcribe instead" (see the
+        # template). Without this it becomes the project root, which resolves to an
+        # existing directory - so the "do we already have lyrics?" checks below answer
+        # yes and then try to read a directory as an LRC file.
+        return _blank_path_is_none(value)
 
     @model_validator(mode="after")
     def resolve_paths(self) -> "ProjectConfig":
@@ -198,11 +236,11 @@ director_gguf = "" # 留空则自动找 cache 目录下 download-models 放好�
 director_gguf_file = "Ternary-Bonsai-2-27B-PQ2_0.gguf" # PTQ1_0 更省内存，PQ2_0 在较新显卡上更快
 director_llama_server = "" # 留空则先在 PATH 找 llama-server，再找 cache/bin
 director_llama_url = "" # 指向已启动的 llama-server 可省掉一次 7GB 加载
-director_llama_args = ["-ngl", "99", "-fa", "on", "-c", "16384"] # -ngl 0 为纯 CPU；-c 决定 KV 缓存大小
+director_llama_args = ["-ngl", "99", "-fa", "on", "-c", "24576"] # -ngl 0 为纯 CPU；-c 同时要装下提示词和回复，所以大于 director_prompt_tokens
 director_llama_port = 8917
 director_temperature = 0.7
 director_max_new_tokens = 4096
-director_prompt_tokens = 16384 # 提示词上限；Bonsai 以线性注意力为主，瓶颈是 KV 缓存而非平方注意力
+director_prompt_tokens = 24576 # 提示词上限，只是上界；实际会被 -c 减去回复长度后的余量压低
 
 [render]
 width = 1920

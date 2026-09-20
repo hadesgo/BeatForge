@@ -27,7 +27,7 @@ BeatForge 是一个 Python + uv 的本地 AI 音乐视频剪辑器。输入音�
 
 默认质量优先组合面向12GB显存设计：Qwen3-ASR 1.7B、WeMM-Embedding-2B 和 Qwen3-VL-Reranker-2B 使用原生 BF16/模型原始精度，不依赖 bitsandbytes 等运行时量化库；导演用 7.2GB 的三值量化 GGUF，以独立进程运行，与渲染不抢显存。视觉召回完成后会先删除 WeMM 并释放 CUDA 缓存，再加载精排模型；导演又在整个视觉索引释放后加载，因此三个大模型不会同时驻留显存。CUDA运行时仍启用TF32、高精度矩阵乘策略和cuDNN形状调优。导演阶段的提示词长度受 KV 缓存限制，详见[提示词上限与显存预留](#提示词上限与显存预留)。
 
-> 当前开发电脑没有 NVIDIA 显卡，也没有下载真实模型权重，因此12GB方案是项目的目标下限，并非已经在所有12GB显卡上实测通过的保证。代码、单元测试和无模型渲染链路可以在当前电脑验证；首次部署到GPU电脑时，请先执行 `doctor` 和 `--plan-only` 烟雾测试。若视觉编码出现瞬时显存不足，先把 `vision_batch_size` 降到1。
+> 当前基准真机是一张 **RTX 5070 12GB**（空闲约 10.8GiB）。导演阶段（llama.cpp 加载三值 27B 并生成完整导演方案）已在该卡上实测跑通；视觉编码等其余链路仍建议先跑 `doctor` 和 `--plan-only` 烟雾测试。若视觉编码出现瞬时显存不足，先把 `vision_batch_size` 降到1。
 
 ## 安装
 
@@ -185,8 +185,8 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `vision_input_pixels` | `1003520` | 每张图送进视觉编码器前的像素上限（= 1280×28×28） | 显存紧张时降到 `501760`（约 0.5MP） |
 | `frame_samples` | `8` | 长视频关键帧覆盖率；更高更容易找到对应画面，但分析更慢 | `8`，长素材可到 `12` |
 | `director_model` | `prism-ml/Ternary-Bonsai-2-27B-gguf` | 统一叙事、色彩弧、母题与章节策略 | 需要 PrismML 分支的 llama-server，见[本地 AI 导演](#本地-ai-导演) |
-| `director_prompt_tokens` | `16384` | 导演提示词的 token 上限；超长歌曲会自动抽样歌词并裁剪候选表 | 要与 `director_llama_args` 里的 `-c` 保持一致 |
-| `director_llama_args` | `["-ngl","99","-fa","on","-c","16384"]` | `-ngl` 决定卸载到显存的层数，`-c` 决定 KV 缓存的窗口 | 显存紧张就降 `-ngl`，同时按比例降 `-c` 和 `director_prompt_tokens` |
+| `director_prompt_tokens` | `24576` | 导演提示词 token 的**上界**；实际预算被 `-c` 减去回复长度后压低，超长歌曲会自动抽样歌词并裁剪候选表 | 想让它读更多要抬 `-c`，不是抬这个 |
+| `director_llama_args` | `["-ngl","99","-fa","on","-c","24576"]` | `-ngl` 决定卸载到显存的层数，`-c` 是提示词与回复共享的 KV 缓存窗口 | 显存紧张就降 `-ngl`；`-c` 别低于提示词预算加回复长度 |
 | `director_gguf_file` | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | 只下载这一个量化文件；`PTQ1_0` 更省内存，`PQ2_0` 在较新显卡上更快 | 二选一，不要同时下 |
 | `crf` / `intermediate_crf` | `19` / `14` | 数值越低画质越高、文件越大；中间文件应比最终文件更高质量 | 保持默认 |
 | `look_strength` | `0.72` | AI导演色彩弧的应用强度 | 写实人像可降至 `0.55`–`0.7` |
@@ -218,11 +218,11 @@ director_gguf_file = "Ternary-Bonsai-2-27B-PQ2_0.gguf"
 director_gguf = ""                    # 留空则用 download-models 放在 cache 里的那份
 director_llama_server = ""            # 留空则先在 PATH 找 llama-server，再找 cache/bin
 director_llama_url = ""               # 指向已启动的 llama-server 可省掉一次 7GB 加载
-director_llama_args = ["-ngl", "99", "-fa", "on", "-c", "16384"]
+director_llama_args = ["-ngl", "99", "-fa", "on", "-c", "24576"]
 director_llama_port = 8917
 director_temperature = 0.7
 director_max_new_tokens = 4096
-director_prompt_tokens = 16384
+director_prompt_tokens = 24576
 ```
 
 ### 安装
@@ -249,23 +249,34 @@ uv run beatforge download-models my-mv/project.toml
 | --- | --- |
 | 权重 | GGUF，默认从魔搭下载，需 PrismML 分支 |
 | 上下文 | 262K，以线性注意力为主 |
-| 提示词上限 | `director_prompt_tokens` 默认 16384，可调到 131072 |
+| 提示词上限 | `director_prompt_tokens` 默认 24576，可调到 131072 |
 | 约束输出 | 服务端 JSON schema |
 | 显存控制 | `-c`（KV 缓存）与 `-ngl`（层卸载） |
 
 ### 提示词上限与显存预留
 
-导演是整条链路里唯一会把超长序列喂给语言模型的一步。**约束来自 KV 缓存**：Bonsai 约 75% 的层是线性注意力，KV 状态是常数大小，只有约 25% 的全注意力层随长度增长；而 llama.cpp 会按整个 `-c` 窗口一次性分配 KV 缓存。默认 `-c 16384` 配 `director_prompt_tokens = 16384` 是自洽的：预算给到 KV 能装下的上限，再大就得同时抬 `-c`。
+导演是整条链路里唯一会把超长序列喂给语言模型的一步。**约束来自 KV 缓存**：Bonsai 约 75% 的层是线性注意力，KV 状态是常数大小，只有约 25% 的全注意力层随长度增长；而 llama.cpp 会按整个 `-c` 窗口一次性分配 KV 缓存。
+
+**`-c` 同时装下提示词和回复，所以提示词拿不到全部。** 这是真机上踩过的坑：把 `-c` 当成提示词预算，就会出现
+`request (16495 tokens) exceeds the available context size (24576 tokens)`，整个请求被直接拒收、导演回退成规则导演。实际预算是
+
+```text
+提示词预算 = min(director_prompt_tokens, -c − director_max_new_tokens − 64)
+```
+
+默认 `-c 24576` + `director_max_new_tokens 4096` → 预算约 **12224**。想让导演读更多，抬 `-c`（比如 24576），而不是抬 `director_prompt_tokens`——后者只是上界。
 
 **候选素材与逐句候选表按最宽的规格构建**，再由阶梯逐级裁剪——阶梯只能做减法，所以没放进去的细节导演都用不到。上限为 96 个素材、每句 6 条候选，且候选列表按检索得分排序，裁剪时先丢最弱的而不是先丢发现顺序靠后的。
 
-- `director_prompt_tokens`（默认 `16384`）限制提示词长度。超长歌曲会按阶梯逐级降级——先裁剪逐句候选表，再减少送入的素材条数，最后才对歌词抽样——直到装进预算为止。llama.cpp 在服务端套聊天模板并分词，客户端拿不到 tokenizer，所以阶梯用字符数估算（偏保守，宁可早一级降级）；被裁掉候选表时，提示词里的字段说明会同步改写，不会指向已经不存在的表。
+- **提示词长度是服务端实测的，不是估算的。** 客户端没有 tokenizer，而字符估算两个方向都会错：中文约 1 字符/token，模板自带的英文样板接近 5 字符/token。**低估那一侧是致命的**——真机上估 14240、实测 16495（低 16%），"装得下"的判定通过、llama.cpp 却拒收。所以阶梯用服务器的 `/apply-template`（按真实模板渲染，且同样关闭思考）+ `/tokenize` 数出准确值（这一步在服务器起来之后做，也只有它做得到）。老版本构建若没有这两个端点，会自动退回字符估算并在日志里注明。
+- 超长歌曲会按阶梯逐级降级——先裁剪逐句候选表，再减少送入的素材条数，最后才对歌词抽样——直到装进预算为止。被裁掉候选表时，提示词里的字段说明会同步改写，不会指向已经不存在的表。
+- **每次请求都关掉思考**（`chat_template_kwargs: {"enable_thinking": false}`）。Bonsai 是 R1 风格推理模型，开着思考时它会把整个 token 预算花在 `reasoning_content` 里、`content` 返回空——表现为 `finish_reason=length` 而不是变慢。实测同一句"返回一行 JSON"的请求：开思考 170 tokens 且可能拿不到答案，关掉只要 14 tokens 且直接给出 JSON（模板还会因此去掉推理指令，提示词本身也更短）。注意 `reasoning_budget: 0` 在 llama.cpp b10709 上**无效**，只有模型自带模板的 `enable_thinking` 开关管用。
 - 显存只在 llama-server 进程里占：`-c` 决定 KV 缓存，`-ngl` 决定多少层上显存。显存紧张时按比例同时下调 `-c`、`director_prompt_tokens` 与 `-ngl`。
 
-启动时会打印一行诊断，例如：
+启动时会打印一行诊断，例如（实测值来自服务端，括号里会说明预算是怎么被压低的）：
 
 ```text
-导演提示词约 2581 tokens（估算）· llama-server http://127.0.0.1:8917
+导演提示词 10563 tokens（服务端实测）· 提示词上限 12224（上下文 24576 − 回复 4096 − 余量 64；被它压低，director_prompt_tokens=24576）· llama-server http://127.0.0.1:8917
 ```
 
 导演同时接收歌曲统计、逐句歌词和乐段信息，输出经 Pydantic 校验的结构化方案；第一次 JSON 不合法会在同一次模型生命周期内自动修正一次。它不会生成时间码或直接执行 FFmpeg，具体剪辑点仍由节拍模型和确定性规划器控制。
@@ -512,8 +523,8 @@ music_structure_backend = "allin1"
 frame_samples = 8
 director_enabled = true
 director_model = "prism-ml/Ternary-Bonsai-2-27B-gguf"
-director_prompt_tokens = 16384
-director_llama_args = ["-ngl", "99", "-fa", "on", "-c", "16384"]
+director_prompt_tokens = 24576
+director_llama_args = ["-ngl", "99", "-fa", "on", "-c", "24576"]
 ```
 
 运行 `uv run beatforge doctor` 检查实际使用 CPU 还是 CUDA。歌词识别统一使用 Qwen3-ASR；原 Qwen3-VL-Embedding 和 SigLIP2 仍可通过 `vision_backend` 作为兼容后备。
@@ -652,6 +663,20 @@ uv sync --extra ai --extra ai-cuda --extra qwen --extra music-ai
 - 如果导演阶段OOM，先把 `director_llama_args` 里的 `-c` 和 `director_prompt_tokens` 一起降下来——KV 缓存是按整个 `-c` 窗口一次性分配的，只降提示词而不降 `-c` 不省显存；仍然不够就降 `-ngl`，把更多层留在内存里。
 - 渲染前先关闭其他占用显存的程序：llama-server 的权重和 KV 缓存都要整块分配，被浏览器或游戏占掉几个 GB 很容易直接失败。
 - 每次只改一个参数并重新运行 `--plan-only`，从日志确认失败发生在哪个模型阶段。
+
+### llama-server 起不来（`0xC0000135` / 缺 DLL）
+
+症状是「llama-server 启动后立即退出」且**日志里什么都没有**——进程在加载期就死了，看不到任何模型相关的输出。这是 Windows 的 `STATUS_DLL_NOT_FOUND`：构建本身缺运行时 DLL，和模型、量化类型都无关。
+
+llama.cpp 的 CUDA 构建会链接 `cublas64_*.dll`、`cublasLt64_*.dll`、`cudart64_*.dll`，但**发布包不一定自带它们**。实测某 CUDA 构建只缺 `cublas64_13.dll`：`ggml-cuda.dll` 直接静态导入它，缺了就连 `--version` 都跑不起来。
+
+BeatForge 会把**已安装 torch 自带的 CUDA 运行时目录**加进子进程的 DLL 搜索路径（torch 属于 `ai` extra，且自带一份匹配 CUDA 13 的 cublas/cudart），所以通常不用手工处理。若仍然失败：
+
+1. 用 `uv run beatforge doctor` 看 AI 导演那一行；
+2. 确认解压的是**完整**发布包（有些构建把 cublas/cudart 单独分发）；
+3. 或者把缺失的 DLL 从 `.venv\Lib\site-packages\torch\lib` 复制到 `director_llama_server` 所在的 `bin` 目录。子进程的搜索顺序是 **bin 目录 → torch 运行时 → PATH**，自带的 DLL 永远优先。
+
+> 顺带排除一个常见误判：`director_llama_server` / `director_gguf` **留空**是正确写法（表示"自动查找"）。模板里写的是空字符串，曾被解析成当前目录 `Path(".")` 而报「指向的文件不存在：.」；现在空白值一律按未配置处理。
 
 ### 离线模式提示找不到模型
 
