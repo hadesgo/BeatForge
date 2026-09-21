@@ -17,7 +17,11 @@ def transcribe(
 def _transcribe_qwen(audio: Path, model_name: str, aligner_name: str, device: str, offline: bool) -> list[LyricLine]:
     try:
         import torch
-        from transformers import AutoModelForMultimodalLM, AutoModelForTokenClassification, AutoProcessor
+        from transformers import (
+            AutoModelForMultimodalLM,
+            AutoModelForTokenClassification,
+            AutoProcessor,
+        )
     except (ImportError, RuntimeError) as exc:
         raise RuntimeError(
             "无法加载原生 Qwen3-ASR：需要 transformers>=5.13，且 torch、torchvision、"
@@ -65,14 +69,17 @@ def _transcribe_qwen(audio: Path, model_name: str, aligner_name: str, device: st
         release_gpu()
 
 
+def _field(item: Any, key: str) -> Any:
+    return item.get(key) if isinstance(item, dict) else getattr(item, key)
+
+
 def group_aligned_tokens(items: list[Any], max_characters: int = 18, gap_seconds: float = .75) -> list[LyricLine]:
     """Group Qwen forced-aligner character/word spans into readable subtitle lines."""
     lines: list[LyricLine] = []
     current: list[LyricToken] = []
     punctuation = set("。！？!?；;，,")
     for item in items:
-        value = item.get if isinstance(item, dict) else lambda key: getattr(item, key)
-        token = LyricToken(str(value("text")), float(value("start_time")), float(value("end_time")))
+        token = LyricToken(str(_field(item, "text")), float(_field(item, "start_time")), float(_field(item, "end_time")))
         previous = current[-1] if current else None
         visible_length = sum(len(part.text.strip()) for part in current)
         should_break = bool(previous and (

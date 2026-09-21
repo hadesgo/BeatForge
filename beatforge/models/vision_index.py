@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import gc
+import hashlib
 import math
 import subprocess
 import sys
@@ -13,7 +13,6 @@ from tqdm.auto import tqdm
 
 from beatforge.media import MediaAsset, estimate_focus_point
 from beatforge.runtime import command
-
 
 # The Qwen-VL family of processors resizes every image to its own budget before the
 # vision tower sees anything - ``max_pixels = 1280 * 28 * 28`` is the usual default,
@@ -36,7 +35,7 @@ _CACHE_QUALITY = 95
 
 def _even(value: float) -> int:
     """Nearest even integer, at least 2. yuv420p and most patch grids want even sizes."""
-    return max(2, int(round(value / 2)) * 2)
+    return max(2, round(value / 2) * 2)
 
 
 def _fit_within(width: int, height: int, max_pixels: int) -> tuple[int, int]:

@@ -178,9 +178,8 @@ def _lyric_focus_points(
 def _render_shot(
     shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
     render_duration: float, section_count: int,
-    *, incoming: "_Transition | None" = None, outgoing: "_Transition | None" = None,
+    *, incoming: _Transition | None = None, outgoing: _Transition | None = None,
 ) -> None:
-    frames = max(1, round(render_duration * cfg.fps))
     if shot.kind == "image":
         _render_image_shot(shot, output, cfg, art, render_duration, section_count,
                            incoming=incoming, outgoing=outgoing)
@@ -222,7 +221,7 @@ def _render_shot(
 
 
 def _cut_effects(
-    incoming: "_Transition | None", outgoing: "_Transition | None",
+    incoming: _Transition | None, outgoing: _Transition | None,
     duration: float, cfg: RenderConfig,
 ) -> list[str]:
     """Effect-transition filters for both ends of one shot.
@@ -242,7 +241,7 @@ def _cut_effects(
 def _render_image_shot(
     shot: Shot, output: Path, cfg: RenderConfig, art: ArtDirection,
     render_duration: float, section_count: int,
-    *, incoming: "_Transition | None" = None, outgoing: "_Transition | None" = None,
+    *, incoming: _Transition | None = None, outgoing: _Transition | None = None,
 ) -> None:
     files = [shot.file, *(layer.file for layer in shot.layers if layer.kind == "image")]
     args = ["ffmpeg", "-y", "-v", "error"]
@@ -1185,7 +1184,7 @@ def _dip(side: str, duration: float, seconds: float, interval: float, colour: st
 
 def _compose_transitions(
     shots: list[Shot], clips: Path, output: Path,
-    transitions: list["_Transition"], cfg: RenderConfig,
+    transitions: list[_Transition], cfg: RenderConfig,
 ) -> None:
     args = ["ffmpeg", "-y", "-v", "error"]
     for index in range(len(shots)):

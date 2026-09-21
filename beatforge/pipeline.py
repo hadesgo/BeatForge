@@ -134,7 +134,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
                 source_starts,
             )
             print(f"    导演概念：{treatment.concept}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - the director stage falls back to the rule director
             print(f"    本地导演不可用，使用规则导演：{type(exc).__name__}: {exc}")
         finally:
             release_gpu()

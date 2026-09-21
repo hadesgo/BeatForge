@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from itertools import pairwise
 from pathlib import Path
 
 import librosa
@@ -101,11 +102,11 @@ def analyze_music(
         sections = librosa.frames_to_time(boundaries, sr=sample_rate).tolist()
     else:
         sections = [0.0]
-    sections = sorted(set([0.0, *sections, float(total)]))
+    sections = sorted({0.0, *sections, float(total)})
     section_labels = _label_sections(sections, energy_times, normalized)
     if structure and structure.get("sections"):
         predicted = structure["sections"]
-        sections = sorted(set([0.0, *(float(item["start"]) for item in predicted), float(total)]))
+        sections = sorted({0.0, *(float(item["start"]) for item in predicted), float(total)})
         section_labels = []
         for start in sections[:-1]:
             match = next(
@@ -141,7 +142,7 @@ def _label_sections(boundaries: list[float], times: np.ndarray, energy: np.ndarr
     if count == 0:
         return []
     levels = []
-    for start, end in zip(boundaries, boundaries[1:]):
+    for start, end in pairwise(boundaries):
         values = energy[(times >= start) & (times < end)]
         levels.append(float(np.mean(values)) if len(values) else 0.0)
     labels = []

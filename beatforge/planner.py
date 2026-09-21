@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import asdict, dataclass, field
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -118,7 +119,7 @@ def create_plan(
     # whichever slots those shots occupied - with enough composites in one section, a
     # whole group of moves can never be reached at all.
     single_image_cursor = 0
-    for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
+    for index, (start, end) in enumerate(pairwise(boundaries)):
         midpoint = (start + end) / 2
         line = next((line for line in lyrics if line.start <= midpoint < line.end), None)
         line_id = id(line) if line is not None else None
@@ -447,7 +448,7 @@ def _boundaries(
     speedup = style.section_speedup if style else 0.0
     alignment = style.cut_alignment if style else "downbeat"
 
-    anchors = sorted(set([0.0, analysis.duration, *analysis.sections]))
+    anchors = sorted({0.0, analysis.duration, *analysis.sections})
     output = [0.0]
     for target in anchors[1:]:
         cursor = output[-1]
@@ -683,7 +684,7 @@ def _assign_transitions(
     inside a section earn one.
     """
     visible = 0
-    for index, (shot, following) in enumerate(zip(shots, shots[1:])):
+    for index, (shot, following) in enumerate(pairwise(shots)):
         family = _transition_family(
             shot, following, index=index, visible=visible, mood=mood, density=density,
             flavour=flavour,

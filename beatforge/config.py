@@ -7,7 +7,6 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from beatforge.editing import style_choices
-
 from beatforge.lyrics import SUBTITLE_EFFECTS
 
 # One source of truth: the renderer builds these, so the config validates against
@@ -98,7 +97,7 @@ class RenderConfig(BaseModel):
     transition_density: float = Field(default=0.35, ge=0, le=1)
 
     @model_validator(mode="after")
-    def keep_intermediates_high_quality(self) -> "RenderConfig":
+    def keep_intermediates_high_quality(self) -> RenderConfig:
         # In x264 a lower CRF means higher quality. Intermediate generations must
         # never be more compressed than the delivery encode.
         self.intermediate_crf = min(self.intermediate_crf, self.crf)
@@ -183,7 +182,7 @@ class ProjectConfig(BaseModel):
         return _blank_path_is_none(value)
 
     @model_validator(mode="after")
-    def resolve_paths(self) -> "ProjectConfig":
+    def resolve_paths(self) -> ProjectConfig:
         for name in ("music", "media_dir", "output", "cache_dir", "lyrics"):
             value = getattr(self, name)
             if value is not None and not value.is_absolute():

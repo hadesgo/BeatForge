@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 from beatforge.config import AIConfig
 from beatforge.models.separator import SeparationUnavailable
@@ -194,7 +195,7 @@ def download_required_models(
                 if progress:
                     progress("complete", item, f"{provider}: {local_path}")
                 break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - the next provider gets a turn
                 provider_errors.append(f"{provider}: {exc}")
         else:
             error = RuntimeError("；".join(provider_errors))

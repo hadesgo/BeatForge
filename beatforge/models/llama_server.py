@@ -24,10 +24,11 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 #: How long to wait for the weights to load. A 7 GB checkpoint off a cold page cache is
 #: slow, and llama.cpp gives no progress on the health endpoint while it reads.
@@ -392,13 +393,16 @@ def open_server(
         "--port", str(chosen),
         *(extra_args or []),
     ]
-    sink = open(log, "wb") if log is not None else subprocess.DEVNULL
+    # SIM115: the handle is closed on both the OSError path and in the finally block.
+    sink = open(log, "wb") if log is not None else subprocess.DEVNULL  # noqa: SIM115
     try:
         process = subprocess.Popen(
             command, stdout=sink, stderr=subprocess.PIPE if log is None else sink,
             env=_launch_environment(executable.parent),
         )
     except OSError as exc:
+        if log is not None:
+            sink.close()
         raise LlamaServerError(f"无法启动 {executable}：{exc}") from exc
     server = LlamaServer(base_url=f"http://127.0.0.1:{chosen}", process=process)
     try:
@@ -406,5 +410,5 @@ def open_server(
         yield server
     finally:
         server.stop()
-        if log is None and sink is not subprocess.DEVNULL:
+        if log is not None:
             sink.close()

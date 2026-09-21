@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
-import importlib.util
 import importlib.metadata
+import importlib.util
 import platform
 import shutil
 from pathlib import Path
@@ -13,7 +12,6 @@ from rich.table import Table
 
 from beatforge.config import PROJECT_TEMPLATE, load_project
 from beatforge.pipeline import run_project
-
 
 app = typer.Typer(no_args_is_help=True, help="使用本地 AI 根据音乐、歌词和用户素材生成 MV")
 console = Console()
