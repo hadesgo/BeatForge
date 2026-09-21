@@ -7,7 +7,17 @@
 
 ## 0. 为什么有这份文档
 
-本次交付**没有 git 提交**。仓库的 `.git` 对象库在施工期间损坏（见 §5），经用户裁定「先不管 git，专注代码」。因此**没有 commit 历史可以作为变更凭证**，这份文档 + 磁盘快照取代它。
+施工期间仓库的 `.git` 对象库损坏（见 §5），经用户裁定「先不管 git，专注代码」，所以**这批改动一开始是没有 commit 的**，这份文档 + 磁盘快照当时是唯一的变更凭证。
+
+> **补记（同日）**：用户随后修好了 git（历史完整恢复，`git fsck` clean）。这批改动已按 4 个逻辑提交落到 `master`，落在 `760966e` 之上：
+> | 提交 | 说明 |
+> | --- | --- |
+> | `00b2594` | `chore: 引入 ruff 静态检查，并清理失效的 noqa` |
+> | `5d31f52` | `refactor: 全项目行为不变重构，并修复三处死代码与资源管理缺陷` |
+> | `c7f736b` | `test: 优化测试用例：补覆盖盲区、修假断言并提速` |
+> | `d4e69ed` | `docs: 补充代码审查报告、重构执行记录与项目记忆` |
+>
+> 提交后工作区与 `%TEMP%\bf_REFACTORED_20260922_014522` 快照**逐文件 SHA256 比对一致**（67/67），即提交内容与验收内容完全相同。
 
 本文件记录**实际做了什么**；`architecture-review.md` 记录**计划做什么**。两份配合阅读。
 
@@ -96,11 +106,11 @@
 | 各任务分部快照 | `%TEMP%\bf_snap_T01 … bf_snap_T04`、`bf_snap_T04_finalize`、`bf_snap_QA` |
 | 验收证据（junit / ruff / diff） | `.probe\junit_*.xml`、`.probe\ruff_*.txt`、`.probe\t0*_diff.txt` |
 
-**回滚**：git 不可用，请用上面的快照覆盖回工作区。`bf_baseline_*` = 重构前，`bf_REFACTORED_*` = 重构后。
+**回滚**：git 已恢复，首选 `git reset --soft|--hard HEAD~4`（见 §7）。快照仍保留作为第二重保险：用上面的路径覆盖回工作区即可。`bf_baseline_*` = 重构前，`bf_REFACTORED_*` = 重构后（带 `MANIFEST.sha256`，可逐文件校验）。
 
 ## 7. 未做与已知偏差
 
-- **无 git 提交**（原因见 §5）。若日后恢复 git，建议按 T01–T04（+T04b）边界补成独立提交。
+- **git 提交**：已按 4 个逻辑提交落到 `master`（见 §0 补记）。原始计划是按 T01–T04b 边界拆成更细的提交；实际按「lint 护栏 / 行为不变重构+缺陷修复 / 测试优化 / 文档」四组切分，因为这四组可以**按文件干净分开**，而 T02/T03/T04 在 `renderer.py`、`llama_server.py`、`transcriber.py`、`vision_index.py` 上互相重叠，按任务边界切需要逐 hunk 手术，收益不抵风险。**若要回滚**：`git reset --soft HEAD~4` 只撤提交、保留工作区；`git reset --hard HEAD~4` 连工作区一起回退到 `760966e`。
 - `beatforge/models/__pycache__/quantization.cpython-313.pyc` 是无主陈旧字节码（源码已删）。已 grep 确认对 `quantization` / `director_engine` / `contact_sheet` 等废弃配置**零引用**，属构建产物残留，未处理。
 - `beatforge/models/vision_index.py:556` 的 `TRY004`（类型检查抛 `ValueError`）**保持原样**：其外层 `except` 会立刻接住并改抛 `RuntimeError`，异常永不外泄；且 `TRY` 规则组本次未启用，改它属新增规则集，超出"行为不变"边界。
 - `ruff` 的 `E501`（长行）未启用：代码里 524 处长行多为中文文案与长 filter 字符串，截断有害。`RUF001/002/003`（全角标点 300+ 处）与 `B905` 已在配置中显式 `ignore` 并注明理由。
