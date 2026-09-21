@@ -1,7 +1,7 @@
 from pathlib import Path
 
-import numpy as np
 import librosa
+import numpy as np
 import soundfile as sf
 
 from beatforge.audio import AudioAnalysis, analyze_music, section_at

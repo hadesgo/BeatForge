@@ -1,5 +1,5 @@
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 from beatforge.config import PROJECT_TEMPLATE, load_project
 

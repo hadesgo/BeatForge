@@ -1,4 +1,5 @@
 from collections import Counter
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -61,7 +62,7 @@ def test_plan_is_continuous() -> None:
     shots = create_plan(analysis, lyrics, assets, None, min_shot=1.5, max_shot=4)
     assert shots[0].start == 0
     assert shots[-1].end == 12
-    assert all(a.end == b.start for a, b in zip(shots, shots[1:]))
+    assert all(a.end == b.start for a, b in pairwise(shots))
 
 
 def test_ai_similarity_controls_selection() -> None:
@@ -110,7 +111,7 @@ def test_plan_punctuates_section_changes_and_keeps_the_rest_mostly_cut() -> None
 
     assert shots[-1].transition == "none"
     boundary = next(
-        index for index, (shot, following) in enumerate(zip(shots, shots[1:]))
+        index for index, (shot, following) in enumerate(pairwise(shots))
         if shot.section_index != following.section_index
     )
     assert shots[boundary].transition != "cut", "a section change is always punctuated"
@@ -188,7 +189,7 @@ def test_identical_visible_transitions_are_rotated_apart() -> None:
 
     families = [shot.transition for shot in shots]
     assert families[0] == "wipe"
-    for previous, current in zip(families, families[1:]):
+    for previous, current in pairwise(families):
         assert current != previous, families
 
 

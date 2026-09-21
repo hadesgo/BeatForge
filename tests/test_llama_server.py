@@ -6,7 +6,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -228,11 +227,10 @@ def test_the_child_really_receives_that_environment(
     )
     monkeypatch.setattr(llama_server, "_free_port", lambda port: port)
 
-    with pytest.raises(llama_server.LlamaServerError):
-        with llama_server.open_server(
-            binary=None, gguf=None, cache_dir=tmp_path, repo_id="x"
-        ):
-            pass
+    with pytest.raises(llama_server.LlamaServerError), llama_server.open_server(
+        binary=None, gguf=None, cache_dir=tmp_path, repo_id="x"
+    ):
+        pass
 
     assert seen["command"][0] == str(tmp_path / "llama-server.exe")
     assert seen["env"] is not None, "Popen was not given the DLL search path"
@@ -276,13 +274,18 @@ def test_an_ordinary_exit_code_gets_no_loader_explanation() -> None:
 
 
 class _FakeResponse:
+    """The one ``urlopen`` stand-in: readable, and usable as a context manager.
+
+    Shared by every test here that stubs ``urllib`` so the fake exists once.
+    """
+
     def __init__(self, payload: dict) -> None:
         self._body = json.dumps(payload).encode("utf-8")
 
     def read(self) -> bytes:
         return self._body
 
-    def __enter__(self) -> "_FakeResponse":
+    def __enter__(self) -> _FakeResponse:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -395,23 +398,10 @@ def test_a_build_without_those_endpoints_says_so(monkeypatch) -> None:
 def test_the_context_size_is_read_from_the_server(monkeypatch) -> None:
     """``-c`` 是提示词和回复共享的窗口，所以预算必须问服务器要真实值。"""
 
-    class Response:
-        def __init__(self, payload: dict) -> None:
-            self._body = json.dumps(payload).encode("utf-8")
-
-        def read(self) -> bytes:
-            return self._body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc) -> None:
-            return None
-
     monkeypatch.setattr(
         llama_server.urllib.request,
         "urlopen",
-        lambda request, timeout=None: Response(
+        lambda request, timeout=None: _FakeResponse(
             {"default_generation_settings": {"n_ctx": 24576}}
         ),
     )

@@ -1,12 +1,19 @@
 """The editing styles, and the craft they are supposed to encode."""
 
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from beatforge.audio import AudioAnalysis
-from beatforge.editing import CUT_ALIGNMENTS, EDIT_STYLES, TRANSITION_FLAVOURS, EditStyle, resolve_style
+from beatforge.editing import (
+    CUT_ALIGNMENTS,
+    EDIT_STYLES,
+    TRANSITION_FLAVOURS,
+    EditStyle,
+    resolve_style,
+)
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
 from beatforge.planner import _boundaries, create_plan
@@ -152,7 +159,7 @@ def test_a_style_with_no_speedup_keeps_its_shot_length_flat() -> None:
             composite_ratio=.2, subtitle_layout="free",
         )
         boundaries = _boundaries(analysis, lines, 1.5, 4.0, None, style)
-        return [round(b - a, 3) for a, b in zip(boundaries, boundaries[1:])]
+        return [round(b - a, 3) for a, b in pairwise(boundaries)]
 
     flat, tightening = lengths(0.0), lengths(.45)
     assert tightening != flat

@@ -1,16 +1,16 @@
-from pathlib import Path
 import math
 import re
 import shutil
 import subprocess
+from pathlib import Path
 
 import numpy as np
-from PIL import Image
 import pytest
 import soundfile as sf
+from PIL import Image
 
-from beatforge.config import RenderConfig
 from beatforge.audio import AudioAnalysis
+from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection, create_art_direction
 from beatforge.lyrics import LyricLine
 from beatforge.planner import IMAGE_COMPOSITES, Shot, ShotLayer
@@ -19,7 +19,6 @@ from beatforge.renderer import (
     _EFFECT_TRANSITIONS,
     _KNOCKOUT_DIM,
     _KNOCKOUT_LIFT,
-    _MIN_ZOOM,
     _TRANSITION_LIBRARY,
     _camera_quad,
     _image_filter_graph,
@@ -35,6 +34,23 @@ from beatforge.renderer import (
     render,
 )
 from beatforge.runtime import duration
+
+
+def make_analysis(
+    *, duration: float, bpm: float, beats: list[float], sections: list[float],
+    energy: float, brightness: float = .5, mood: str = "cinematic",
+) -> AudioAnalysis:
+    """The ``AudioAnalysis`` fixture the render tests share.
+
+    Every one of them wants a single energy sample whose value is also the average, and
+    the mood's own score set to one; spelling that out per test was ten copies of the
+    same eight lines.
+    """
+    return AudioAnalysis(
+        duration=duration, bpm=bpm, beats=beats, sections=sections,
+        energy_times=[0], energy_values=[energy], average_energy=energy,
+        brightness=brightness, mood=mood, mood_scores={mood: 1},
+    )
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
@@ -57,10 +73,9 @@ def test_end_to_end_renderer_without_models(tmp_path: Path) -> None:
     output = tmp_path / "output.mp4"
     config = RenderConfig(width=320, height=180, fps=12, crf=30, preset="ultrafast", subtitle_size=20)
     lyrics = [LyricLine(0, 1, "测试"), LyricLine(1, 2, "字幕"), LyricLine(2, 3, "成片")]
-    analysis = AudioAnalysis(
+    analysis = make_analysis(
         duration=3, bpm=100, beats=[0, 1, 2, 3], sections=[0, 3],
-        energy_times=[0], energy_values=[.5], average_energy=.5,
-        brightness=.5, mood="uplifting", mood_scores={"uplifting": 1},
+        energy=.5, mood="uplifting",
     )
     art = create_art_direction(analysis, lyrics, config)
     render(shots, lyrics, music, output, tmp_path / "cache", config, art)
@@ -74,11 +89,7 @@ def test_director_color_arc_and_shot_matching_become_filters() -> None:
         0, 0, 2, 2, 0, "frame.jpg", "image", 0, "", .5, "steady", "cut", .5,
         section_index=1, source_color=[210, 130, 70],
     )
-    analysis = AudioAnalysis(
-        duration=2, bpm=90, beats=[], sections=[0, 2], energy_times=[0],
-        energy_values=[.4], average_energy=.4, brightness=.5,
-        mood="cinematic", mood_scores={"cinematic": 1},
-    )
+    analysis = make_analysis(duration=2, bpm=90, beats=[], sections=[0, 2], energy=.4)
     art = create_art_direction(analysis, [], RenderConfig())
     art.color_arc = ["cold blue", "warm amber"]
 
@@ -120,10 +131,9 @@ def test_end_to_end_renderer_composes_effect_transitions(tmp_path: Path) -> None
     ]
     cfg = RenderConfig(width=320, height=180, fps=12, crf=30, preset="ultrafast",
                        film_grain=0, vignette=False)
-    analysis = AudioAnalysis(
+    analysis = make_analysis(
         duration=3, bpm=100, beats=[0, 1, 2, 3], sections=[0, 3],
-        energy_times=[0], energy_values=[.5], average_energy=.5,
-        brightness=.5, mood="uplifting", mood_scores={"uplifting": 1},
+        energy=.5, mood="uplifting",
     )
     lyrics = [LyricLine(0, 1, "测试"), LyricLine(1, 2, "字幕"), LyricLine(2, 3, "成片")]
     output = tmp_path / "output.mp4"
@@ -156,10 +166,8 @@ def test_all_still_image_effects_render(effect: str, tmp_path: Path) -> None:
         width=160, height=90, fps=10, crf=35, preset="ultrafast",
         image_background_blur=4, film_grain=0, vignette=False,
     )
-    analysis = AudioAnalysis(
-        duration=.5, bpm=120, beats=[0, .5], sections=[0, .5],
-        energy_times=[0], energy_values=[.7], average_energy=.7,
-        brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+    analysis = make_analysis(
+        duration=.5, bpm=120, beats=[0, .5], sections=[0, .5], energy=.7,
     )
     output = tmp_path / f"{effect}.mp4"
 
@@ -174,10 +182,8 @@ def test_all_still_image_effects_render(effect: str, tmp_path: Path) -> None:
 
 def _image_filters(shot: Shot, cfg: RenderConfig) -> list[str]:
     art = create_art_direction(
-        AudioAnalysis(
-            duration=4, bpm=100, beats=[0, 1, 2, 3, 4], sections=[0, 4],
-            energy_times=[0], energy_values=[.5], average_energy=.5,
-            brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+        make_analysis(
+            duration=4, bpm=100, beats=[0, 1, 2, 3, 4], sections=[0, 4], energy=.5,
         ),
         [], cfg,
     )
@@ -197,7 +203,7 @@ def _evaluate_quad(filter_string: str, cfg: RenderConfig, frame: int) -> dict[st
     ``PI``), or an eased, breathing, rolling or handheld move cannot be evaluated at
     all.
     """
-    points = {name: expr for name, expr in re.findall(r"([xy][0-3])='([^']*)'", filter_string)}
+    points = dict(re.findall(r"([xy][0-3])='([^']*)'", filter_string))
     assert len(points) == 8, filter_string
 
     def clip(value, low, high):
@@ -417,7 +423,7 @@ def test_a_long_edit_keeps_the_filter_graph_off_the_command_line(monkeypatch, tm
     handed over in a file instead of inline. It goes in through the generic
     ``-/opt file`` form: the dedicated ``-filter_complex_script`` was removed in ffmpeg 9.
     """
-    from beatforge.renderer import _Transition, _compose_transitions
+    from beatforge.renderer import _compose_transitions, _Transition
 
     shots = [
         Shot(index, index, index + 1, 1.0, index, "clip.jpg", "image", 0, "", .5,
@@ -464,10 +470,8 @@ def test_a_fade_is_paid_for_by_the_incoming_shot(monkeypatch, tmp_path: Path) ->
         Shot(1, 1, 2, 1.0, 1, "b.jpg", "image", 0, "", .5, "steady", "cut", .8),
         Shot(2, 2, 3, 1.0, 2, "c.jpg", "image", 0, "", .5, "steady", "cut", .8),
     ]
-    analysis = AudioAnalysis(
-        duration=3, bpm=100, beats=[0, 1, 2, 3], sections=[0, 3], energy_times=[0],
-        energy_values=[.5], average_energy=.5, brightness=.5,
-        mood="cinematic", mood_scores={"cinematic": 1},
+    analysis = make_analysis(
+        duration=3, bpm=100, beats=[0, 1, 2, 3], sections=[0, 3], energy=.5,
     )
     art = create_art_direction(analysis, [], cfg)
     handles = [_transition_spec(shots[i], shots[i + 1], art, cfg).handle for i in range(2)]
@@ -609,10 +613,8 @@ def test_the_iris_mask_opens_from_a_keyhole_to_the_whole_frame(tmp_path: Path) -
         image_background_blur=0, image_foreground_scale=1.0,
         film_grain=0, vignette=False,
     )
-    analysis = AudioAnalysis(
-        duration=.8, bpm=100, beats=[0, .8], sections=[0, .8], energy_times=[0],
-        energy_values=[.5], average_energy=.5, brightness=.5,
-        mood="cinematic", mood_scores={"cinematic": 1},
+    analysis = make_analysis(
+        duration=.8, bpm=100, beats=[0, .8], sections=[0, .8], energy=.5,
     )
     output = tmp_path / "iris.mp4"
     _render_shot(shot, output, cfg, create_art_direction(analysis, [], cfg), .8, 1)
@@ -628,10 +630,8 @@ def test_the_iris_mask_opens_from_a_keyhole_to_the_whole_frame(tmp_path: Path) -
 
 
 def _transition_art(tone: str = "neutral"):
-    analysis = AudioAnalysis(
-        duration=8, bpm=100, beats=[0, 2, 4, 6, 8], sections=[0, 8], energy_times=[0],
-        energy_values=[.5], average_energy=.5, brightness=.5,
-        mood="cinematic", mood_scores={"cinematic": 1},
+    analysis = make_analysis(
+        duration=8, bpm=100, beats=[0, 2, 4, 6, 8], sections=[0, 8], energy=.5,
     )
     art = create_art_direction(analysis, [], RenderConfig())
     art.transition_tone = tone
@@ -644,6 +644,67 @@ def _transition_shots(family: str, media_id: int = 5, section_index: int = 2) ->
     following = Shot(4, 2, 4, 2, media_id + 1, "frame.jpg", "image", 0, "", .8, "dynamic", "cut", .7,
                      section_index=section_index)
     return shot, following
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+def test_a_video_shot_is_rendered_from_its_own_footage(tmp_path: Path) -> None:
+    """A library of clips takes ``_render_shot`` down its *other* branch - and nothing tested it.
+
+    Every other render test here hands the renderer a still, so the branch a real edit
+    takes whenever the media folder holds video had no coverage at all; that is how a
+    dead local variable survived inside it unnoticed. The source is looped with
+    ``-stream_loop -1`` and trimmed to ``render_duration``, so the shot has to come back
+    at its own length and frame count rather than at the source clip's.
+    """
+    source = tmp_path / "clip.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         "testsrc=size=320x180:rate=10:duration=0.5", "-c:v", "libx264",
+         "-preset", "ultrafast", "-crf", "40", "-pix_fmt", "yuv420p", str(source)],
+        check=True, capture_output=True,
+    )
+    cfg = RenderConfig(width=160, height=90, fps=10, crf=35, preset="ultrafast",
+                       film_grain=0, vignette=False)
+    shot = Shot(
+        0, 0, 1.5, 1.5, 0, str(source), "video", 0, "", .6, "steady", "cut", .8,
+        source_width=320, source_height=180,
+    )
+    output = tmp_path / "shot.mp4"
+
+    _render_shot(shot, output, cfg, _transition_art(), 1.5, 1)
+
+    assert output.exists()
+    assert round(duration(output) * cfg.fps) == round(1.5 * cfg.fps)
+
+
+def test_the_video_branch_feeds_and_seeks_a_real_stream(monkeypatch, tmp_path: Path) -> None:
+    """The video branch is not the still branch pointed at a different file.
+
+    A still is fed with ``-loop 1``; real footage is fed with ``-stream_loop -1`` and
+    seeked with ``-ss`` so a shot can start partway into its clip. Pinning the two apart
+    keeps a future change from routing video through the still path, where the ``-loop``
+    handling would freeze it or mis-time the seek.
+    """
+    calls: list[list[str]] = []
+    monkeypatch.setattr("beatforge.renderer.command", calls.append)
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"x")
+    cfg = RenderConfig(width=160, height=90, fps=10, film_grain=0, vignette=False)
+    shot = Shot(
+        0, 0, 2, 2, 0, str(source), "video", 1.25, "", .6, "steady", "cut", .8,
+        source_width=320, source_height=180,
+    )
+    output = tmp_path / "out.mp4"
+
+    _render_shot(shot, output, cfg, _transition_art(), 2.0, 1)
+
+    (args,) = calls
+    assert args[0] == "ffmpeg"
+    assert args[args.index("-stream_loop") + 1] == "-1"
+    assert args[args.index("-ss") + 1] == "1.25", "the shot's source_start was dropped"
+    assert "-loop" not in args, "a real clip must not be fed as a still"
+    assert args[args.index("-r") + 1] == "10"
+    assert args[-1] == str(output)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
@@ -666,8 +727,48 @@ def test_every_transition_in_the_library_actually_composes(tmp_path: Path) -> No
 
     This library is the entire vocabulary the planner can reach for, and a transition
     that only breaks once it meets two real streams would not show up until a full
-    render was already minutes in.
+    render was already minutes in. Every name is still fed two real streams here - the
+    merged graph cannot succeed unless all of them compose - but the whole library is
+    handed to one ``ffmpeg`` instead of one process per name. A failure drops back to
+    composing each name on its own so the offending one is still named.
     """
+    clips = _transition_clips(tmp_path)
+    names = [name for group in _TRANSITION_LIBRARY.values() for name in group]
+    count = len(names)
+
+    split = [
+        f"[0:v]split={count}" + "".join(f"[a{index}]" for index in range(count)),
+        f"[1:v]split={count}" + "".join(f"[b{index}]" for index in range(count)),
+    ]
+    xfades = [
+        f"[a{index}][b{index}]xfade=transition={name}:duration=0.3:offset=0.3[x{index}]"
+        for index, name in enumerate(names)
+    ]
+    merge = "".join(f"[x{index}]" for index in range(count)) + f"concat=n={count}:v=1:a=0[v]"
+    output = tmp_path / "every-transition.mp4"
+    composed = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(clips[0]), "-i", str(clips[1]),
+         "-filter_complex", ";".join([*split, *xfades, merge]),
+         "-map", "[v]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "40",
+         "-pix_fmt", "yuv420p", str(output)],
+        capture_output=True,
+    )
+
+    # Two 0.6s clips through one 0.3s xfade give 0.9s; the concatenation has to add up, or
+    # a name silently produced nothing.
+    expected = count * 0.9
+    if composed.returncode != 0 or not output.exists() or abs(duration(output) - expected) > 0.15:
+        # The batched graph cannot say which transition broke it; name the culprit by
+        # composing each one the slow way.
+        for name in names:
+            _assert_transition_composes(tmp_path, clips, name)
+        pytest.fail(
+            "the batched graph failed although every transition composes alone: "
+            + composed.stderr.decode("utf-8", "replace")
+        )
+
+
+def _transition_clips(tmp_path: Path) -> list[Path]:
     clips = []
     for name, colour in (("a", "red"), ("b", "blue")):
         file = tmp_path / f"{name}.mp4"
@@ -678,19 +779,22 @@ def test_every_transition_in_the_library_actually_composes(tmp_path: Path) -> No
             check=True, capture_output=True,
         )
         clips.append(file)
+    return clips
 
-    for family, names in _TRANSITION_LIBRARY.items():
-        for name in names:
-            output = tmp_path / f"{name}.mp4"
-            subprocess.run(
-                ["ffmpeg", "-y", "-v", "error", "-i", str(clips[0]), "-i", str(clips[1]),
-                 "-filter_complex",
-                 f"[0:v][1:v]xfade=transition={name}:duration=0.3:offset=0.3[v]",
-                 "-map", "[v]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "40",
-                 "-pix_fmt", "yuv420p", str(output)],
-                check=True, capture_output=True,
-            )
-            assert output.exists() and duration(output) > 0, f"{family}: {name}"
+
+def _assert_transition_composes(tmp_path: Path, clips: list[Path], name: str) -> None:
+    output = tmp_path / f"{name}.mp4"
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(clips[0]), "-i", str(clips[1]),
+         "-filter_complex",
+         f"[0:v][1:v]xfade=transition={name}:duration=0.3:offset=0.3[v]",
+         "-map", "[v]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "40",
+         "-pix_fmt", "yuv420p", str(output)],
+        capture_output=True,
+    )
+    assert result.returncode == 0 and output.exists() and duration(output) > 0, (
+        f"{name}: {result.stderr.decode('utf-8', 'replace')}"
+    )
 
 
 @pytest.mark.parametrize("family", sorted({*_TRANSITION_LIBRARY, *_EFFECT_TRANSITIONS, "cut"}))
@@ -734,8 +838,18 @@ def test_effect_transitions_burn_into_both_sides_of_the_cut(family: str) -> None
     assert any("fade=t=in" in item for item in incoming)
     for item in (*outgoing, *incoming):
         assert "enable=" in item or "fade=t=" in item, item
-    # The dip must sit at the end of the outgoing shot, not at its start.
-    assert f"st={shot.duration - transition.seconds:.4f}" in " ".join(outgoing) or "st=" in " ".join(outgoing)
+    # The dip has to *arrive* at its colour on the frame at the cut, which is what makes
+    # it a flash rather than a slow brightening. ``fade`` reaches full colour at
+    # ``st + d``, so the outgoing window opens one frame interval before the shot ends:
+    # ``st + d == duration - 1/fps``. The old ``or "st=" in ...`` tail could not tell
+    # that apart from a dip that started at the head of the shot, so it is gone.
+    dips = [item for item in outgoing if "fade=t=out" in item]
+    assert dips, f"{family} has no outgoing dip to time"
+    for item in dips:
+        start = float(re.search(r"st=([\d.]+)", item).group(1))
+        length = float(re.search(r"d=([\d.]+)", item).group(1))
+        assert start > shot.duration / 2, f"{family}: the dip does not sit at the cut - {item}"
+        assert start + length == pytest.approx(shot.duration - 1 / cfg.fps, abs=1e-3), item
 
 
 def _frame_stats(clip: Path, frame: int, tmp_path: Path) -> tuple[float, float, float]:
@@ -894,11 +1008,7 @@ def _composite_sources(tmp_path: Path, count: int = 4) -> list[Path]:
 
 def _composite_art(cfg: RenderConfig) -> ArtDirection:
     return create_art_direction(
-        AudioAnalysis(
-            duration=1, bpm=120, beats=[0, 1], sections=[0, 1],
-            energy_times=[0], energy_values=[.6], average_energy=.6,
-            brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
-        ),
+        make_analysis(duration=1, bpm=120, beats=[0, 1], sections=[0, 1], energy=.6),
         [], cfg,
     )
 
@@ -949,7 +1059,7 @@ def test_the_panels_of_a_division_add_up_to_the_canvas(effect: str, tmp_path: Pa
 
     assert len(widths) == IMAGE_COMPOSITES[effect][0]
     assert sum(widths) == _composite_cfg().width
-    assert f"overlay=x=" in graph, "the seam between the panels was never drawn"
+    assert "overlay=x=" in graph, "the seam between the panels was never drawn"
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
@@ -1034,11 +1144,7 @@ def test_a_single_image_still_gets_its_blurred_backdrop(tmp_path: Path) -> None:
     cfg = RenderConfig(width=320, height=180, fps=10, crf=35, preset="ultrafast",
                        film_grain=0, vignette=False, image_background_blur=8)
     art = create_art_direction(
-        AudioAnalysis(
-            duration=1, bpm=120, beats=[0, 1], sections=[0, 1],
-            energy_times=[0], energy_values=[.6], average_energy=.6,
-            brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
-        ),
+        make_analysis(duration=1, bpm=120, beats=[0, 1], sections=[0, 1], energy=.6),
         [], cfg,
     )
 

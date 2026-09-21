@@ -1,10 +1,10 @@
-from pathlib import Path
 import json
 import shutil
+from pathlib import Path
 
 import numpy as np
-from PIL import Image
 import pytest
+from PIL import Image
 
 from beatforge import fonts
 from beatforge.config import RenderConfig
