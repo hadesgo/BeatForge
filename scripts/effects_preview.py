@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -21,23 +22,32 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from beatforge.audio import AudioAnalysis  # noqa: E402
 from beatforge.config import RenderConfig  # noqa: E402
-from beatforge.director import ArtDirection  # noqa: E402
-from beatforge.planner import Shot, ShotLayer  # noqa: E402
+from beatforge.director import create_art_direction  # noqa: E402
+from beatforge.planner import IMAGE_COMPOSITES, Shot, ShotLayer  # noqa: E402
 from beatforge.renderer import _CAMERA_MOVES, _render_shot  # noqa: E402
 from beatforge.runtime import command, duration  # noqa: E402
 
 FRAMING = ["film_bars", "iris", "parallax"]
-COMPOSITES = ["split_screen", "photo_stack", "double_exposure", "beat_montage"]
+COMPOSITES = list(IMAGE_COMPOSITES)
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 # A neutral art direction: the preview is about geometry and compositing, so nothing
-# here should be tinting the result and hiding a wrong crop.
-ART = ArtDirection(
-    concept="", narrative_arc="", visual_style="", color_arc=[], motifs=[],
-    mood="cinematic", font="sans", highlight_color="&H0000D7FF",
-    base_subtitle_effect="", line_effects=[], grade_filter="",
-    camera_intensity=1.0, transition_tone="neutral", grain=0.0, vignette=False,
+# here should be tinting the result and hiding a wrong crop. Built through
+# ``create_art_direction`` (and then stripped of its grade) rather than constructed by
+# hand, so a new field on ``ArtDirection`` cannot silently break this script.
+ART = replace(
+    create_art_direction(
+        AudioAnalysis(
+            duration=2, bpm=120, beats=[0, 1, 2], sections=[0, 2],
+            energy_times=[0], energy_values=[.5], average_energy=.5,
+            brightness=.5, mood="cinematic", mood_scores={"cinematic": 1},
+        ),
+        [], RenderConfig(width=480, height=270),
+    ),
+    grade_filter="", grain=0.0, vignette=False, camera_intensity=1.0,
+    transition_tone="neutral",
 )
 
 
@@ -70,8 +80,8 @@ def _edge_energy(path: Path) -> float:
 def _render(effect: str, media: list[Path], cfg: RenderConfig, seconds: float, out: Path) -> Path:
     layers = [
         ShotLayer(index, str(media[index % len(media)]))
-        for index in range(1, min(len(media), 3))
-    ] if effect in COMPOSITES else []
+        for index in range(1, min(len(media), IMAGE_COMPOSITES[effect][0]))
+    ] if effect in IMAGE_COMPOSITES else []
     shot = Shot(
         0, 0, seconds, seconds, 0, str(media[0]), "image", 0, "", .7,
         "steady", "none", .8, melody=.5, image_effect=effect, layers=layers,

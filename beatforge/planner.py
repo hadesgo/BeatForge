@@ -202,7 +202,7 @@ def create_plan(
                 ]
                 image_candidates = (spare_pool or image_candidates)[:spare_assets]
             image_effect, layer_count = _choose_image_effect(
-                single_image_cursor, section, energy, analysis.melody_at(midpoint),
+                single_image_cursor, index, section, energy, analysis.melody_at(midpoint),
                 len(image_candidates),
                 enabled=image_composites, ratio=image_composite_ratio,
                 max_images=max_composite_images,
@@ -277,37 +277,92 @@ def _reuse_penalty(visible: int, last_index: int | None, index: int) -> float:
     return penalty
 
 
+# Multi-image layouts: name -> (pictures it is designed for, fewest it can be built with).
+#
+# Every one of these gives each picture its own region of the frame, or shows one
+# picture at a time. None of them draws one picture over another's pixels - two
+# pictures sharing an area have no way to both stay legible, and the frame reads as
+# mud rather than as a design. That entire family (a screen-blended double exposure,
+# a stack of cards laid over another picture) was removed for this reason.
+IMAGE_COMPOSITES: dict[str, tuple[int, int]] = {
+    "split_screen": (2, 2),      # 等宽双栏
+    "hero_split": (2, 2),        # 2:1 主副双栏
+    "diagonal_split": (2, 2),    # 斜线硬边分割
+    "triptych": (3, 3),          # 三联竖排
+    "hero_grid": (3, 3),         # 左大 + 右双堆叠
+    "beat_montage": (4, 2),      # 镜头内按节拍依次切换，一次只显示一张
+}
+
+# What to fall back to when a layout asks for more pictures than the shot can afford.
+_COMPOSITE_SMALLER = {
+    "triptych": "split_screen",
+    "hero_grid": "hero_split",
+}
+
+
+def _fit_composite(effect: str, capacity: int) -> str | None:
+    """Walk down to the largest layout this many pictures can fill, or give up.
+
+    The capacity comes from ``max_composite_images`` and from how many surplus
+    assets are actually left, so a three-panel layout has to be able to become a
+    two-panel one instead of rendering a hole where its third picture should be.
+    """
+    while effect is not None:
+        if IMAGE_COMPOSITES[effect][1] <= capacity:
+            return effect
+        effect = _COMPOSITE_SMALLER.get(effect)
+    return None
+
+
+def _composite_rotation(section: str) -> tuple[str, ...]:
+    """Which layouts this part of the song rotates through.
+
+    The song picks the *kind* of division: a chorus splits into three or switches
+    between pictures, a quiet passage divides the frame once and lets it sit.
+    """
+    if section == "chorus":
+        return ("beat_montage", "hero_grid", "triptych")
+    if section in {"bridge", "solo", "intro", "outro"}:
+        return ("hero_split", "diagonal_split", "split_screen")
+    return ("split_screen", "hero_split", "triptych", "diagonal_split", "hero_grid")
+
+
 def _choose_image_effect(
-    cursor: int, section: str, energy: float, melody: float, available: int,
+    cursor: int, index: int, section: str, energy: float, melody: float, available: int,
     *, enabled: bool, ratio: float, max_images: int,
     edit_intent: str = "continuity",
 ) -> tuple[str, int]:
     """Choose a restrained, section-consistent still-image treatment.
 
-    ``cursor`` counts the single-image shots chosen so far, not shots overall, so the
-    camera-move rotations stay independent of how many shots the composite gate took.
+    Three questions, three counters, and they must not be answered by the same one:
+
+    - ``index`` is the shot's position in the film. It drives the gate and the layout
+      rotation. The gate has to move on *every* shot, because a gate keyed on anything
+      else is self-reinforcing: a shot that becomes a composite freezes the very
+      counter that decided it, so the gate returns the same answer forever. That is
+      exactly what happened while both the gate and the move rotation shared the
+      single-image counter - ``image_composite_ratio`` had no effect at all, and every
+      image shot in the film came back a composite whatever the config said.
+    - ``cursor`` counts the single-image shots chosen so far, so the camera-move
+      rotation stays dense. Keying it on ``index`` instead would lose every slot the
+      composites claimed.
     """
     if not enabled or available <= 0 or max_images < 2:
         return _single_image_effect(cursor, section, energy, melody, edit_intent), 0
 
     # A stable gate keeps composites special instead of turning the MV into a slide template.
-    gate = ((cursor * 37 + 17) % 100) / 100
+    gate = ((index * 37 + 17) % 100) / 100
     intent_scale = 1.4 if edit_intent == "impact" else .45 if edit_intent == "breathe" else 1.0
     section_ratio = min(1.0, ratio * intent_scale * (1.85 if section == "chorus" else 1.25 if section in {"bridge", "solo"} else 1.0))
     if gate >= section_ratio:
         return _single_image_effect(cursor, section, energy, melody, edit_intent), 0
 
-    if section == "chorus":
-        effect = ("beat_montage", "photo_stack", "split_screen")[cursor % 3]
-    elif section in {"bridge", "solo"}:
-        effect = "double_exposure" if cursor % 2 else "photo_stack"
-    else:
-        effect = ("split_screen", "photo_stack", "double_exposure")[cursor % 3]
-    wanted_total = 4 if effect == "beat_montage" else 3 if effect == "photo_stack" else 2
-    total = min(max_images, wanted_total, available + 1)
-    if total < 2:
+    rotation = _composite_rotation(section)
+    capacity = min(max_images, available + 1)
+    effect = _fit_composite(rotation[index % len(rotation)], capacity)
+    if effect is None:
         return _single_image_effect(cursor, section, energy, melody, edit_intent), 0
-    return effect, total - 1
+    return effect, min(capacity, IMAGE_COMPOSITES[effect][0]) - 1
 
 
 def _single_image_effect(

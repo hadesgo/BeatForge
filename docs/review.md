@@ -71,12 +71,16 @@ beatforge/models/transcriber.py:93
 `classify_music` 值得补的部分不需要真模型：**采样窗口逻辑**（>30s 时取 3 段 5 秒中心、
 ≤30s 时整段）、返回是否覆盖全部 7 个 `MOOD_LABELS`、分数是否归一。
 
-### P3 · `_image_filter_graph` 的 4 个合成分支可抽出（167 行 → 约 90 行）
+### P3 · `_image_filter_graph` 的合成分支已抽出（167 行 → 约 90 行）✅
 
-`renderer.py:592` 是个分派函数，4 个多图合成各占约 20 行且都早返回
-（`split_screen`/`photo_stack`/`double_exposure`/`beat_montage`，601–679 行）。
-抽成 `_composite_graph(...) -> (filters, label) | None` 能把主函数缩到约 90 行，
-分支边界也更清楚。**低风险**：纯搬运，`test_all_still_image_effects_render` 覆盖。
+`renderer.py` 曾是个分派函数，4 个多图合成各占约 20 行且都早返回。现已抽成
+`_composite_graph(...) -> (filters, label) | None`，主函数只剩分派和单图路径。
+
+重构时顺带做了两件事：把"两张素材叠在同一片像素"的两个版式（`photo_stack`、
+`double_exposure`）整体删除，换成 4 个互不重叠的新版式（`hero_split`、
+`diagonal_split`、`triptych`、`hero_grid`）；并修掉了一个让 `image_composite_ratio`
+完全失效的门控计数器 bug——详见 README「多图合成」。`test_all_still_image_effects_render`
+覆盖渲染路径，版式不变式由 3 条新断言盯住。
 
 另外 7 个超 80 行的函数（`create_plan` 187、`run_project` 151、`_camera_quad` 88 等）
 大多是线性流程，**不建议动**——拆了反而更难跟。

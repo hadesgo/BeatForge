@@ -7,8 +7,10 @@ from beatforge.audio import AudioAnalysis
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
 from beatforge.planner import (
+    IMAGE_COMPOSITES,
     Shot,
     _break_transition_repeats,
+    _choose_image_effect,
     _least_used_assets,
     _reuse_penalty,
     _transition_family,
@@ -371,6 +373,93 @@ def test_plan_builds_semantically_ranked_multi_image_layers() -> None:
     assert shots[0].layers[0].enter_offset == 2
 
 
+def test_a_layout_asking_for_more_pictures_than_it_can_afford_steps_down() -> None:
+    """``max_composite_images`` and the surplus rule both cap what a shot may spend.
+
+    A three-panel layout has to become a two-panel one rather than render a hole where
+    its third picture should be, and the plan has to record the layout it actually got -
+    the renderer reads the name, not the number of layers.
+    """
+    # The verse rotation is (split_screen, hero_split, triptych, diagonal_split,
+    # hero_grid), so shot 2 lands on the three-panel layouts and shot 4 on the grid.
+    narrow = _choose_image_effect(
+        0, 2, "verse", .8, .5, available=1, enabled=True, ratio=1, max_images=3,
+    )
+    assert narrow == ("split_screen", 1)
+
+    roomy = _choose_image_effect(
+        0, 2, "verse", .8, .5, available=2, enabled=True, ratio=1, max_images=3,
+    )
+    assert roomy == ("triptych", 2)
+
+    capped = _choose_image_effect(
+        0, 4, "verse", .8, .5, available=6, enabled=True, ratio=1, max_images=2,
+    )
+    assert capped == ("hero_split", 1)
+
+
+def test_the_composite_gate_follows_the_configured_share() -> None:
+    """``image_composite_ratio`` is the share of image shots that may be composites.
+
+    The gate used to run off the single-image counter, which only advances on the shots
+    the gate *refused*. It was therefore self-reinforcing: one composite froze the
+    counter, the gate returned the same answer forever, and every image shot in the film
+    came back a composite no matter what the config said - 24%, 50% and 100% all gave
+    the same film. Counting the same song at two ratios is what catches it.
+    """
+    analysis = _varied_song()
+    shares = {}
+    for ratio in (.12, .5):
+        shots = create_plan(
+            analysis, _lines(120), _images(300), None,
+            min_shot=1.5, max_shot=4, image_composite_ratio=ratio,
+        )
+        stills = [shot for shot in shots if shot.kind == "image"]
+        composites = [shot for shot in stills if shot.image_effect in IMAGE_COMPOSITES]
+        shares[ratio] = len(composites) / max(1, len(stills))
+
+    # Generous bounds: the gate is deterministic, but the section multipliers and the
+    # surplus rule move the real share around the configured one.
+    assert .02 <= shares[.12] <= .30, f"{shares[.12]:.0%} composites at ratio .12"
+    assert shares[.5] > shares[.12] + .15, (
+        f"the ratio knob barely moved the share: {shares[.12]:.0%} vs {shares[.5]:.0%}"
+    )
+
+
+def test_every_multi_image_layout_is_reachable_from_some_song() -> None:
+    """A layout no song can select is dead weight, and nothing would say so.
+
+    The rotation only ever offers one name at a time and the cursor advances on the
+    shots that are *not* composites, so reachability depends on the song's sections and
+    on how many pictures each shot can afford. Sweep both.
+    """
+    labels = ["intro", "verse", "chorus", "bridge", "solo", "outro"]
+    used: set[str] = set()
+    for peak in (.55, .95):
+        for capacity in (2, 3):
+            analysis = AudioAnalysis(
+                duration=160, bpm=120,
+                beats=[x / 2 for x in range(321)],
+                downbeats=[float(x) for x in range(0, 161, 2)],
+                sections=[index * 160 / len(labels) for index in range(len(labels) + 1)],
+                energy_times=[0, 40, 72, 120, 160],
+                energy_values=[.2, .9, .55, peak, .25],
+                average_energy=.5, brightness=.5, mood="uplifting",
+                mood_scores={"uplifting": 1}, section_labels=labels,
+                melody_times=[0, 80, 160], melody_values=[.3, .8, .4],
+                melodic_motion=.5, rhythmic_density=70,
+            )
+            shots = create_plan(
+                analysis, _lines(160), _images(90), None,
+                min_shot=1.5, max_shot=4, image_composite_ratio=.5,
+                max_composite_images=capacity,
+            )
+            used.update(shot.image_effect for shot in shots)
+
+    missing = sorted(set(IMAGE_COMPOSITES) - used)
+    assert not missing, f"no song can select these layouts: {missing}"
+
+
 def _varied_song(duration: float = 120.0) -> AudioAnalysis:
     """A song that visits every section type, so every effect branch can fire."""
     labels = ["intro", "verse", "chorus", "bridge", "outro"]
@@ -394,8 +483,7 @@ def test_planned_effects_are_all_names_the_renderer_can_build() -> None:
     """
     from beatforge.renderer import _CAMERA_MOVES
 
-    known = set(_CAMERA_MOVES) | {
-        "split_screen", "photo_stack", "double_exposure", "beat_montage",
+    known = set(_CAMERA_MOVES) | set(IMAGE_COMPOSITES) | {
         "film_bars", "iris", "parallax", "source_video",
     }
     shots = create_plan(
@@ -429,34 +517,40 @@ def test_every_camera_move_is_reachable_from_some_song() -> None:
     Reachability is song-dependent. A shot lands in a branch based on its section,
     energy, melody and intent, and a rotation like ``index % 5`` only ever offers one
     of its five names at a time - so a single song can leave a whole group untouched
-    while every other test still passes. Sweep a spread of songs instead: this caught
-    a real case where a synthetic song's chorus energy sat exactly on the ``.65``
-    boundary and four impact moves were never once selected.
+    while every other test still passes.
+
+    Which names a narrow branch can reach depends on the *phase* of the rotation where
+    the branch starts, and that phase comes from how many single-image shots preceded
+    it. Sweep the song length as well as its mood: an impact branch that is entered at
+    counter 11 only ever offers four of its five moves, however many moods it is tried
+    against, because every song of the same length enters it at the same place. Two
+    lengths is enough to shift the phase.
     """
     from beatforge.renderer import _CAMERA_MOVES
 
     labels = ["intro", "verse", "chorus", "bridge", "solo", "outro"]
     used: set[str] = set()
-    for mood in ("energetic", "uplifting", "melancholic", "dreamy", "romantic", "dark", "cinematic"):
-        for peak in (.5, .95):
-            for melody in (.3, .9):
-                analysis = AudioAnalysis(
-                    duration=160, bpm=120,
-                    beats=[x / 2 for x in range(321)],
-                    downbeats=[float(x) for x in range(0, 161, 2)],
-                    sections=[index * 160 / len(labels) for index in range(len(labels) + 1)],
-                    energy_times=[0, 40, 72, 120, 160],
-                    energy_values=[.15, .95, .6, peak, .2],
-                    average_energy=.5, brightness=.5, mood=mood,
-                    mood_scores={mood: 1}, section_labels=labels,
-                    melody_times=[0, 80, 160], melody_values=[.2, melody, .3],
-                    melodic_motion=.6, rhythmic_density=80,
-                )
-                shots = create_plan(
-                    analysis, _lines(160), _images(80), None,
-                    min_shot=1.5, max_shot=4, image_composite_ratio=.35,
-                )
-                used.update(shot.image_effect for shot in shots)
+    for duration in (160.0, 152.0):
+        for mood in ("energetic", "uplifting", "melancholic", "dreamy", "romantic", "dark", "cinematic"):
+            for peak in (.5, .95):
+                for melody in (.3, .9):
+                    analysis = AudioAnalysis(
+                        duration=duration, bpm=120,
+                        beats=[x / 2 for x in range(int(duration * 2) + 1)],
+                        downbeats=[float(x) for x in range(0, int(duration) + 1, 2)],
+                        sections=[index * duration / len(labels) for index in range(len(labels) + 1)],
+                        energy_times=[0, duration * .25, duration * .45, duration * .75, duration],
+                        energy_values=[.15, .95, .6, peak, .2],
+                        average_energy=.5, brightness=.5, mood=mood,
+                        mood_scores={mood: 1}, section_labels=labels,
+                        melody_times=[0, duration / 2, duration], melody_values=[.2, melody, .3],
+                        melodic_motion=.6, rhythmic_density=80,
+                    )
+                    shots = create_plan(
+                        analysis, _lines(duration), _images(80), None,
+                        min_shot=1.5, max_shot=4, image_composite_ratio=.35,
+                    )
+                    used.update(shot.image_effect for shot in shots)
 
     missing = sorted(set(_CAMERA_MOVES) - used)
     assert not missing, f"no song can select these moves: {missing}"

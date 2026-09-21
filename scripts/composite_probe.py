@@ -1,8 +1,8 @@
-"""Render the multi-image composites and lay the frames out to be looked at.
+"""Render the multi-image layouts and lay the frames out to be looked at.
 
-Two source shapes on purpose - a 16:9 and a 3:4 - because the letterbox path only shows
-up when an image does not match the canvas, and that is the path the composites must not
-take. Run this after touching `_image_filter_graph`.
+Four source shapes on purpose - a 16:9, a 3:4, a 1:1 and a 9:16 - because a panel only
+gets cropped into a shape it does not have, and that is the path a layout has to survive.
+Run this after touching `_composite_graph`.
 
 Run: uv run python scripts/composite_probe.py
 """
@@ -18,18 +18,19 @@ from beatforge.config import RenderConfig
 from beatforge.director import create_art_direction
 from beatforge.lyrics import LyricLine
 
-from beatforge.planner import Shot, ShotLayer
+from beatforge.planner import IMAGE_COMPOSITES, Shot, ShotLayer
 from beatforge.renderer import _render_shot
 from beatforge.runtime import command
 
 OUT = Path(".probe/composite")
 W, H, FPS, SECONDS = 1280, 720, 12, 3.0
 
-EFFECTS = ("split_screen", "photo_stack", "double_exposure", "beat_montage")
+EFFECTS = tuple(IMAGE_COMPOSITES)
+SHAPES = ((1920, 1080), (900, 1200), (1080, 1080), (720, 1280))
 
 
 def picture(path: Path, size: tuple[int, int], hue: tuple[int, int, int], label: str) -> Path:
-    """A landscape and a portrait source, so the letterbox path is exercised."""
+    """Sources in four shapes, so every panel has to crop into something it is not."""
     w, h = size
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     base = np.stack([
@@ -46,9 +47,11 @@ def picture(path: Path, size: tuple[int, int], hue: tuple[int, int, int], label:
 def main() -> int:
     shutil.rmtree(OUT, ignore_errors=True)
     OUT.mkdir(parents=True)
-    # 16:9 and 3:4 - the two shapes that force the letterbox treatment.
-    wide = picture(OUT / "wide.jpg", (1920, 1080), (200, 120, 90), "WIDE 16:9")
-    tall = picture(OUT / "tall.jpg", (900, 1200), (90, 150, 210), "TALL 3:4")
+    hues = ((200, 120, 90), (90, 150, 210), (150, 200, 110), (210, 110, 170))
+    sources = [
+        picture(OUT / f"source-{index}.jpg", size, hue, f"SOURCE {index + 1}")
+        for index, (size, hue) in enumerate(zip(SHAPES, hues))
+    ]
 
     sample_rate = 22050
     import soundfile as sf
@@ -66,10 +69,16 @@ def main() -> int:
 
     tiles = []
     for effect in EFFECTS:
-        shot = Shot(0, 0.0, SECONDS, SECONDS, 0, str(wide), "image", 0, "", .6, "steady",
-                    "cut", .8, image_effect=effect, source_width=1920, source_height=1080,
-                    layers=[ShotLayer(1, str(tall), "image", "secondary",
-                                      source_width=900, source_height=1200)])
+        count = IMAGE_COMPOSITES[effect][0]
+        layers = [
+            ShotLayer(index, str(sources[index % len(sources)]), "image", "secondary",
+                      source_width=SHAPES[index % len(SHAPES)][0],
+                      source_height=SHAPES[index % len(SHAPES)][1])
+            for index in range(1, count)
+        ]
+        shot = Shot(0, 0.0, SECONDS, SECONDS, 0, str(sources[0]), "image", 0, "", .6, "steady",
+                    "cut", .8, image_effect=effect, source_width=SHAPES[0][0],
+                    source_height=SHAPES[0][1], layers=layers)
         video = OUT / f"{effect}.mp4"
         _render_shot(shot, video, cfg, art, SECONDS, 1)
         frame = OUT / f"{effect}.png"
@@ -78,9 +87,11 @@ def main() -> int:
         with Image.open(frame) as image:
             tiles.append(image.convert("RGB").resize((640, 360), Image.LANCZOS))
 
-    board = Image.new("RGB", (640 * 2, 360 * 2), (12, 12, 14))
+    columns = 3
+    rows = (len(tiles) + columns - 1) // columns
+    board = Image.new("RGB", (640 * columns, 360 * rows), (12, 12, 14))
     for index, tile in enumerate(tiles):
-        board.paste(tile, ((index % 2) * 640, (index // 2) * 360))
+        board.paste(tile, ((index % columns) * 640, (index // columns) * 360))
     board.save(OUT / "composites.png")
     print(f"顺序：{', '.join(EFFECTS)}")
     print(f"→ {OUT / 'composites.png'}")

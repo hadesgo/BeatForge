@@ -11,9 +11,9 @@ import soundfile as sf
 
 from beatforge.config import RenderConfig
 from beatforge.audio import AudioAnalysis
-from beatforge.director import create_art_direction
+from beatforge.director import ArtDirection, create_art_direction
 from beatforge.lyrics import LyricLine
-from beatforge.planner import Shot, ShotLayer
+from beatforge.planner import IMAGE_COMPOSITES, Shot, ShotLayer
 from beatforge.renderer import (
     _CAMERA_MOVES,
     _EFFECT_TRANSITIONS,
@@ -134,20 +134,19 @@ def test_end_to_end_renderer_composes_effect_transitions(tmp_path: Path) -> None
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
-@pytest.mark.parametrize("effect", sorted(set(_CAMERA_MOVES) | {
-    "split_screen", "photo_stack", "double_exposure", "beat_montage",
+@pytest.mark.parametrize("effect", sorted(set(_CAMERA_MOVES) | set(IMAGE_COMPOSITES) | {
     "film_bars", "iris", "parallax",
 }))
 def test_all_still_image_effects_render(effect: str, tmp_path: Path) -> None:
     files = []
-    for index, size in enumerate(((240, 360), (420, 180), (240, 240))):
+    for index, size in enumerate(((240, 360), (420, 180), (240, 240), (360, 360))):
         file = tmp_path / f"image-{index}.jpg"
         Image.new("RGB", size, (40 + index * 70, 80, 150 - index * 40)).save(file)
         files.append(file)
     layers = [
-        ShotLayer(index, str(files[index]))
-        for index in range(1, 3)
-    ] if effect in {"split_screen", "photo_stack", "double_exposure", "beat_montage"} else []
+        ShotLayer(index, str(files[index]), "image", "secondary")
+        for index in range(1, IMAGE_COMPOSITES[effect][0])
+    ] if effect in IMAGE_COMPOSITES else []
     shot = Shot(
         0, 0, .5, .5, 0, str(files[0]), "image", 0, "", .75,
         "dynamic", "none", .8, melody=.7, image_effect=effect, layers=layers,
@@ -865,22 +864,35 @@ def test_the_knockout_fill_renders_and_differs_from_solid(tmp_path: Path) -> Non
 
 
 
-def _composite_filters(effect: str, tmp_path: Path) -> str:
-    """The filter chain a two-image shot of this effect builds."""
-    files = []
-    for index, size in enumerate(((320, 180), (180, 320))):
-        file = tmp_path / f"src-{index}.jpg"
-        Image.new("RGB", size, (60 + index * 90, 90, 140)).save(file)
-        files.append(file)
-    shot = Shot(
+def _composite_cfg() -> RenderConfig:
+    return RenderConfig(width=320, height=180, fps=10, crf=35, preset="ultrafast",
+                        film_grain=0, vignette=False, image_background_blur=8)
+
+
+def _composite_shot(effect: str, files: list[Path]) -> Shot:
+    """A shot of this layout, with as many pictures as the layout asks for."""
+    layers = [
+        ShotLayer(index, str(files[index]), "image", "secondary",
+                  source_width=320, source_height=180, enter_offset=round(index * .2, 3))
+        for index in range(1, IMAGE_COMPOSITES[effect][0])
+    ]
+    return Shot(
         0, 0, 1, 1, 0, str(files[0]), "image", 0, "", .7, "steady", "cut", .8,
-        image_effect=effect, source_width=320, source_height=180,
-        layers=[ShotLayer(1, str(files[1]), "image", "secondary",
-                          source_width=180, source_height=320)],
+        image_effect=effect, source_width=320, source_height=180, layers=layers,
     )
-    cfg = RenderConfig(width=320, height=180, fps=10, crf=35, preset="ultrafast",
-                       film_grain=0, vignette=False, image_background_blur=8)
-    art = create_art_direction(
+
+
+def _composite_sources(tmp_path: Path, count: int = 4) -> list[Path]:
+    files = []
+    for index in range(count):
+        file = tmp_path / f"src-{index}.jpg"
+        Image.new("RGB", (320, 180), (60 + index * 60, 90, 140)).save(file)
+        files.append(file)
+    return files
+
+
+def _composite_art(cfg: RenderConfig) -> ArtDirection:
+    return create_art_direction(
         AudioAnalysis(
             duration=1, bpm=120, beats=[0, 1], sections=[0, 1],
             energy_times=[0], energy_values=[.6], average_energy=.6,
@@ -888,43 +900,97 @@ def _composite_filters(effect: str, tmp_path: Path) -> str:
         ),
         [], cfg,
     )
-    filters, _ = _image_filter_graph(shot, cfg, art, 1.0, 2)
+
+
+def _composite_filters(effect: str, tmp_path: Path) -> str:
+    """The filter chain a full shot of this layout builds."""
+    cfg = _composite_cfg()
+    shot = _composite_shot(effect, _composite_sources(tmp_path))
+    filters, _ = _image_filter_graph(
+        shot, cfg, _composite_art(cfg), 1.0, IMAGE_COMPOSITES[effect][0],
+    )
     return ";".join(filters)
 
 
-@pytest.mark.parametrize("effect", ["split_screen", "photo_stack", "double_exposure"])
-def test_a_simultaneous_composite_never_letterboxes_a_panel(effect: str, tmp_path: Path) -> None:
-    """Every panel fills its slot, for the composites that show images at the same time.
+@pytest.mark.parametrize("effect", sorted(set(IMAGE_COMPOSITES) - {"beat_montage"}))
+def test_a_composite_never_paints_one_picture_over_another(effect: str, tmp_path: Path) -> None:
+    """The whole overlapping family is gone, and this is what keeps it gone.
 
-    The letterbox treatment is wrong there twice over: each image brings its own blurred
-    field, so one frame carries two competing backgrounds, and the picture is drawn
-    twice at two scales. That is what made a photo stack look cluttered and a split
-    screen read as two pictures that happen to be adjacent.
+    Two pictures sharing the same pixels have no way to both stay legible: ``blend``
+    averages them per pixel, and a rotated card laid over a backdrop is the same
+    mistake with a border on it. Both read as mud, which is why every layout here has
+    to hand its pictures separate regions instead.
     """
     graph = _composite_filters(effect, tmp_path)
 
+    assert "blend=" not in graph, "two pictures were mixed pixel by pixel"
+    assert "rotate=" not in graph, "a card was laid over another picture"
     assert "gblur" not in graph, "a panel brought its own blurred backdrop"
-    assert "force_original_aspect_ratio=increase" in graph, "nothing was made full-bleed"
+    assert "force_original_aspect_ratio=decrease" not in graph, "a panel was letterboxed"
+    assert graph.count("force_original_aspect_ratio=increase") == IMAGE_COMPOSITES[effect][0]
 
 
-@pytest.mark.parametrize("effect", ["split_screen", "double_exposure"])
-def test_every_panel_of_a_split_covers_its_slot(effect: str, tmp_path: Path) -> None:
-    """One panel letterboxed while the other filled its half is the mismatch that read
-    as a seam: the two sides ended up framed and exposed differently."""
+@pytest.mark.parametrize("effect", ["split_screen", "hero_split", "triptych"])
+def test_the_panels_of_a_division_add_up_to_the_canvas(effect: str, tmp_path: Path) -> None:
+    """A seam carved out of the width leaves the mosaic narrower than the frame.
+
+    The finishing normalisation then fits that narrow mosaic into the canvas and pads
+    it with black, so a split screen ends up with a dark edge down both sides. Nothing
+    earlier can see it - the filter graph itself is perfectly valid, and the shot even
+    renders. Here the seam is drawn over the panels instead, so the widths add up.
+    """
     graph = _composite_filters(effect, tmp_path)
+    widths = [
+        int(match) for match in re.findall(
+            r"scale=(\d+):\d+:force_original_aspect_ratio=increase", graph,
+        )
+    ]
 
-    assert "force_original_aspect_ratio=decrease" not in graph
-    assert graph.count("force_original_aspect_ratio=increase") == 2
+    assert len(widths) == IMAGE_COMPOSITES[effect][0]
+    assert sum(widths) == _composite_cfg().width
+    assert f"overlay=x=" in graph, "the seam between the panels was never drawn"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+def test_a_diagonal_cut_hands_each_pixel_to_one_picture_or_the_other(tmp_path: Path) -> None:
+    """The mask decides *which* picture a pixel belongs to; it must never merge them.
+
+    Two flat colours make a blend impossible to miss - any purple in the frame is the
+    two pictures averaged together. A couple of pixels of bilinear softness along the
+    edge are fine, because that is a seam; a wash of the two colours is not.
+    """
+    red, blue = tmp_path / "red.jpg", tmp_path / "blue.jpg"
+    Image.new("RGB", (320, 180), (220, 30, 30)).save(red)
+    Image.new("RGB", (320, 180), (30, 30, 220)).save(blue)
+    cfg = _composite_cfg()
+    shot = _composite_shot("diagonal_split", [red, blue])
+    clip = tmp_path / "diagonal.mp4"
+
+    _render_shot(shot, clip, cfg, _composite_art(cfg), 1.0, 1)
+
+    target = tmp_path / "diagonal.png"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(clip),
+         "-vf", "select=eq(n\\,5)", "-fps_mode", "passthrough", "-frames:v", "1", str(target)],
+        check=True, capture_output=True,
+    )
+    pixels = np.asarray(Image.open(target).convert("RGB"), dtype=float)
+    red_only = (pixels[:, :, 0] > 150) & (pixels[:, :, 2] < 120)
+    blue_only = (pixels[:, :, 2] > 150) & (pixels[:, :, 0] < 120)
+    mixed = 1 - float((red_only | blue_only).mean())
+
+    assert red_only.mean() > .2 and blue_only.mean() > .2, "the cut showed only one picture"
+    assert mixed < .03, f"{mixed:.1%} of the frame mixed the two pictures"
 
 
 def test_beat_montage_keeps_its_letterbox_on_purpose(tmp_path: Path) -> None:
     """It is the one composite that is *not* full-bleed, and that is a decision.
 
-    It shows one image at a time, so there is no second blurred field to compete with
-    and no duplicate at a second scale - the two things that made the simultaneous
-    composites look wrong. Keeping each frame inset also reads as a sequence of
-    photographs rather than as a hard cut between full frames. Written down here so the
-    next person to notice the inconsistency does not "fix" it.
+    It shows one image at a time, so there is no second field to compete with and no
+    duplicate at a second scale - the two things that made the simultaneous composites
+    look wrong. Keeping each frame inset also reads as a sequence of photographs rather
+    than as a hard cut between full frames. Written down here so the next person to
+    notice the inconsistency does not "fix" it.
     """
     graph = _composite_filters("beat_montage", tmp_path)
 

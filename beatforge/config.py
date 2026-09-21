@@ -263,9 +263,9 @@ subtitle_fill = "solid" # knockout = 文字从画面里镂空，字中透出提�
 subtitle_outline = 1.1 # 描边宽度；0 为无描边（更融入画面，但需要画面本身够暗）
 subtitle_highlight_color = "&H0000D7FF" # ASS 的金黄色（BGR）
 visual_effects = true
-image_composites = true # AI 按段落自动选择分屏、照片堆叠、双重曝光和节拍蒙太奇
+image_composites = true # AI 按段落自动选择多图版式：分屏、斜切、三联、主副网格、节拍蒙太奇
 image_composite_ratio = 0.24 # 多图镜头占比；副歌会适当提高
-max_composite_images = 3 # 建议 2~3；4 仅适合短促高能蒙太奇
+max_composite_images = 3 # 2 只够双栏；3 可做三联和主副网格；4 仅供节拍蒙太奇
 avoid_asset_repeats = true # 素材充足时每个镜头用不同素材；多图合成只消耗富余素材
 blurred_image_background = true # 图片保持原比例，空余区域由同图模糊背景填满
 image_background_blur = 26.0

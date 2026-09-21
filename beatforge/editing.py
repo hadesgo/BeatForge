@@ -123,7 +123,7 @@ EDIT_STYLES: dict[str, EditStyle] = {
     # ------------------------------------------------------------ 梦幻叠化
     "dream": EditStyle(
         label="梦幻叠化",
-        summary="长溶解、极慢运镜、双重曝光；画面之间不划清界限",
+        summary="长溶解、极慢运镜、斜向分割；让画面自己发生，而不是被推着走",
         shot_min=2.8, shot_max=6.0, tempo=4.2, energy_gain=.55,
         cut_alignment="phrase", section_speedup=.05,
         transition_density=.42, transition_flavour="subtle",

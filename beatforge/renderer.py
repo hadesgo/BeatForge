@@ -9,7 +9,7 @@ import numpy as np
 from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection
 from beatforge.lyrics import LyricLine, Placement, plan_placements, write_ass
-from beatforge.planner import Shot
+from beatforge.planner import IMAGE_COMPOSITES, Shot
 from beatforge.runtime import command, duration
 
 # How the knockout fill treats the frame it shows through the letters. The letters are
@@ -249,8 +249,10 @@ def _render_image_shot(
             finishing.append(f"noise=alls={art.grain}:allf=t+u")
     finishing += _cut_effects(incoming, outgoing, render_duration, cfg)
     finish = ",".join(item for item in finishing if item)
-    # Normalize to the exact target canvas: composite effects (e.g. split_screen's
-    # hstack) can emit odd widths, and xfade/concat reject mismatched input sizes.
+    # Normalize to the exact target canvas: a filter chain can emit an odd width, and
+    # xfade/concat reject mismatched input sizes. The multi-image layouts no longer
+    # depend on this - their panels add up to the canvas and their seams are drawn over
+    # the join, precisely so that this step has nothing to scale or pad.
     normalize = (
         f"scale={cfg.width}:{cfg.height}:force_original_aspect_ratio=decrease:flags=lanczos,"
         f"pad={cfg.width}:{cfg.height}:(ow-iw)/2:(oh-ih)/2:color=black"
@@ -594,88 +596,15 @@ def _image_filter_graph(
     duration: float, input_count: int,
 ) -> tuple[list[str], str]:
     effect = shot.image_effect if cfg.visual_effects else "cinematic_depth"
-    if input_count < 2 and effect in {"split_screen", "photo_stack", "double_exposure", "beat_montage"}:
-        effect = "cinematic_depth"
     filters: list[str] = []
 
-    if effect == "split_screen":
-        gap = max(2, round(cfg.width * .004))
-        left_width = (cfg.width - gap) // 2
-        right_width = cfg.width - gap - left_width
-        # Both panels full-bleed. Letting one keep the letterbox treatment while the
-        # other filled its half gave the two sides visibly different framing and
-        # exposure, which is what made a split screen read as two pictures that happen
-        # to be adjacent rather than one picture cut in two.
-        _fill_frame(filters, 0, "left", left_width, cfg.height)
-        _fill_frame(filters, 1, "right", right_width, cfg.height)
-        filters.append(f"[left][right]hstack=inputs=2[panels]")
-        filters.append(
-            f"color=c=white@0.22:s={gap}x{cfg.height}:r={cfg.fps}:d={_plane_duration(duration, cfg):.4f}[divider];"
-            f"[panels][divider]overlay=x={left_width}:y=0:shortest=1[composite]"
-        )
-        return filters, "[composite]"
-
-    if effect == "photo_stack":
-        # A full-bleed backdrop, pushed down so the cards read against it. Using the
-        # letterbox treatment here put a sharp copy of the same picture at 92% *on top
-        # of* its own blurred copy, and then stacked cards over that - three scales of
-        # the same frame, which is what made a stack look cluttered.
-        _fill_frame(filters, 0, "base", cfg.width, cfg.height)
-        filters.append("[base]eq=brightness=-.085:saturation=.74[backdrop]")
-        current = "[backdrop]"
-        card_width, card_height = round(cfg.width * .56), round(cfg.height * .64)
-        for layer_index in range(1, min(input_count, 3)):
-            angle = -.026 if layer_index % 2 else .022
-            filters.append(
-                f"[{layer_index}:v]scale={card_width}:{card_height}:force_original_aspect_ratio=decrease:flags=lanczos,"
-                f"pad=iw+14:ih+14:7:7:color=white,format=rgba,"
-                f"rotate={angle}:ow=rotw(iw):oh=roth(ih):c=none[card{layer_index}]"
-            )
-            planned_enter = shot.layers[layer_index - 1].enter_offset
-            enter = planned_enter if planned_enter > 0 else min(duration * .58, duration * (.18 + .22 * (layer_index - 1)))
-            x = round(cfg.width * (.08 if layer_index % 2 else .40))
-            y = round(cfg.height * (.09 if layer_index % 2 else .15))
-            out = f"[stack{layer_index}]"
-            filters.append(
-                f"{current}[card{layer_index}]overlay="
-                f"x='{x}+(1-min(max((t-{enter:.3f})/.35,0),1))*{(-90 if layer_index % 2 else 90)}':"
-                f"y={y}:enable='gte(t,{enter:.3f})':shortest=1{out}"
-            )
-            current = out
-        return filters, current
-
-    if effect == "double_exposure":
-        # Two full-bleed exposures. Blending two letterboxed frames meant screen-blending
-        # two blurred backdrops as well, and the result was a wash of out-of-focus
-        # colour with the actual pictures buried in it.
-        _fill_frame(filters, 0, "exposure0", cfg.width, cfg.height)
-        _fill_frame(filters, 1, "exposure1", cfg.width, cfg.height)
-        filters.append("[exposure0][exposure1]blend=all_mode=screen:all_opacity=0.34[composite]")
-        return filters, "[composite]"
-
-    if effect == "beat_montage":
-        count = min(input_count, 4)
-        # Deliberately the one composite that keeps the letterbox treatment: it shows
-        # one image at a time rather than several at once, so there is no second blurred
-        # field to compete with and no duplicate at a second scale. Keeping each frame
-        # inset also makes the montage read as a sequence of photographs rather than as
-        # a hard cut between full frames.
-        for index in range(count):
-            _adapt_image(filters, index, f"montage{index}", cfg.width, cfg.height, cfg)
-        current = "[montage0]"
-        planned_starts = [0.0, *(layer.enter_offset for layer in shot.layers[:count - 1])]
-        if any(value <= 0 for value in planned_starts[1:]):
-            planned_starts = [duration * index / count for index in range(count)]
-        for index in range(1, count):
-            start = planned_starts[index]
-            end = duration if index == count - 1 else planned_starts[index + 1]
-            out = f"[sequence{index}]"
-            filters.append(
-                f"{current}[montage{index}]overlay=0:0:"
-                f"enable='between(t,{start:.4f},{end:.4f})':shortest=1{out}"
-            )
-            current = out
-        return filters, current
+    if effect in IMAGE_COMPOSITES:
+        composite = _composite_graph(shot, cfg, duration, input_count, filters)
+        if composite is not None:
+            return composite
+        # Not enough pictures to fill the layout this plan asked for. A camera move
+        # is a poor stand-in for a division of the frame, but it is a shot.
+        effect = "cinematic_depth"
 
     # --- single-image camera moves, and the treatments layered on top of them ---
     frames = max(1, round(duration * cfg.fps))
@@ -759,6 +688,167 @@ def _image_filter_graph(
     return filters, current
 
 
+def _even(value: int) -> int:
+    """Round down to an even length. Codecs and chroma subsampling want even edges."""
+    return value - value % 2
+
+
+def _seam_thickness(size: int) -> int:
+    """Hairline thickness for a seam across an axis this many pixels long."""
+    return max(2, round(size * .004))
+
+
+def _seam(
+    filters: list[str], cfg: RenderConfig, duration: float, current: str, *,
+    x: int, y: int, width: int, height: int, label: str,
+) -> str:
+    """Lay a translucent hairline across the join between two panels.
+
+    It is drawn *over* the two panels rather than carved out of them, which is what
+    lets the panels add up to the canvas exactly. Leaving the seam as a gap makes the
+    mosaic a few pixels narrower than the frame, and the finishing normalisation then
+    scales the whole shot up and pads it with black bars - a dark edge down both sides
+    of every split screen, for a seam that was never meant to be visible as a gap.
+    """
+    filters.append(
+        f"color=c=white@0.22:s={width}x{height}:r={cfg.fps}:d={_plane_duration(duration, cfg):.4f}[{label}]"
+    )
+    filters.append(f"{current}[{label}]overlay=x={x}:y={y}:shortest=1[{label}joined]")
+    return f"[{label}joined]"
+
+
+def _composite_graph(
+    shot: Shot, cfg: RenderConfig, duration: float, input_count: int, filters: list[str],
+) -> tuple[list[str], str] | None:
+    """Build a multi-image layout, or ``None`` when there are not enough pictures.
+
+    Every layout here hands each picture its own region of the frame, or shows one
+    picture at a time. None of them paints one picture over another's pixels: two
+    pictures sharing an area have no way to both stay legible, and the frame reads as
+    mud rather than as a design. That whole family - a screen-blended double exposure,
+    a pile of cards laid over another picture - was removed for this reason, and the
+    layouts below are what replaced it.
+
+    The panels of a division are full-bleed inside their own region. Letting one keep
+    the letterbox treatment while its neighbour filled its half gave the two sides
+    visibly different framing and exposure, which read as two pictures that happen to
+    be adjacent rather than one frame divided.
+    """
+    effect = shot.image_effect
+    if input_count < IMAGE_COMPOSITES.get(effect, (2, 2))[1]:
+        return None
+
+    # --- divisions of the frame: each picture gets an exclusive region ---
+    if effect in {"split_screen", "hero_split", "triptych"}:
+        # The widths do *not* reserve anything for the seam; it is drawn on top of the
+        # join below. Reserving it would make three panels of a triptych come out 634,
+        # 634 and 652 on a 1920 canvas - an imbalance the eye reads as a mistake long
+        # before it can say why.
+        if effect == "triptych":
+            column = _even(cfg.width // 3)
+            widths = [column, column, cfg.width - 2 * column]
+        elif effect == "hero_split":
+            # Two to one rather than even halves: the wide side is the shot, the narrow
+            # side is a second look at the same moment. Equal halves simply read as a
+            # screen split down the middle.
+            hero = _even(round(cfg.width * 2 / 3))
+            widths = [hero, cfg.width - hero]
+        else:
+            left = _even(cfg.width // 2)
+            widths = [left, cfg.width - left]
+        for index, width in enumerate(widths):
+            _fill_frame(filters, index, f"panel{index}", width, cfg.height)
+        inputs = "".join(f"[panel{index}]" for index in range(len(widths)))
+        filters.append(f"{inputs}hstack=inputs={len(widths)}[panels]")
+        seam = _seam_thickness(cfg.width)
+        current = "[panels]"
+        for index in range(len(widths) - 1):
+            current = _seam(
+                filters, cfg, duration, current,
+                x=sum(widths[:index + 1]) - seam // 2, y=0,
+                width=seam, height=cfg.height, label=f"seam{index}",
+            )
+        return filters, current
+
+    # --- a hero with a column of smaller pictures beside it ---
+    if effect == "hero_grid":
+        hero = _even(round(cfg.width * 2 / 3))
+        side = cfg.width - hero
+        upper = _even(cfg.height // 2)
+        lower = cfg.height - upper
+        _fill_frame(filters, 0, "hero", hero, cfg.height)
+        _fill_frame(filters, 1, "cell0", side, upper)
+        _fill_frame(filters, 2, "cell1", side, lower)
+        filters.append("[cell0][cell1]vstack=inputs=2[side];[hero][side]hstack=inputs=2[panels]")
+        current = _seam(
+            filters, cfg, duration, "[panels]",
+            x=hero - _seam_thickness(cfg.width) // 2, y=0,
+            width=_seam_thickness(cfg.width), height=cfg.height, label="column",
+        )
+        row_seam = _seam_thickness(cfg.height)
+        return filters, _seam(
+            filters, cfg, duration, current,
+            x=hero, y=upper - row_seam // 2,
+            width=side, height=row_seam, label="row",
+        )
+
+    # --- a diagonal edge instead of a straight one ---
+    if effect == "diagonal_split":
+        # Four ways to cut the frame in half, rotated by shot so one song does not repeat
+        # the same slope. ``X/W`` and ``Y/H`` normalise the mask so one expression covers
+        # both landscape and portrait canvases.
+        slope = "X/W+Y/H" if shot.index % 2 else "X/W-Y/H+1"
+        keep = "gt" if (shot.index // 2) % 2 else "lt"
+        # Half resolution, not the eighth the iris mask uses: at an eighth a straight
+        # edge lands on the eight-pixel grid and upscales into a visible staircase,
+        # while at half the bilinear edge is a couple of pixels of softness - a seam
+        # rather than a jitter. The mask is one rectangle either way, so it stays cheap.
+        mask_width = max(64, _even(round(cfg.width / 2)))
+        mask_height = max(36, _even(round(cfg.height / 2)))
+        filters.append(
+            f"color=c=black:s={mask_width}x{mask_height}:r={cfg.fps}:d={_plane_duration(duration, cfg):.4f},"
+            f"format=gray,geq=lum='if({keep}({slope},1),255,0)',"
+            f"scale={cfg.width}:{cfg.height}:flags=bilinear[dmask]"
+        )
+        # The second picture is cut with the mask into a hard-edged half and laid over
+        # the first. Its pixels either win or lose; none of them are mixed.
+        filters.append(
+            f"[1:v]scale={cfg.width}:{cfg.height}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={cfg.width}:{cfg.height},setsar=1,format=rgba[dcut];"
+            f"[dcut][dmask]alphamerge[dupper]"
+        )
+        _fill_frame(filters, 0, "dlower", cfg.width, cfg.height)
+        filters.append("[dlower][dupper]overlay=0:0:shortest=1[composite]")
+        return filters, "[composite]"
+
+    # --- one picture at a time, switching inside the shot ---
+    if effect == "beat_montage":
+        count = min(input_count, 4)
+        # Deliberately the one composite that keeps the letterbox treatment: it shows
+        # one image at a time rather than several at once, so there is no second field
+        # to compete with and no duplicate at a second scale. Keeping each frame inset
+        # also makes the montage read as a sequence of photographs rather than as a
+        # hard cut between full frames.
+        for index in range(count):
+            _adapt_image(filters, index, f"montage{index}", cfg.width, cfg.height, cfg)
+        current = "[montage0]"
+        planned_starts = [0.0, *(layer.enter_offset for layer in shot.layers[:count - 1])]
+        if any(value <= 0 for value in planned_starts[1:]):
+            planned_starts = [duration * index / count for index in range(count)]
+        for index in range(1, count):
+            start = planned_starts[index]
+            end = duration if index == count - 1 else planned_starts[index + 1]
+            out = f"[sequence{index}]"
+            filters.append(
+                f"{current}[montage{index}]overlay=0:0:"
+                f"enable='between(t,{start:.4f},{end:.4f})':shortest=1{out}"
+            )
+            current = out
+        return filters, current
+
+    return None
+
+
 def _adapt_image_layers(
     filters: list[str], input_index: int, label: str,
     width: int, height: int, cfg: RenderConfig,
@@ -796,18 +886,22 @@ def _adapt_image(
 def _fill_frame(
     filters: list[str], input_index: int, label: str, width: int, height: int,
 ) -> None:
-    """Scale to cover the frame and crop the overflow, leaving no letterbox at all.
+    """Scale to cover the region and crop the overflow, leaving no letterbox at all.
 
     The blurred-backdrop treatment exists for one image that does not fill the frame,
     and it is the wrong tool inside a composite twice over: each image brings its own
     blurred field, so the frame ends up carrying two competing backgrounds, and the
     picture appears twice at two different scales. A composite wants every panel
     full-bleed, so the frame reads as one picture divided rather than as a collage.
+
+    The format is pinned because panels get stacked: a JPEG decodes as full-range
+    ``yuvj420p`` and a PNG as RGB, and a stack of mismatched panels only works if
+    ffmpeg happens to insert the right conversion.
     """
     filters.append(
         f"[{input_index}:v]scale={width}:{height}:"
         f"force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={width}:{height},setsar=1[{label}]"
+        f"crop={width}:{height},setsar=1,format=yuv420p[{label}]"
     )
 
 
