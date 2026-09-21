@@ -52,6 +52,14 @@
 - **教训（仍然有效）**：这台环境对 `.git` 的写操作存在删文件风险（疑似宿主 safe-delete 钩子），
   时间上与 git 自己的写操作相关。**长时间施工时别把 git 当唯一安全网**，关键节点另存一份
   文件级快照（`%TEMP%\bf_baseline_*` / `bf_REFACTORED_*` 带 SHA256 清单）成本极低。
+- **找到疑似元凶（2026-09-22 收尾时实测到）**：本机存在一个宿主级 **safe-delete 钩子**，
+  它拦截批量文件删除并要求确认。实测它在 **pytest 清理临时目录**时触发：
+  `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":351,"threshold":50,"scope":"turn",
+  "targets":["...\\Temp\\pytest-of-lys\\garbage-..."]}`
+  —— 即**单轮内删除 >50 个文件**会被拦下确认。副作用：它会**吞掉 stdout 的末尾**，
+  所以 `pytest` 的 `387 passed in Xs` 汇总行可能整行消失（但 387 个进度点仍在，
+  用 `--junit-xml` 拿权威计数即可）。**这条不是 git pack 消失的直接证据**（那是单个文件，
+  没到 50 的阈值），但说明本环境的删除行为确实被一层外部机制介导。
 
 ## 静态检查（2026-09-22 引入）
 - `ruff` 已是 dev 依赖。配置在 `pyproject.toml` 的 `[tool.ruff]`。
