@@ -22,12 +22,12 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from beatforge.audio import AudioAnalysis  # noqa: E402
-from beatforge.config import RenderConfig  # noqa: E402
-from beatforge.director import create_art_direction  # noqa: E402
-from beatforge.planner import IMAGE_COMPOSITES, Shot, ShotLayer  # noqa: E402
-from beatforge.renderer import _CAMERA_MOVES, _render_shot  # noqa: E402
-from beatforge.runtime import command, duration  # noqa: E402
+from beatforge.audio import AudioAnalysis
+from beatforge.config import RenderConfig
+from beatforge.director import create_art_direction
+from beatforge.planner import IMAGE_COMPOSITES, Shot, ShotLayer
+from beatforge.renderer import _CAMERA_MOVES, _render_shot
+from beatforge.runtime import command, duration
 
 FRAMING = ["film_bars", "iris", "parallax"]
 COMPOSITES = list(IMAGE_COMPOSITES)

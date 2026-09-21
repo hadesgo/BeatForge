@@ -86,7 +86,7 @@ def separate_vocals(
     try:
         separator.load_model(model_filename=model)
         produced = separator.separate(str(audio))
-    except Exception as exc:  # noqa: BLE001 - the package raises its own error types
+    except Exception as exc:
         raise SeparationUnavailable(f"MelBand-RoFormer 分离失败：{type(exc).__name__}: {exc}") from exc
     finally:
         del separator

@@ -25,10 +25,10 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from beatforge.config import RenderConfig  # noqa: E402
-from beatforge.director import ArtDirection  # noqa: E402
-from beatforge.planner import Shot  # noqa: E402
-from beatforge.renderer import _render_shot  # noqa: E402
+from beatforge.config import RenderConfig
+from beatforge.director import ArtDirection
+from beatforge.planner import Shot
+from beatforge.renderer import _render_shot
 
 BLOB_X, BLOB_Y, BLOB_SIGMA = 1150.0, 430.0, 22.0
 

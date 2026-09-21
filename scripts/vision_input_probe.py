@@ -60,7 +60,7 @@ def peak_bytes() -> int:
             ctypes.byref(counters), ctypes.sizeof(counters),
         )
         return int(counters.PeakWorkingSetSize)
-    import resource  # noqa: PLC0415 - Unix only
+    import resource
     peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     return peak * 1024 if sys.platform.startswith("linux") else peak
 

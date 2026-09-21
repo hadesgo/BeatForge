@@ -64,7 +64,7 @@ def frames(clip: Path, tmp: Path) -> np.ndarray:
     ])
 
 
-def contact_sheet(effect: str, stack: np.ndarray, sheet: "Image.Image", row: int) -> None:
+def contact_sheet(effect: str, stack: np.ndarray, sheet: Image.Image, row: int) -> None:
     """Paste the entrance, middle and end frame of one effect into the sheet."""
     from PIL import ImageDraw, ImageFont
 

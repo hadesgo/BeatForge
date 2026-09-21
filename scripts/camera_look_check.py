@@ -11,18 +11,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
-import subprocess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from beatforge.config import RenderConfig  # noqa: E402
-from beatforge.director import ArtDirection  # noqa: E402
-from beatforge.planner import Shot  # noqa: E402
-from beatforge.renderer import _render_shot  # noqa: E402
+from beatforge.config import RenderConfig
+from beatforge.director import ArtDirection
+from beatforge.planner import Shot
+from beatforge.renderer import _render_shot
 
 
 def main() -> int:

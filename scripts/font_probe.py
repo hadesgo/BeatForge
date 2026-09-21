@@ -26,11 +26,11 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from beatforge.config import RenderConfig  # noqa: E402
-from beatforge.fonts import FONT_PRESETS, resolve_subtitle_font, stage_fonts  # noqa: E402
-from beatforge.lyrics import LyricLine, write_ass  # noqa: E402
-from beatforge.renderer import _subtitle_filter  # noqa: E402
-from beatforge.runtime import command  # noqa: E402
+from beatforge.config import RenderConfig
+from beatforge.fonts import FONT_PRESETS, resolve_subtitle_font, stage_fonts
+from beatforge.lyrics import LyricLine, write_ass
+from beatforge.renderer import _subtitle_filter
+from beatforge.runtime import command
 
 OUT = Path(".probe/font")
 LINE = "黎明照亮天空"

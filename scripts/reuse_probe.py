@@ -9,10 +9,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from beatforge.audio import AudioAnalysis  # noqa: E402
-from beatforge.lyrics import LyricLine  # noqa: E402
-from beatforge.media import MediaAsset  # noqa: E402
-from beatforge.planner import create_plan  # noqa: E402
+from beatforge.audio import AudioAnalysis
+from beatforge.lyrics import LyricLine
+from beatforge.media import MediaAsset
+from beatforge.planner import create_plan
 
 
 def build(duration: float, asset_count: int, *, video: bool = False, composite: bool = True):

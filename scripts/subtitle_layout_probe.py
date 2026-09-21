@@ -162,7 +162,7 @@ def main() -> int:
     lyrics_list = lyrics()
     analysis = AudioAnalysis(
         duration=LINE_SECONDS * len(LINES), bpm=120,
-        beats=[float(x) for x in range(0, int(LINE_SECONDS * len(LINES)) + 1)],
+        beats=[float(x) for x in range(int(LINE_SECONDS * len(LINES)) + 1)],
         sections=[0.0, LINE_SECONDS * len(LINES)],
         energy_times=[0], energy_values=[.5], average_energy=.5,
         brightness=.35, mood="melancholic", mood_scores={"melancholic": 1},

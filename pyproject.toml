@@ -38,7 +38,10 @@ music-ai = ["all-in-one-infer>=3.0", "beat-this"]
 separation = ["audio-separator>=0.47", "onnxruntime>=1.17", "audioread>=3.0"]
 
 [dependency-groups]
-dev = ["pytest>=8.3"]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.16.8",
+]
 
 [project.scripts]
 beatforge = "beatforge.cli:app"
@@ -83,3 +86,19 @@ torchcodec = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "BLE", "C4", "SIM", "RUF", "PIE"]
+# RUF001/002/003：全角标点（代码里的中文文案，300+ 处），按架构师 §4.4 一律不改
+# B905：给 zip 补 strict 会在长度不一致时改变行为，纯重构不改
+ignore = ["RUF001", "RUF002", "RUF003", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer 的 Argument/Option 必须在默认值里调用，这是它的官方惯用法
+"beatforge/cli.py" = ["B008"]
+# 探针脚本需要在 import 之前操作 sys.path
+"scripts/*" = ["E402", "PLC0415"]
