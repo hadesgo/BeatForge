@@ -1,0 +1,298 @@
+%% BeatForge 领域模型与服务类 · 行为不变重构的影响面快照
+%% 生成：架构师 高见远（docs/review/architecture-review.md 附件）
+%% 说明：实线 = 组合/持有，虚线 = 依赖（调用），带 (S) 的是 service 模块（模块级函数集合，此处按类聚合展示）
+%%       ⛔ = 重构禁区（README 不变量所在），🔒 = 本轮不得改签名的主链
+
+classDiagram
+    direction LR
+
+    class ProjectConfig {
+        <<pydantic>>
+        +Path music
+        +Path output
+        +Path cache_dir
+        +Path media_dir
+        +Path lyrics
+        +RenderConfig render
+        +AIConfig ai
+    }
+    class RenderConfig {
+        <<pydantic>>
+        +int width
+        +int height
+        +int fps
+        +float min_shot_seconds
+        +float max_shot_seconds
+        +bool image_composites
+        +float image_composite_ratio
+        +int max_composite_images
+        +bool avoid_asset_repeats
+        +float transition_density
+        +str edit_style
+        +str subtitle_layout
+    }
+    class AIConfig {
+        <<pydantic>>
+        +bool enabled
+        +str device
+        +bool offline
+        +bool separate_vocals
+        +str separation_model
+        +str qwen_asr_model
+        +str qwen_aligner_model
+        +str clap_model
+        +str music_structure_backend
+        +str vision_model
+        +str vision_backend
+        +str vision_reranker_model
+        +int vision_rerank_top_k
+        +int vision_batch_size
+        +int vision_input_pixels
+        +bool director_enabled
+        +str director_model
+    }
+    ProjectConfig *-- RenderConfig
+    ProjectConfig *-- AIConfig
+
+    class AudioAnalysis {
+        <<dataclass>>
+        +float bpm
+        +str mood
+        +float average_energy
+        +float rhythmic_density
+        +list sections
+        +float duration
+        +as_dict() dict
+    }
+    class LyricToken {
+        <<dataclass>>
+        +str text
+        +float start
+        +float end
+    }
+    class LyricLine {
+        <<dataclass>>
+        +str text
+        +float start
+        +float end
+        +list~LyricToken~ tokens
+        +as_dict() dict
+    }
+    class Placement {
+        <<frozen dataclass>>
+        +float start
+        +float end
+    }
+    class MediaAsset {
+        <<dataclass>>
+        +Path path
+        +str kind
+        +list tags
+        +as_dict() dict
+    }
+    LyricLine *-- LyricToken
+    LyricLine *-- Placement
+
+    class SectionDirection {
+        <<pydantic>>
+        +str section
+        +str intent
+        +list tags
+    }
+    class DirectorTreatment {
+        <<pydantic>>
+        +str concept
+        +list~SectionDirection~ sections
+        +model_dump() dict
+    }
+    DirectorTreatment *-- SectionDirection
+
+    class ArtDirection {
+        <<dataclass>>
+        +str palette
+        +str look
+        +as_dict() dict
+    }
+    class EditStyle {
+        <<frozen dataclass>>
+        +str label
+        +str summary
+        +str subtitle_layout
+    }
+    class FontChoice {
+        <<frozen dataclass>>
+        +str family
+        +str weight
+        +Path path
+    }
+    class ShotLayer {
+        <<dataclass>>
+        +Path asset
+        +str role
+    }
+    class Shot {
+        <<dataclass>>
+        +float start
+        +float end
+        +str kind
+        +list~ShotLayer~ layers
+        +str transition
+        +_CameraMove camera
+        +as_dict() dict
+    }
+    Shot *-- ShotLayer
+    Shot ..> _CameraMove
+
+    class _CameraMove {
+        <<frozen dataclass, renderer 内部>>
+        +str kind
+        +float amount
+    }
+    class _Transition {
+        <<frozen dataclass, renderer 内部>>
+        +str name
+        +float duration
+    }
+
+    class ModelRequirement {
+        <<frozen dataclass>>
+        +str repo_id
+        +str provider
+    }
+    class DownloadedModel {
+        <<frozen dataclass>>
+        +str repo_id
+        +Path path
+    }
+    class LlamaServer {
+        <<dataclass>>
+        +str base_url
+        +Popen process
+        +stop() None
+        +__enter__() LlamaServer
+        +__exit__() None
+    }
+    class VisionIndex {
+        +__init__(model_path, device, offline, cache_dir, backend, reranker_model, rerank_top_k, batch_size, input_pixels)
+        +similarities(texts, assets, frame_samples) ndarray
+        +best_source_starts
+    }
+    class ModelDownloadError {
+        <<exception>>
+    }
+    class LlamaServerError {
+        <<exception>>
+    }
+    class SeparationUnavailable {
+        <<exception>>
+    }
+
+    class PipelineService {
+        <<module beatforge.pipeline>>
+        +run_project(project, plan_only, no_ai) Path
+        +speech_source(project, device) tuple
+    }
+    class PlannerService {
+        <<module beatforge.planner · ⛔>>
+        +create_plan(...) list~Shot~
+    }
+    class RendererService {
+        <<module beatforge.renderer · 🔒>>
+        +render(shots, lyrics, music, output, cache_dir, cfg, art) None
+    }
+    class AudioService {
+        <<module beatforge.audio>>
+        +analyze_music(music, mood_scores, structure) AudioAnalysis
+    }
+    class DirectorService {
+        <<module beatforge.director · 🔒>>
+        +create_art_direction(analysis, lyrics, render, treatment, style) ArtDirection
+    }
+    class EditingService {
+        <<module beatforge.editing>>
+        +resolve_style(edit_style, mood, average_energy, rhythmic_density) EditStyle
+    }
+    class LyricsService {
+        <<module beatforge.lyrics>>
+        +read_lrc(file, total_duration) list~LyricLine~
+        +write_srt(lines, file) None
+    }
+    class MediaService {
+        <<module beatforge.media>>
+        +discover_media(directory) list~MediaAsset~
+    }
+    class RuntimeService {
+        <<module beatforge.runtime>>
+        +duration(file) float
+        +require_binaries() None
+        +resolve_device(requested) str
+        +optimize_torch_runtime(device) None
+        +release_gpu(*objects) None
+    }
+    class TranscriberService {
+        <<module models.transcriber>>
+        +transcribe(source, qwen_model, qwen_aligner, device, offline) list~LyricLine~
+    }
+    class AudioSemanticsService {
+        <<module models.audio_semantics>>
+        +classify_music(music, model_name, device, offline) dict
+    }
+    class MusicStructureService {
+        <<module models.music_structure>>
+        +analyze_beats(audio, backend, device) dict
+    }
+    class SeparatorService {
+        <<module models.separator>>
+        +separate_vocals(music, cache_dir, model, device, offline) Path
+    }
+    class AIDirectorService {
+        <<module models.ai_director>>
+        +direct_mv(analysis, lyrics, assets, similarities, cfg, cache_dir, source_starts) DirectorTreatment
+    }
+    class DownloaderService {
+        <<module models.downloader>>
+        +load_download_manifest(path) dict
+        +download_required_models(...) list~DownloadedModel~
+    }
+    class LlamaServerModule {
+        <<module models.llama_server>>
+        +open_server(...) ContextManager~LlamaServer~
+        +_wait_until_ready(server, process) None
+    }
+
+    PipelineService ..> AudioService : analyze_music
+    PipelineService ..> LyricsService : read_lrc / write_srt
+    PipelineService ..> MediaService : discover_media
+    PipelineService ..> PlannerService : create_plan
+    PipelineService ..> RendererService : render
+    PipelineService ..> DirectorService : create_art_direction
+    PipelineService ..> EditingService : resolve_style
+    PipelineService ..> RuntimeService : require_binaries/device/release
+    PipelineService ..> TranscriberService : lazy import
+    PipelineService ..> AudioSemanticsService : lazy import
+    PipelineService ..> MusicStructureService : lazy import
+    PipelineService ..> SeparatorService : lazy import
+    PipelineService ..> AIDirectorService : lazy import
+    PipelineService ..> DownloaderService : lazy import
+    PipelineService ..> VisionIndex : lazy import
+
+    TranscriberService ..> LyricsService : builds LyricLine
+    SeparatorService ..> LlamaServerModule : （分离/对齐共用运行期）
+    AIDirectorService ..> LlamaServerModule : open_server
+    AIDirectorService ..> DirectorTreatment : returns
+    AudioSemanticsService ..> AudioAnalysis : mood_scores
+    MusicStructureService ..> AudioAnalysis : structure
+    VisionIndex ..> MediaAsset : reads
+    PlannerService ..> AudioAnalysis : reads
+    PlannerService ..> LyricLine : reads
+    PlannerService ..> MediaAsset : reads
+    PlannerService ..> DirectorTreatment : optional
+    PlannerService ..> Shot : produces
+    RendererService ..> Shot : consumes
+    RendererService ..> LyricLine : consumes
+    RendererService ..> FontChoice : via fonts
+    DirectorService ..> ArtDirection : produces
+    EditingService ..> EditStyle : produces
+    AudioService ..> AudioAnalysis : produces
+    DownloaderService ..> ModelRequirement : reads
+    DownloaderService ..> DownloadedModel : returns

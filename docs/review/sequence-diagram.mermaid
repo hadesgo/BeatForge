@@ -1,0 +1,115 @@
+%% BeatForge 关键调用流 · run_project 全流程 + llama_server 清理路径
+%% 生成：架构师 高见远（docs/review/architecture-review.md 附件）
+%% 覆盖：初始化（CRUD 无关，仅对象装配）→ 5 个阶段 → 渲染；含 P0-1 清理分支的调用时序
+sequenceDiagram
+    autonumber
+    actor User
+    participant CLI as cli.py (typer)
+    participant Pipe as pipeline.run_project
+    participant RT as runtime
+    participant DL as models.downloader
+    participant Sep as models.separator
+    participant ASR as models.transcriber
+    participant Sem as models.audio_semantics
+    participant MS as models.music_structure
+    participant Aud as audio.analyze_music
+    participant Med as media.discover_media
+    participant VI as VisionIndex
+    participant Dir as models.ai_director
+    participant LS as models.llama_server
+    participant Edit as editing.resolve_style
+    participant Plan as planner.create_plan
+    participant Art as director.create_art_direction
+    participant Rend as renderer.render
+
+    User->>CLI: beatforge run <project>
+    CLI->>Pipe: run_project(project, plan_only, no_ai)
+
+    Note over Pipe,RT: 阶段 0 · 环境装配
+    Pipe->>RT: require_binaries()
+    Pipe->>Pipe: cache_dir.mkdir(parents=True, exist_ok=True)
+    Pipe->>RT: resolve_device(ai.device)
+    Pipe->>RT: optimize_torch_runtime(device)
+    Pipe->>DL: load_download_manifest(cache_dir/models.json)
+    DL-->>Pipe: dict[repo_id -> path]
+    Pipe->>RT: duration(music)
+    RT-->>Pipe: total_duration
+
+    Note over Pipe,ASR: 1/5 歌词时间轴
+    alt project.lyrics 存在
+        Pipe->>Pipe: lyrics.read_lrc(lyrics, total_duration)
+    else use_ai
+        Pipe->>Pipe: speech_source(project, device)
+        alt separate_vocals
+            Pipe->>Sep: separate_vocals(music, cache_dir, model, device, offline)
+            Sep-->>Pipe: stem (或 SeparationUnavailable → 回退混音)
+        end
+        Pipe->>ASR: transcribe(source, qwen_model, qwen_aligner, device, offline)
+        ASR->>LS: 运行期装载（转录模型）
+        LS-->>ASR: ready
+        ASR-->>Pipe: list[LyricLine]
+        Pipe->>Pipe: write_srt(lyrics, cache_dir/asr.srt)
+        Pipe->>RT: release_gpu()
+    else 无 AI
+        Pipe-->>Pipe: lyrics = []
+    end
+
+    Note over Pipe,MS: 2/5 音乐结构与氛围
+    alt use_ai
+        Pipe->>Sem: classify_music(music, clap_model, device, offline)
+        Sem-->>Pipe: mood_scores
+        Pipe->>RT: release_gpu()
+        alt backend != librosa
+            Pipe->>MS: analyze_beats(music, backend, device)
+            MS-->>Pipe: structure
+            Pipe->>RT: release_gpu()
+        end
+    end
+    Pipe->>Aud: analyze_music(music, mood_scores, structure)
+    Aud-->>Pipe: AudioAnalysis
+
+    Note over Pipe,VI: 3/5 素材视觉语义索引
+    Pipe->>Med: discover_media(media_dir)
+    Med-->>Pipe: list[MediaAsset]
+    alt use_ai and lyrics
+        Pipe->>VI: VisionIndex(...) → similarities(texts, assets, frame_samples)
+        VI-->>Pipe: similarities ndarray
+        Pipe->>Pipe: source_starts = index.best_source_starts
+        Pipe->>RT: release_gpu()
+    end
+
+    Note over Pipe,Dir: 4/5 AI 导演与镜头编排
+    alt use_ai and director_enabled
+        Pipe->>Dir: direct_mv(analysis, lyrics, assets, similarities, cfg, cache_dir, starts)
+        Dir->>LS: open_server(...) → with context
+        LS->>LS: Popen(command, stdout=sink, ...)
+        LS->>LS: _wait_until_ready(server, process)
+        LS-->>Dir: LlamaServer (yield)
+        Dir-->>Pipe: DirectorTreatment
+        Note over LS: with 退出 → server.stop()<br/>⚠️ 清理条件(P0-1)：if log is None and sink is not DEVNULL<br/>文件分支不可达；实际由 GC 兜底 flush
+        Pipe->>RT: release_gpu()
+    else 导演不可用
+        Dir--xPipe: raise → except → 回退规则导演（P1-5 有意兜底）
+    end
+    Pipe->>Edit: resolve_style(render.edit_style, mood, energy, density)
+    Edit-->>Pipe: EditStyle | None
+    Pipe->>Pipe: render_config = render.model_copy(update=subtitle_layout)
+
+    Pipe->>Plan: create_plan(analysis, lyrics, assets, similarities, ...)
+    Plan-->>Pipe: list[Shot]
+    Pipe->>Art: create_art_direction(analysis, lyrics, render, treatment, style)
+    Art-->>Pipe: ArtDirection
+    Pipe->>Pipe: plan_dict = {version:3, models, render, art_direction, ...}
+    Pipe->>Pipe: plan_file.write_text(json.dumps(plan_dict))
+    Pipe-->>CLI: plan_file
+
+    alt plan_only
+        Pipe-->>CLI: return plan_file
+    else
+        Note over Pipe,Rend: 5/5 FFmpeg 成片渲染
+        Pipe->>Rend: render(shots, lyrics, music, output, cache_dir, render_config, art)
+        Rend->>Rend: _render_shot / _image_filter_graph / _camera_quad / _composite_graph
+        Rend-->>Pipe: output
+        Pipe-->>CLI: project.output
+    end
+    CLI-->>User: 完成
