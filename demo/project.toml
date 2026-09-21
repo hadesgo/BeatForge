@@ -41,7 +41,7 @@ min_shot_seconds = 1.8
 max_shot_seconds = 5.5
 
 subtitle_font = "auto"
-subtitle_fonts_dir = "fonts"
+subtitle_fonts_dir = "fonts" # 项目自己的额外字体目录；仓库自带的九个中文字体始终可用
 subtitle_size = 46
 subtitle_effect = "auto"
 subtitle_margin = 72

@@ -28,6 +28,7 @@ from beatforge.renderer import (
     _render_shot,
     _section_color_filter,
     _shot_match_filter,
+    _subtitle_filter,
     _transition_effect_filters,
     _transition_spec,
     _video_encode_args,
@@ -981,6 +982,26 @@ def test_a_diagonal_cut_hands_each_pixel_to_one_picture_or_the_other(tmp_path: P
 
     assert red_only.mean() > .2 and blue_only.mean() > .2, "the cut showed only one picture"
     assert mixed < .03, f"{mixed:.1%} of the frame mixed the two pictures"
+
+
+def test_the_subtitle_filter_hands_libass_exactly_one_font_directory(tmp_path: Path) -> None:
+    """libass takes a single ``fontsdir``, and it needs it to see the bundled fonts.
+
+    Given two directories, however they are separated, it finds no fonts at all - so the
+    project's fonts and the shipped ones have to be collected into one directory first
+    (``fonts.stage_fonts``). Without any ``fontsdir`` libass sees only the fonts the
+    machine has installed, which is how every bundled family ended up as a fallback.
+    """
+    script = tmp_path / "lyrics.ass"
+    script.write_text("[Script Info]\n", "utf-8")
+    cfg = RenderConfig(width=320, height=180, fps=10)
+
+    staged = _subtitle_filter(script, cfg, tmp_path)
+    assert staged.count("fontsdir=") == 1, staged
+    assert str(tmp_path.resolve()).replace("\\", "/") in staged.replace(r"\:", ":")
+
+    assert "fontsdir=" not in _subtitle_filter(script, cfg)
+    assert "fontsdir=" not in _subtitle_filter(script, cfg, tmp_path / "missing")
 
 
 def test_beat_montage_keeps_its_letterbox_on_purpose(tmp_path: Path) -> None:

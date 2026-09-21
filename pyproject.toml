@@ -5,6 +5,7 @@ description = "Local-AI music video editor for consumer NVIDIA GPUs"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+  "fonttools>=4.55",
   "librosa>=0.11.0",
   "numpy>=2.0",
   "pillow>=11.0",

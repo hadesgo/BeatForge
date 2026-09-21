@@ -24,6 +24,9 @@ def init(directory: Path = typer.Argument(..., help="项目目录")) -> None:
     """创建一个新的 MV 项目。"""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "media").mkdir(exist_ok=True)
+    # A place to drop custom fonts. It starts empty and stays empty unless the project
+    # needs its own - the fonts BeatForge ships are staged separately and are reachable
+    # whether or not this directory has anything in it.
     (directory / "fonts").mkdir(exist_ok=True)
     (directory / "project.toml").write_text(PROJECT_TEMPLATE, "utf-8")
     (directory / "lyrics.lrc").write_text("[00:00.00]在这里填写歌词\n[00:05.00]或删除本文件让 ASR 自动转写\n", "utf-8")

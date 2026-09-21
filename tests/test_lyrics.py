@@ -211,6 +211,31 @@ def test_the_band_layout_is_unchanged_without_placements(tmp_path: Path) -> None
     assert "\\kf" in events[0], "the band layout keeps the character sweep"
 
 
+def test_the_style_is_only_bold_when_a_bold_weight_was_asked_for(tmp_path: Path) -> None:
+    """The style's Bold is a switch, so it has to agree with the weight on the events.
+
+    It used to be on unconditionally, which put every preset that asks for no weight -
+    ``modern``, ``minimal``, ``cinematic`` and the rest - into a synthetic bold. On a
+    family with no bold of its own libass thickens the glyphs itself, and synthetic bold
+    over a hairline face reads as neither one thing nor the other.
+    """
+    line = _breathing_line()
+    rows = {}
+    for weight in (None, 300, 400, 700):
+        target = tmp_path / f"weight-{weight}.ass"
+        write_ass([line], target, width=1280, height=720, font="sans", size=45,
+                  margin=72, effect="cinematic", weight=weight)
+        rows = target.read_text("utf-8-sig").splitlines()
+        style = next(row for row in rows if row.startswith("Style: Lyric"))
+        event = next(row for row in rows if row.startswith("Dialogue"))
+        bold = style.split(",")[7]
+        expected = "-1" if (weight or 400) >= 600 else "0"
+        assert bold == expected, (weight, style)
+        # The number has to travel on the event as well: the style is one bit, and a
+        # family that can be anything from 100 to 900 needs the value.
+        assert (f"\\b{weight}" in event) == (weight is not None)
+
+
 def test_the_outline_is_configurable_for_type_inside_the_picture(tmp_path: Path) -> None:
     """A caption needs an outline; type that shares the frame with the picture does not."""
     line = _breathing_line()

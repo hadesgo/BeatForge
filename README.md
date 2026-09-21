@@ -199,7 +199,7 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `transition_density` | `0.35` | 段落内部使用可见转场的比例；`0` 只在段落切换时转场，`1` 每个切点都转场 | `0.25`–`0.45` |
 | `image_background_blur` | `26.0` | 原比例图片周围的满屏模糊背景强度 | 人像可用 `22`–`32` |
 | `subtitle_effect` / `subtitle_font` | `auto` / `auto` | AI按旋律、情绪和段落从 16 种字幕动效里选，并选择字体 | 保持 `auto`，也可固定成某个特效名 |
-| `subtitle_fonts_dir` | `fonts` | 自定义字体目录；仓库自带四个 OFL 中文字体（约 67 MiB，git-lfs 存储） | 保持默认即可开箱即用 |
+| `subtitle_fonts_dir` | `fonts` | 项目自己的额外字体目录（相对项目文件夹）；仓库自带九个 OFL 中文字体始终在搜索路径里 | 保持默认即可开箱即用 |
 | `subtitle_layout` | `free` | `free` 分句自由排版并避开主体；`band` 为传统底部居中一行 | 想做成官方歌词 MV 那样就用 `free` |
 | `subtitle_fill` | `solid` | `knockout` 让文字从画面里镂空，字中透出提亮虚化的同一帧 | 想要"融入画面"就用 `knockout` |
 | `subtitle_outline` | `1.1` | 描边宽度；越小越融入画面，`0` 为无描边 | 画面偏暗时用 `0`，杂时用 `1.5`–`2.2` |
@@ -698,7 +698,18 @@ BeatForge 会把**已安装 torch 自带的 CUDA 运行时目录**加进子进�
 
 ### 字幕乱码、方框字或自定义字体没有生效
 
-确认 FFmpeg 构建包含 libass。仓库 `fonts/` 已自带**九个** OFL 中文字体（约 92 MiB，用 git-lfs 存储），开箱即用；也可以再把自己的 `.ttf`/`.otf`/`.ttc` 放进同一目录，或改 `subtitle_fonts_dir` 指向别处。固定字体时填写**字体内部的家族名**而不是文件名，不确定时优先用内置预设。
+确认 FFmpeg 构建包含 libass。仓库 `fonts/` 已自带**九个** OFL 中文字体（约 92 MiB，用 git-lfs 存储），开箱即用；也可以再把自己的 `.ttf`/`.otf`/`.ttc` 放进项目的字体目录。固定字体时填写**字体内部的家族名**而不是文件名，不确定时优先用内置预设。
+
+### 字体是怎么交给 libass 的
+
+libass 只认**一个** `fontsdir`：给它第二个路径（无论用 `;` 还是 `:` 分隔），它会**一个字体都找不到**——比只给一个目录还糟。所以项目自己的字体和仓库自带的字体必须先被收集进同一个目录，这一步是 `fonts.stage_fonts()` 做的：
+
+- **仓库自带的字体永远在搜索路径里**，项目自己的目录（`subtitle_fonts_dir`，相对项目文件夹解析）只是额外加一层，同名文件由项目覆盖。这一条踩过坑：模板里写的是 `subtitle_fonts_dir = "fonts"`，而它相对**项目目录**解析，于是 `my-mv/fonts`（`init` 建出来的空目录）和 `demo/fonts`（根本不存在）都指向空处，仓库那一整套字体对 libass 完全不可见——症状就是"配置了字体但成片里看不到"，`modern` 和 `poster` 渲染出来一模一样。
+- **可变字体在收集时被展开成静态字重**。两个自带的 Noto 都是可变字体，而 libass **不会应用 `wght` 轴**：它向字体提供方要一个字重 700 的 face，提供方把该字体的**默认实例**给它，而 libass 看到这个家族"已经有 Bold"就不再合成粗体。这两个文件的默认实例分别是 **Thin（100）** 和 **ExtraLight（200）**，所以不管配置说什么，字幕永远是发丝细体，`族名@字重` 也完全不生效。展开成静态实例后 `\b` 才有意义——`tests/test_fonts.py::test_a_requested_weight_actually_reaches_the_rendered_frame` 就是钉这条的（300/400/700 三档的墨量必须递增，之前三档逐像素相同）。
+- **展开结果缓存在整机级别**（`%LOCALAPPDATA%\beatforge\fonts\<摘要>`，其他平台是 `$XDG_CACHE_HOME/beatforge/fonts`），不放在项目的 `.beatforge/` 里：烘一个 CJK 实例要几秒、六个约一分钟，而这件事只取决于字体本身，所以同一台机器上的所有工程共用一次构建。缓存键是源文件的**文件名+大小+时间戳**和要烘的字重，源文件一改就重建；`BEATFORGE_FONT_CACHE` 可以把它挪到别处。首次运行会打印一行说明。
+- 缓存键是内容，所以项目里那个空的 `fonts/` 不会导致重建；没装 fontTools 时会退回"直接用可变字体"并打印警告，此时字重设置无效。
+
+**ASS 里的 Bold 现在跟着解析出的字重走**：≥600 才是粗体，否则常规。此前它无条件写 `-1`，于是所有没指定字重的预设（`modern`、`minimal`、`cinematic`…）都被塞进合成粗体——合成粗体叠在细体上，既不像粗体也不像细体。
 
 十二个预设，按情绪自动选的是前七个：
 
@@ -717,10 +728,11 @@ BeatForge 会把**已安装 torch 自带的 CUDA 运行时目录**加进子进�
 
 后五个是艺术字体，**不由情绪自动选中**——毛笔或海报体用错歌比用普通字体更糟——用 `subtitle_font = "preset:brush"` 这类方式显式指定。它们来自 Google Fonts，码位只到 GB2312 常用字级别：歌词正常用 100% 覆盖，但真正的生僻字（人名、囍 之类）会缺字形，此时 libass 会按字形回退到其它已安装字体。对字形完整性要求高的场合用 Noto 那两个。
 
-两个容易踩的点：
+四个容易踩的点：
 
 - **`git clone` 后字体是几百字节的文本**，说明没装 git-lfs。`tests/test_fonts.py` 会直接报出来（它检查文件头魔数——指针文件本身是可读文本，不检查就会一路跑到渲染才以方框字暴露）。
-- **可变字体不能用"族名 + 字重"选择**。fontconfig 不暴露命名实例，`Fontname: Noto Sans SC Light` 解析不到任何东西并**静默回退到系统字体**。内置预设表用 `族名@字重` 表达（如 `"Noto Sans SC@300"`），由 `write_ass()` 发成 ASS 的 `\b` 标签。自己加可变字体时照这个写法。
+- **一个预设候选只是"包含"某个已安装家族时，写进 ASS 的必须是字体真正的名字**。`lyrical` 的候选里有 `Kaiti SC`，它能匹配上系统里的 `KaiTi`，但脚本里写的若是 `Kaiti SC`，libass 找不到这个家族 → **静默回退**，用的完全是另一个 face。名字不存在和字体找不到在屏幕上一模一样，所以解析时返回的是"实际存在的那个拼写"。
+- **可变字体不能用"族名 + 字重"选择**。fontconfig 不暴露命名实例，`Fontname: Noto Sans SC Light` 解析不到任何东西并**静默回退到系统字体**。内置预设表用 `族名@字重` 表达（如 `"Noto Sans SC@300"`），由 `stage_fonts()` 烘成静态字重、再由 `write_ass()` 发成 ASS 的 `\b` 标签。自己加可变字体时照这个写法。
 
 - **族名读取不能只靠 PIL**。`PIL.ImageFont.getname()` 返回的是字体**默认语言**的族名，
   而中文商业字体的默认族名常常就是中文——PIL 解码失败会得到 `"?????"`，
@@ -789,11 +801,14 @@ uv run python scripts/quad_probe.py
 
 ```powershell
 uv run python scripts/edit_style_probe.py        # 同一首歌喂给全部剪辑风格，对比镜头长度/转场/景别
+uv run python scripts/font_probe.py              # 逐预设渲染，确认字体和字重真的到达了画面
 uv run python scripts/subtitle_effect_probe.py   # 逐帧比对，确认每种字幕动效真的在动
 uv run python scripts/subtitle_layout_probe.py   # 渲染四种断句路径，看每片歌词落在哪里
 uv run python scripts/subtitle_layout_probe.py --fill knockout   # 同上，镂空填充
 uv run python scripts/cut_effect_probe.py        # 在真实切点上确认闪光/漏光/烧毁真的发生
 ```
+
+字体这条链路的失效方式特别隐蔽：目录不可达、家族名不存在、可变字体的字重没被应用，三种都会渲染出一帧**完全合法但字体不对**的画面。所以 `font_probe.py` 量的是墨量而不是读配置——逐预设列一遍实际用到的 face，再把同一个家族在 `\b300/400/700` 下的墨量排开（**不随字重变化就说明字重没送达画面**），最后对比有/无 `fontsdir` 的差别。
 
 字幕探针同时检查"有没有画出来"（墨量）和"有没有在动"（相邻帧差）；效果转场探针同时看均值亮度、空间标准差和暖度，因为噪点和通道分离几乎不改变均值。
 
@@ -825,9 +840,10 @@ beatforge/models/audio_semantics.py   CLAP 音乐语义
 beatforge/models/music_structure.py   All-In-One/Beat This 结构分析
 beatforge/models/vision_index.py      WeMM/Qwen3-VL-Embedding/SigLIP2 检索
 beatforge/editing.py                  剪辑风格：把专业剪辑决策结构化为配置
+beatforge/fonts.py                    字体发现、预设解析、可变字体展开与字体目录收集
 beatforge/planner.py                  多目标镜头编排
 beatforge/renderer.py                 FFmpeg 成片渲染
 beatforge/pipeline.py                 分阶段模型生命周期
-scripts/                              演示素材、复用/显存/抖动/四边形/效果/字幕/版式/视觉输入探针
+scripts/                              演示素材、字体/复用/显存/抖动/四边形/效果/字幕/版式/视觉输入探针
 tests/                                不下载模型的测试
 ```

@@ -229,6 +229,7 @@ name = "beatforge"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "fonttools" },
     { name = "librosa" },
     { name = "numpy" },
     { name = "pillow" },
@@ -287,6 +288,7 @@ requires-dist = [
     { name = "audio-separator", marker = "extra == 'separation'", specifier = ">=0.47" },
     { name = "audioread", marker = "extra == 'separation'", specifier = ">=3.0" },
     { name = "beat-this", marker = "extra == 'music-ai'" },
+    { name = "fonttools", specifier = ">=4.55" },
     { name = "huggingface-hub", marker = "extra == 'ai'", specifier = ">=0.29" },
     { name = "librosa", specifier = ">=0.11.0" },
     { name = "modelscope", marker = "extra == 'ai'", specifier = ">=1.22" },

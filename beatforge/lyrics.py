@@ -6,6 +6,10 @@ from pathlib import Path
 
 STAMP = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
 
+#: The weight a family is asked for when the resolution named none. 400 is the face a
+#: static family ships as "Regular", and ASS's Bold field is only a switch above it.
+_REGULAR_WEIGHT = 400
+
 
 @dataclass(slots=True)
 class LyricToken:
@@ -379,10 +383,11 @@ def write_ass(
 ) -> None:
     """Write the lyric script.
 
-    ``weight`` asks for a specific weight on a variable font. The ASS style's own Bold
-    field only offers on or off, so a family that can be anything from 100 to 900 needs
-    the number on every event - which is the whole reason the bundled Noto families are
-    shipped as variable fonts rather than as five static ones.
+    ``weight`` is the weight of the resolved family, and it drives both the style's Bold
+    field and a ``\\b`` tag on every event. Neither alone is enough: the style is a
+    single on/off bit, so a family that can be anything from 100 to 900 needs the number
+    on the event - but the events only override the style, never the other way round, so
+    a style left on Bold would make every preset that asks for no weight bold.
 
     ``placements`` switches the layout: without it every line is one centred line in
     the bottom band, and with it each line is drawn as the freely positioned fragments
@@ -394,6 +399,10 @@ def write_ass(
     outline_colour = "&H00000000" if mask_only else "&H90000000"
     border = 0.0 if mask_only else outline
     drop = 0.0 if mask_only else shadow
+    # A preset that names no weight wants the family's regular face, not a synthetic
+    # bold: libass thickens a family with no bold of its own, which on top of a light
+    # face reads as neither.
+    bold = -1 if (weight or _REGULAR_WEIGHT) >= 600 else 0
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -403,7 +412,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Lyric,{font},{size},{primary},&H00FFFFFF,{outline_colour},&H50000000,-1,0,0,0,100,100,1,0,1,{border},{drop},2,48,48,{margin},1
+Style: Lyric,{font},{size},{primary},&H00FFFFFF,{outline_colour},&H50000000,{bold},0,0,0,100,100,1,0,1,{border},{drop},2,48,48,{margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

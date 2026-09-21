@@ -8,6 +8,7 @@ import numpy as np
 
 from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection
+from beatforge.fonts import stage_fonts
 from beatforge.lyrics import LyricLine, Placement, plan_placements, write_ass
 from beatforge.planner import IMAGE_COMPOSITES, Shot
 from beatforge.runtime import command, duration
@@ -59,6 +60,10 @@ def render(
         concat_file.write_text("\n".join(f"file '{(clips / f'{i:05}.mp4').as_posix()}'" for i in range(len(shots))), "utf-8")
         command(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(picture)])
     subtitle = cache / "lyrics.ass"
+    # One directory for libass to read, holding the project's fonts and the shipped
+    # ones - see ``fonts.stage_fonts``. Collecting it here rather than passing the
+    # project's own directory means the bundled families are actually reachable.
+    fonts_dir = stage_fonts(config.subtitle_fonts_dir)
     placements = _subtitle_placements(lyrics, shots, config)
     write_ass(
         lyrics, subtitle, width=config.width, height=config.height,
@@ -70,10 +75,10 @@ def render(
     )
     args = ["ffmpeg", "-y", "-v", "error", "-i", str(picture), "-i", str(music)]
     if lyrics and config.subtitle_fill == "knockout":
-        args += ["-filter_complex", _knockout_graph(subtitle, duration(picture), config),
+        args += ["-filter_complex", _knockout_graph(subtitle, duration(picture), config, fonts_dir),
                  "-map", "[vout]"]
     elif lyrics:
-        args += ["-vf", _subtitle_filter(subtitle, config), "-map", "0:v:0"]
+        args += ["-vf", _subtitle_filter(subtitle, config, fonts_dir), "-map", "0:v:0"]
     else:
         args += ["-map", "0:v:0"]
     args += ["-map", "1:a:0", *_video_encode_args(config, intermediate=False),
@@ -81,17 +86,25 @@ def render(
     command(args)
 
 
-def _subtitle_filter(subtitle: Path, cfg: RenderConfig) -> str:
-    """The ``ass`` filter that draws the lyric script over the picture."""
+def _subtitle_filter(
+    subtitle: Path, cfg: RenderConfig, fonts_dir: Path | None = None,
+) -> str:
+    """The ``ass`` filter that draws the lyric script over the picture.
+
+    ``fonts_dir`` is one directory holding every font this run may use - the project's
+    own and the shipped ones, collected by ``fonts.stage_fonts``. libass accepts exactly
+    one, and it needs it: without a ``fontsdir`` it sees only the fonts the machine has
+    installed, so every bundled family silently falls back to whatever is there.
+    """
     escaped = subtitle.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
     filters = f"ass='{escaped}'"
-    if cfg.subtitle_fonts_dir and cfg.subtitle_fonts_dir.exists():
-        fonts = cfg.subtitle_fonts_dir.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
+    if fonts_dir and fonts_dir.is_dir():
+        fonts = fonts_dir.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
         filters += f":fontsdir='{fonts}'"
     return filters
 
 
-def _knockout_graph(subtitle: Path, seconds: float, cfg: RenderConfig) -> str:
+def _knockout_graph(subtitle: Path, seconds: float, cfg: RenderConfig, fonts_dir: Path | None = None) -> str:
     """Cut the lyric out of the picture so a treated version of the frame shows through.
 
     This is the literal reading of putting the type *into* the image: there is no
@@ -114,7 +127,7 @@ def _knockout_graph(subtitle: Path, seconds: float, cfg: RenderConfig) -> str:
         f"eq=brightness={_KNOCKOUT_LIFT:.3f}:saturation={_KNOCKOUT_SATURATION:.2f}[lit];"
         f"[base]eq=brightness={_KNOCKOUT_DIM:.3f}[dim];"
         f"color=c=black:s={cfg.width}x{cfg.height}:r={cfg.fps}:d={seconds:.3f},"
-        f"{_subtitle_filter(subtitle, cfg)},format=gray[mask];"
+        f"{_subtitle_filter(subtitle, cfg, fonts_dir)},format=gray[mask];"
         f"[lit]format=rgba[fill];"
         f"[fill][mask]alphamerge[hole];"
         f"[dim][hole]overlay=0:0:format=auto[vout]"

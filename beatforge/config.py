@@ -253,7 +253,7 @@ encoder_tune = "film" # 也可用 grain/animation/none
 min_shot_seconds = 1.8
 max_shot_seconds = 5.5
 subtitle_font = "auto"
-subtitle_fonts_dir = "fonts" # 可放入自定义 ttf/otf；不存在也不影响系统字体
+subtitle_fonts_dir = "fonts" # 项目自己的额外字体目录；仓库自带的九个中文字体始终可用
 subtitle_size = 46
 edit_style = "auto" # auto 按歌曲情绪自动选；也可固定为某个风格名；manual = 用下面的手工值
 subtitle_effect = "auto" # 也可固定为某个特效名；可选值见 README「字幕特效」
