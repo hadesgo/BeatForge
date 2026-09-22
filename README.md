@@ -197,17 +197,15 @@ uv run beatforge run my-mv/project.toml --no-ai
 | `max_composite_images` | `3` | 单镜头多图素材上限；三联版式和主副网格需要 3，节拍蒙太奇可用 4 | 建议保持 `3` |
 | `avoid_asset_repeats` | `true` | 素材够用时保证每个镜头都用没出现过的素材，只在素材不足时才复用 | 保持 `true` |
 | `transition_density` | `0.35` | 段落内部使用可见转场的比例；`0` 只在段落切换时转场，`1` 每个切点都转场 | `0.25`–`0.45` |
-| `blurred_image_background` / `image_background_blur` / `image_foreground_scale` | 已废弃 | 单图改为按主体**全出血**裁切，不再有虚化底、也没有前景缩放比例；三项仅为兼容旧工程保留，读取到即记一条 `deprecated-key` | 无需设置，可从旧配置里删掉 |
 | `subtitle_effect` / `subtitle_font` | `auto` / `auto` | AI按旋律、情绪和段落从 16 种字幕动效里选，并选择字体 | 保持 `auto`，也可固定成某个特效名 |
-| `subtitle_fonts_dir` | `fonts` | 项目自己的额外字体目录（相对项目文件夹）；仓库自带九个 OFL 中文字体始终在搜索路径里 | 保持默认即可开箱即用 |
-| `subtitle_layout` | `free` | `free` 分句自由排版并避开主体；`band` 为传统底部居中一行 | 想做成官方歌词 MV 那样就用 `free` |
+| `subtitle_fonts_dir` | `fonts` | 项目自己的字体目录（相对项目文件夹）；`auto` 选字体会**优先考虑这里发现的家族**（按家族名特征匹配情绪），再回退到仓库自带的九个 OFL 中文字体 | 保持默认即可开箱即用 |
 | `subtitle_fill` | `solid` | `knockout` 让文字从画面里镂空，字中透出提亮虚化的同一帧 | 想要"融入画面"就用 `knockout` |
 | `subtitle_outline` | `1.1` | 描边宽度的**基线**；实际宽度按每行背后的画面亮度自适应（亮背景加粗、暗背景收细） | 画面偏暗时用 `0`，杂时用 `1.5`–`2.2` |
 | `subtitle_max_outline` | `2.4` | 亮背景下自适应描边的**上限**（基线 ≤ 实际宽度 ≤ 该值） | 亮部多时可用 `3.0`–`3.4` |
 
-`edit_style` 不为 `manual` 时，风格**接管**它有权表态的五项：`min_shot_seconds`、`max_shot_seconds`、`transition_density`、`image_composite_ratio`、`subtitle_layout`。但**显式配置优先**：你在 `project.toml` 里亲手**选择过**的项，风格不会覆盖它（只在 `config_audit` 里记一条"风格不认同"）；你没表态的项才交给风格，且每次接管都会在日志里发一条 WARNING，并写入 `plan.json` 的 `config_audit`（字段 `key/requested/effective/overridden_by/explicit`）。这样"程序替用户做了决定"永远有迹可循——不会再出现"写了 `subtitle_layout = "band"` 却渲出 `free`"这种静默覆盖。风格没有表态的项（分辨率、调色、字幕特效、字体）一律走各自的配置。
+`edit_style` 不为 `manual` 时，风格**接管**它有权表态的四项：`min_shot_seconds`、`max_shot_seconds`、`transition_density`、`image_composite_ratio`。但**显式配置优先**：你在 `project.toml` 里亲手**选择过**的项，风格不会覆盖它（只在 `config_audit` 里记一条"风格不认同"）；你没表态的项才交给风格，且每次接管都会在日志里发一条 WARNING，并写入 `plan.json` 的 `config_audit`（字段 `key/requested/effective/overridden_by/explicit`）。这样"程序替用户做了决定"永远有迹可循。风格没有表态的项（分辨率、调色、字幕特效、字体）一律走各自的配置。
 
-**「选择过」怎么判定**：键出现过 **且** 取值不等于默认值。只看"键是否出现"是不够的——`init` 生成的模板里就有这五项，如果样板行也算表态，那么每个新工程的 `edit_style` 都只剩转场和多图比例能生效、镜长永远被钉死，而且静默（这正是本轮修掉的缺陷）。代价是：想用一个恰好等于默认值的取值去压过风格做不到，请改用 `edit_style = "manual"`；风格接管到的每一项都会 WARNING，所以也不会在不知情时被改。模板里这五项现在是**注释掉的**——保持注释即交给风格，取消注释并写成非默认值即视为你的选择。另外，导演给出的逐段 `cut_intensity` 弧会**在本歌内部归一化**到整个风格窗口：导演很少用满 0–1 标尺（my-mv 只用了 0.20–0.65），原样套用只动用窗口的 45%，成片会从"均匀快"变成"均匀慢"而毫无对比；归一化保住导演的相对意图，同时把对比找回来。`vision_batch_size` 只影响编码时的激活显存，不能解决模型权重加载就OOM的问题。`vision_input_pixels` 决定每张图进编码器前的像素上限，直接决定视觉塔的 patch 数量和激活显存；它只压缩超出预算的素材，小图不受影响。`frame_samples` 交换的是分析时间与选择信息量，并不会让最终视频分辨率变高。导演的显存旋钮全在 `director_llama_args`：`-c` 决定 llama.cpp 一次性分配的 KV 缓存，`-ngl` 决定多少层进显存。
+**「选择过」怎么判定**：键出现过 **且** 取值不等于默认值。只看"键是否出现"是不够的——`init` 生成的模板里就有这四项，如果样板行也算表态，那么每个新工程的 `edit_style` 都只剩转场和多图比例能生效、镜长永远被钉死，而且静默（这正是修掉的缺陷）。代价是：想用一个恰好等于默认值的取值去压过风格做不到，请改用 `edit_style = "manual"`；风格接管到的每一项都会 WARNING，所以也不会在不知情时被改。模板里这四项是**注释掉的**——保持注释即交给风格，取消注释并写成非默认值即视为你的选择。另外，导演给出的逐段 `cut_intensity` 弧会**在本歌内部归一化**到整个风格窗口：导演很少用满 0–1 标尺（my-mv 只用了 0.20–0.65），原样套用只动用窗口的 45%，成片会从"均匀快"变成"均匀慢"而毫无对比；归一化保住导演的相对意图，同时把对比找回来。`vision_batch_size` 只影响编码时的激活显存，不能解决模型权重加载就OOM的问题。`vision_input_pixels` 决定每张图进编码器前的像素上限，直接决定视觉塔的 patch 数量和激活显存；它只压缩超出预算的素材，小图不受影响。`frame_samples` 交换的是分析时间与选择信息量，并不会让最终视频分辨率变高。导演的显存旋钮全在 `director_llama_args`：`-c` 决定 llama.cpp 一次性分配的 KV 缓存，`-ngl` 决定多少层进显存。
 
 ## 本地 AI 导演
 
@@ -292,7 +290,6 @@ uv run beatforge download-models my-mv/project.toml
 subtitle_font = "auto"
 subtitle_fonts_dir = "fonts"
 subtitle_effect = "auto"
-subtitle_layout = "free"
 subtitle_fill = "solid"
 subtitle_outline = 1.1
 subtitle_max_outline = 2.4
@@ -304,27 +301,17 @@ image_composite_ratio = 0.24
 max_composite_images = 3
 avoid_asset_repeats = true
 transition_density = 0.35
-# 以下三项已废弃（单图改为全出血，不再有虚化底与前景缩放），保留仅为兼容旧工程
-blurred_image_background = true
-image_background_blur = 26.0
-image_foreground_scale = 0.92
 vignette = true
 film_grain = 1.6
 look_strength = 0.72
 shot_match_strength = 0.3
 ```
 
-### 版式：让字幕成为画面的一部分
+### 版式：底部居中一行
 
-默认的 `subtitle_layout = "free"` 不做底部字幕条。它参考官方歌词 MV 的做法，把一句歌词**按歌手换气的位置切开**，分片摆到画面里主体不占的地方，每片在自己被唱到的时刻淡入：
+字幕只有一种版式：**底部居中一行**。曾经存在一个 `subtitle_layout = "free"` 的自由版式——把一句歌词切开、撒到画面里主体不占的地方——实测它读起来跳脱、不聚焦：一行字的出现位置每次都变，观众的注意力被排版抢走而不是被画面留住，所以整个机制（十套轮转版式、分片淡入、二维避让）已整体移除，配置项也随之消失。
 
-- **断句在停顿处**，不在字数中点。中文没有词间空格，按字数平分会把词切开——"黎明照亮天空"对半分成"黎明照 / 亮天空"，把"照亮"劈成两半。所以断点取**逐字时间轴里最长的那段静音**（`_MIN_BREAK_SECONDS = 0.22`）；没有逐字时间轴时退到标点；两者都没有就**整句不拆**，只做自由摆放；
-- **十套版式轮转**，每句走不同的构图：上下夹持、升/降对角、同基线拉开间距、左对齐堆叠、右对齐堆叠、居中紧堆、对角两角、两侧贴边、下沉居中。版式表按"给中间留多少空间"排序，轮转步长与表长互质，所以**十套走完才重复**，且相邻两句的构图必然不同。每套版式都混用左/中/右对齐——只换位置不换对齐，读起来仍然像同一套构图换了地方；
-- **摆位避开主体**，用 `focus_point`（素材阶段已经估好的主体中心）。**避让是二维的**：参考片把字摆在主体**旁边**的次数和摆在上下一样多，只按垂直方向避让会把这类版式全部否掉——早先的版本就是这样，结果主体一偏，整首歌塌回两组固定位置。现在的做法是把候选版式**整体平移**出主体所在的方框，平移到不了就**换下一套版式**（最多试 4 套），所以主体偏侧时版式的多样性也保得住；
-- **每句有一点点确定性微偏移**（由行号算出，不用随机数），免得同一套版式在一首歌里第二次出现时落在完全相同的像素上；
-- **每片按演唱时刻出现**。整句不再一次性出现，而是随着演唱在画面各处依次亮起——这是参考片最核心的一条，也是它读起来"在画面里"而不是"浮在画面上"的原因。所以自由版式下 `karaoke` 不再逐字扫光：分片本身已经承载了时间信息，再扫一遍是把同一件事说两遍。
-
-`subtitle_layout = "band"` 恢复传统的底部居中一行，逐字扫光的 `karaoke` 也在那个版式下保留。band 版式**不下发 `\pos`**（居中由样式自身的对齐决定），这也是它"就是底部一行"的定义。`subtitle_outline` 默认 1.1（发丝描边）；参考片是**完全无描边**，设成 `0` 可以得到同样的效果，但需要画面本身够暗——白字落在亮部会读不出来。
+band 版式**不下发 `\pos`**（居中由样式自身的对齐决定），这也是它"就是底部一行"的定义。逐字扫光的 `karaoke` 在这个版式下保留。`subtitle_outline` 默认 1.1（发丝描边），并按背景亮度自适应（见下节）；参考片是**完全无描边**，设成 `0` 可以得到同样的效果，但需要画面本身够暗——白字落在亮部会读不出来。
 
 ### 可读性：按背景亮度自适应
 
@@ -384,11 +371,13 @@ dark = "preset:dark"
 cinematic = "preset:cinematic"
 ```
 
-若希望整首歌固定使用某个预设或自定义字体，可分别设置 `subtitle_font = "preset:minimal"` 或 `subtitle_font = "My MV Font"`。自动字幕还会对异常长的歌词单独缩小字号，普通短句保持原字号；这不会破坏逐字高亮和打字机时序。
+若希望整首歌固定使用某个预设或自定义字体，可分别设置 `subtitle_font = "preset:minimal"` 或 `subtitle_font = "My MV Font"`。**`auto` 选字体时会把项目字体目录里的家族当作一等候选**：先按家族名特征（楷→lyrical、宋/serif→cinematic、黑/sans→modern/energetic、light→dreamy 等）匹配当前情绪的预设，匹配上的项目字体排在内置候选之前；名字看不出特征的家族仍可用，但只作为默认预设（modern）的兜底，排在精选内置表之后——手写体不该只因为"用户带了"就被选进冲击段副歌。自动字幕还会对异常长的歌词单独缩小字号，普通短句保持原字号；这不会破坏逐字高亮和打字机时序。
 
-图片素材始终按**主体感知全出血**处理：等比放大到铺满画布（`force_original_aspect_ratio=increase`）后按 `focus_point` 裁切，画面里不留任何留边，也**不再有同源虚化副本**。`_adapt_image`/`_adapt_image_layers`（"同一张图分成模糊背景 + 清晰前景两个平面"）已整体删除：没有深度模型时重建出"既非双尺度副本、又真是视差"的景深在数学上做不到，任何替代都只是给普通推移改个名。
+图片素材默认按**主体感知全出血**处理：等比放大到铺满画布（`force_original_aspect_ratio=increase`）后按 `focus_point` 裁切，画面里不留任何留边，也**不再有同源虚化副本**。`_adapt_image`/`_adapt_image_layers`（"同一张图分成模糊背景 + 清晰前景两个平面"）已整体删除：没有深度模型时重建出"既非双尺度副本、又真是视差"的景深在数学上做不到，任何替代都只是给普通推移改个名。
 
-> **已废弃**：`blurred_image_background`、`image_background_blur`、`image_foreground_scale` 三项保留只为兼容旧工程，**不再影响渲染**。若旧工程的 `project.toml` 仍写着它们，本次运行会在日志里以 `deprecated-key` 记一条 WARNING，并写入 `plan.json` 的 `config_audit`。
+**但全出血有一个诚实的边界：裁切是扔画面。** 裁切窗只保留 `画布 / 放大后源图` 的比例——一张 9:16 的竖图放进 16:9 画布，纵向只剩不到六分之一；这时即便裁切中心对准主体，站在画面里的人也会被裁到只剩半截。所以素材阶段会从同一份显著性权重里测出**主体的尺寸**（`subject_span`，归一化的宽高跨度），渲染器在裁切前先检查：主体（含运镜自身推进的加深）能否完整落在裁切窗内。**装得下 → 全出血；装不下 → 整张图完整铺在一片它自己主导色的纯色衬底上**（`_frame_on_matte`，一张图只出现一次、一个尺度），宁可要一条干净的色边，也不要一张被裁掉主体的画。极端画幅的竖图因此大多走衬底路径，横图和方图基本维持全出血；这正是"保住主体"与"铺满画面"二选一时的取舍。旧工程如果手动维护过 `subject_span`，侧车文件里的值优先。
+
+> **已移除**：`blurred_image_background`、`image_background_blur`、`image_foreground_scale`、`subtitle_layout` 四个配置项已删除，且**不再兼容**——旧工程里还写着它们的 `project.toml` 会在加载时报错并点名具体的键，请直接删掉那些行。宁可加载失败，也不要"收下了但悄悄无效"。
 
 图片镜头不再只有随机推拉。规划器会参考歌曲段落、局部能量、旋律变化以及 AI 导演给出的 `edit_intent`，自动选择效果，并把结果和辅助图层写入 `plan.json`。单图运镜按**性格**区分，而不是按幅度区分——漂移保持构图只做横移，推轨则明确承诺一次推进，冲击快到位后定住，呼吸是膨胀后回到原位：
 
@@ -826,17 +815,13 @@ uv run python scripts/quad_probe.py
 uv run python scripts/edit_style_probe.py        # 同一首歌喂给全部剪辑风格，对比镜头长度/转场/景别
 uv run python scripts/font_probe.py              # 逐预设渲染，确认字体和字重真的到达了画面
 uv run python scripts/subtitle_effect_probe.py   # 逐帧比对，确认每种字幕动效真的在动
-uv run python scripts/subtitle_layout_probe.py   # 渲染四种断句路径，看每片歌词落在哪里
-uv run python scripts/subtitle_layout_probe.py --fill knockout   # 同上，镂空填充
+uv run python scripts/subtitle_legibility_probe.py # 亮/暗两种底色下确认自适应描边真的在保护可读性
 uv run python scripts/cut_effect_probe.py        # 在真实切点上确认闪光/漏光/烧毁真的发生
 ```
 
 字体这条链路的失效方式特别隐蔽：目录不可达、家族名不存在、可变字体的字重没被应用，三种都会渲染出一帧**完全合法但字体不对**的画面。所以 `font_probe.py` 量的是墨量而不是读配置——逐预设列一遍实际用到的 face，再把同一个家族在 `\b300/400/700` 下的墨量排开（**不随字重变化就说明字重没送达画面**），最后对比有/无 `fontsdir` 的差别。
 
 字幕探针同时检查"有没有画出来"（墨量）和"有没有在动"（相邻帧差）；效果转场探针同时看均值亮度、空间标准差和暖度，因为噪点和通道分离几乎不改变均值。
-
-版式探针不依赖 LRC——自由排版要的"歌手在哪换气"是 LRC 带不了的信息——所以它直接构造带逐字时间轴的歌词，走真实的 `render()`，再把每个镜头的三帧铺成一张图，一眼就能看出每片落在哪、什么时候出现。改落点或版式前先跑它。
-
 调 `vision_input_pixels` 之前先量一遍，它会把两条路径放在各自的进程里测，峰值读数才各归各的：
 
 ```powershell

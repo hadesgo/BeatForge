@@ -65,7 +65,7 @@ def build(tmp: Path, backdrop: tuple[int, int, int], width: int, height: int, fp
     return RenderConfig(
         width=width, height=height, fps=fps, crf=28, preset="ultrafast",
         subtitle_size=round(height * .07), subtitle_margin=round(height * .09),
-        subtitle_layout="free", subtitle_fill="solid", subtitle_outline=1.1,
+        subtitle_fill="solid", subtitle_outline=1.1,
         film_grain=0, vignette=False, subtitle_font="preset:cinematic",
     )
 

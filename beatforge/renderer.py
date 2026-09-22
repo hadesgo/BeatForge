@@ -11,7 +11,7 @@ from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection
 from beatforge.fonts import stage_fonts
 from beatforge.legibility import adaptive_outline, estimate_region_luma, needs_local_dim
-from beatforge.lyrics import LyricLine, Placement, plan_placements, write_ass
+from beatforge.lyrics import LyricLine, write_ass
 from beatforge.planner import IMAGE_COMPOSITES, Shot
 from beatforge.runtime import command, duration
 
@@ -28,9 +28,9 @@ _KNOCKOUT_SATURATION = 1.25
 #: letters' own halo rather than the whole frame - enough to seat the type, no more.
 _SUBTITLE_DIM = -0.14
 
-#: Half the padding drawn around a line's placements when its backdrop is measured, as
-#: fractions of the frame. The measured box is a little larger than the type itself, so a
-#: bright edge just outside the letters still counts towards the reading.
+#: The subtitle band, widened a little for the measurement, as fractions of the frame.
+#: The measured box is a little larger than the type itself, so a bright edge just
+#: outside the letters still counts towards the reading.
 _LINE_REGION_X = .16
 _LINE_REGION_Y = .07
 
@@ -77,10 +77,9 @@ def render(
     # ones - see ``fonts.stage_fonts``. Collecting it here rather than passing the
     # project's own directory means the bundled families are actually reachable.
     fonts_dir = stage_fonts(config.subtitle_fonts_dir)
-    placements = _subtitle_placements(lyrics, shots, config)
     # Read the backdrop under each line, so a line over a bright beach gets a heavier
     # outline than one over a night scene (R-05). The reading is purely CPU.
-    line_lumas = _subtitle_lumas(lyrics, shots, placements, config, cache)
+    line_lumas = _subtitle_lumas(lyrics, shots, config, cache)
     line_outlines = [
         adaptive_outline(
             luma, config.subtitle_outline, max_outline=config.subtitle_max_outline,
@@ -93,7 +92,7 @@ def render(
         font=art.font, size=config.subtitle_size, weight=art.font_weight,
         margin=config.subtitle_margin, effect=art.base_subtitle_effect,
         highlight_color=art.highlight_color, line_effects=art.line_effects,
-        placements=placements, outline=config.subtitle_outline,
+        outline=config.subtitle_outline,
         line_outlines=line_outlines,
         mask_only=config.subtitle_fill == "knockout",
     )
@@ -194,25 +193,6 @@ def _legibility_graph(
     )
 
 
-def _subtitle_placements(
-    lyrics: list[LyricLine], shots: list[Shot], cfg: RenderConfig,
-) -> list[list[Placement]] | None:
-    """Free-layout positions for each lyric, or ``None`` for the classic bottom band.
-
-    The point of the free layout is that the type shares the frame with the subject
-    instead of sitting under it, so each line needs to know where its subject is -
-    which is the shot it lands in, and the focus point the media pass already
-    estimated for that shot.
-    """
-    if cfg.subtitle_layout != "free" or not lyrics:
-        return None
-    return plan_placements(
-        lyrics, _lyric_focus_points(lyrics, shots),
-        width=cfg.width, height=cfg.height,
-        margin=cfg.subtitle_margin, size=cfg.subtitle_size,
-    )
-
-
 def _lyric_shot_indices(lyrics: list[LyricLine], shots: list[Shot]) -> list[int]:
     """Which shot each lyric line lands in.
 
@@ -245,15 +225,15 @@ def _lyric_focus_points(
 
 
 def _subtitle_lumas(
-    lyrics: list[LyricLine], shots: list[Shot], placements: list[list[Placement]] | None,
+    lyrics: list[LyricLine], shots: list[Shot],
     cfg: RenderConfig, cache: Path,
 ) -> list[float]:
     """The backdrop luminance under each lyric line, for the outline and dim decisions.
 
     The reading is taken from the *source* media of the shot the line lands in, over the
-    region the line occupies - the band it sits in, or the box its placements cover. A
-    video contributes a single cached frame. Anything unreadable returns a neutral
-    mid-grey, so a lyric always gets an outline and never blocks a render.
+    band at the foot of the frame the line sits in. A video contributes a single cached
+    frame. Anything unreadable returns a neutral mid-grey, so a lyric always gets an
+    outline and never blocks a render.
     """
     if not lyrics:
         return []
@@ -266,28 +246,14 @@ def _subtitle_lumas(
         shot = shots[_lyric_shot_indices(lyrics, shots)[index]]
         focus = shot.focus_point if shot.focus_point and len(shot.focus_point) == 2 else None
         lumas.append(estimate_region_luma(
-            shot.file, shot.kind, focus, _line_region(index, placements, cfg),
+            shot.file, shot.kind, focus, _line_region(cfg),
             legibility_cache, at=shot.source_start,
         ))
     return lumas
 
 
-def _line_region(
-    index: int, placements: list[list[Placement]] | None, cfg: RenderConfig,
-) -> tuple[float, float, float, float]:
-    """The normalised box a line occupies: its placements, or the bottom band.
-
-    With the free layout the box is drawn around the fragments the line was placed at; in
-    the band layout it is the strip at the foot of the frame the centred line sits in.
-    """
-    if placements and index < len(placements) and placements[index]:
-        row = placements[index]
-        xs = [fragment.x / max(cfg.width, 1) for fragment in row]
-        ys = [fragment.y / max(cfg.height, 1) for fragment in row]
-        return (
-            max(0.0, min(xs) - _LINE_REGION_X), max(0.0, min(ys) - _LINE_REGION_Y),
-            min(1.0, max(xs) + _LINE_REGION_X), min(1.0, max(ys) + _LINE_REGION_Y),
-        )
+def _line_region(cfg: RenderConfig) -> tuple[float, float, float, float]:
+    """The normalised box a line occupies: the strip at the foot of the frame."""
     margin = cfg.subtitle_margin / max(cfg.height, 1)
     size = cfg.subtitle_size / max(cfg.height, 1)
     return (0.0, max(0.0, 1.0 - margin - size), 1.0, 1.0)
@@ -758,14 +724,26 @@ def _image_filter_graph(
     # backdrop and no scaled foreground any more; that pair was one picture at two
     # scales, which is the double the rework exists to kill. The scale also converts
     # the still's full-range decode to the limited range the delivery expects.
-    _fill_frame(filters, 0, "adapted", cfg.width, cfg.height,
-                focus=shot.focus_point, full_range=True)
+    #
+    # Full bleed throws picture away, and a crop centred on the subject's *point* can
+    # still behead a subject that is tall in the frame - a standing figure in a 9:16
+    # photo loses half its height to a 16:9 window. So the move is computed first and
+    # the subject's measured extent is checked against the window the crop (deepened by
+    # the move's own zoom) will actually keep: a subject that survives gets the full
+    # bleed; one that does not gets the whole picture on a flat matte of its own
+    # dominant colour instead - one picture, once, no double.
     move = _CAMERA_MOVES.get(effect, _CAMERA_MOVES["cinematic_depth"])
     # A breathe shot, or the outro, releases rather than drives: reverse a push so
     # the frame opens up instead of closing in. Moves that already end where they
     # started - a drift, a breathe - are left alone.
     if (shot.edit_intent == "breathe" or shot.section == "outro") and move.zoom_to > move.zoom_from:
         move = replace(move, zoom_from=move.zoom_to, zoom_to=move.zoom_from, ease="out")
+    if _subject_survives(shot, move, cfg):
+        _fill_frame(filters, 0, "adapted", cfg.width, cfg.height,
+                    focus=shot.focus_point, full_range=True)
+    else:
+        _frame_on_matte(filters, 0, "adapted", cfg.width, cfg.height,
+                        shot.source_color, cfg, duration)
     quad = _camera_quad(move, amount, direction, frames, cfg.fps, cfg.height / cfg.width)
     filters.append(f"[adapted]{_perspective_filter(quad)}[moved]")
     current = "[moved]"
@@ -1075,6 +1053,62 @@ def _focus_pull(filters: list[str], label: str, cfg: RenderConfig, duration: flo
         f"all_expr='A*clip(T/{span:.4f},0,1)+B*(1-clip(T/{span:.4f},0,1))'[focused]"
     )
     return "[focused]"
+
+
+def _subject_survives(shot: Shot, move: _CameraMove, cfg: RenderConfig) -> bool:
+    """Does the subject stay inside the window a full-bleed crop (and its move) keeps?
+
+    The crop keeps ``keep = canvas / scaled_source`` of the picture on each axis, and the
+    camera move's own zoom deepens that by ``zoom_to``. The window's position is clamped
+    into the frame, so a subject near an edge can fall outside a window that is large
+    enough for it - which is why the *clamped* interval is checked, not just the size.
+    Shots with no measured span (videos, sidecars that omit it) pass: their own
+    cinematography decides what stays in frame.
+    """
+    span = shot.subject_span
+    if not span or len(span) != 2 or shot.source_width <= 0 or shot.source_height <= 0:
+        return True
+    scale = max(cfg.width / shot.source_width, cfg.height / shot.source_height)
+    margin = .86
+    focus_x, focus_y = _safe_focus(shot.focus_point)
+    for centre, extent, kept in (
+        (focus_x, float(span[0]), cfg.width / (shot.source_width * scale)),
+        (focus_y, float(span[1]), cfg.height / (shot.source_height * scale)),
+    ):
+        keep = min(1.0, kept / max(1.0, move.zoom_to))
+        if keep >= 1.0:
+            continue
+        low = min(max(centre - keep / 2, 0.0), 1.0 - keep)
+        high = low + keep
+        subject_lo = max(0.0, centre - extent / 2)
+        subject_hi = min(1.0, centre + extent / 2)
+        if extent > (high - low) * margin or subject_lo < low or subject_hi > high:
+            return False
+    return True
+
+
+def _frame_on_matte(
+    filters: list[str], input_index: int, label: str, width: int, height: int,
+    colour: list[int], cfg: RenderConfig, duration: float,
+) -> None:
+    """Fit the *whole* picture on a flat tile of its own dominant colour.
+
+    The fallback when a full-bleed crop would cut the subject: nothing is cropped at
+    all, so the subject survives by construction, and the letterbox is filled with a
+    still colour rather than with a blurred copy of the picture - one image, at one
+    scale, which is the line the single-image rework will not cross.
+    """
+    base = list(colour)[:3]
+    padded = base + [128] * (3 - len(base))
+    red, green, blue = (max(0, min(255, int(value))) for value in padded)
+    tile = f"0x{red:02X}{green:02X}{blue:02X}"
+    filters.append(
+        f"[{input_index}:v]scale={width}:{height}:"
+        f"force_original_aspect_ratio=decrease:flags=lanczos,setsar=1[{label}pic];"
+        f"color=c={tile}:s={width}x{height}:r={cfg.fps}:d={_plane_duration(duration, cfg):.4f}[{label}bg];"
+        f"[{label}bg][{label}pic]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1,"
+        f"format=yuv420p[{label}]"
+    )
 
 
 def _safe_focus(value: list[float]) -> tuple[float, float]:

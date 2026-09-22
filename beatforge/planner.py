@@ -77,6 +77,9 @@ class Shot:
     luma: float = 0.5
     edge_luma: float = 0.5
     noise_score: float = 0.0
+    #: The subject's ``(x, y)`` extents in the source, off the asset. The full-bleed
+    #: crop consults it before throwing picture away; ``None`` (videos) means no gate.
+    subject_span: list[float] | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -347,6 +350,7 @@ def create_plan(
             luma=selected.luma,
             edge_luma=selected.edge_luma,
             noise_score=selected.noise_score,
+            subject_span=selected.subject_span,
         ))
     _assign_transitions(
         shots, mood=analysis.mood, density=transition_density,

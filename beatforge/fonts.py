@@ -155,9 +155,22 @@ def resolve_subtitle_font(
     if not requested.startswith("preset:"):
         return _parse_entry(requested)
     preset = requested.partition(":")[2].strip().lower()
-    candidates = FONT_PRESETS.get(preset, FONT_PRESETS["modern"])
     available = _available_font_families(fonts_dir)
     if available:
+        # The project's own fonts come first when their name says they fit the mood;
+        # an unclassified project family still outranks the built-ins only once the
+        # curated list has had its say - a handwriting face must not be picked for an
+        # energetic chorus just because the user happened to ship it.
+        project = _project_font_families(fonts_dir)
+        project_hits = sorted(
+            name for name in project if preset in _family_presets(name)
+        )
+        project_rest = sorted(project - set(project_hits))
+        candidates = (
+            tuple(project_hits)
+            + FONT_PRESETS.get(preset, FONT_PRESETS["modern"])
+            + tuple(project_rest)
+        )
         normalized = {_normalize_font(name): name for name in available}
         for candidate in candidates:
             choice = _parse_entry(candidate)
@@ -192,6 +205,60 @@ def _custom_font_families(fonts_dir: Path | Sequence[Path] | None) -> set[str]:
             if file.suffix.casefold() in FONT_SUFFIXES:
                 families |= _font_families(file)
     return families
+
+
+def _project_font_families(fonts_dir: Path | Sequence[Path] | None) -> set[str]:
+    """Families found in the *project's* configured directories, packaged ones excluded.
+
+    A family a user drops into ``subtitle_fonts_dir`` is a statement - "I want this
+    look" - and it deserves to be chosen, not merely reachable. libass can already find
+    it once ``stage_fonts`` collects the directory; what it could not do was be
+    *selected*, because the mood presets name only the bundled families.
+    """
+    families: set[str] = set()
+    if fonts_dir is None:
+        return families
+    directories = (
+        [Path(fonts_dir)] if isinstance(fonts_dir, (str, Path)) else [Path(item) for item in fonts_dir]
+    )
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for file in sorted(directory.iterdir()):
+            if file.suffix.casefold() in FONT_SUFFIXES:
+                families |= _font_families(file)
+    return families
+
+
+#: What a family's own name says about its character, mapped onto the mood presets.
+#: The traits come from the naming conventions the bundled and commercial CJK families
+#: actually use (楷/宋/黑/圆 plus their Latin spellings), so a project font can be picked
+#: for the *right* mood instead of winning every preset by being present.
+_FAMILY_TRAITS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("楷", "kai", "wenkai", "文楷"), ("lyrical", "elegant")),
+    (("宋", "song", "明", "ming", "serif"), ("cinematic", "elegant")),
+    (("毛", "笔", "brush", "行", "草", "shu", "xing", "zhi", "志", "莽"),
+     ("brush", "script", "lyrical")),
+    (("圆", "快乐", "kuai", "round", "yuan"), ("playful",)),
+    (("黑", "hei", "sans", "gothic", "smiley", "得意", "雅"), ("modern", "energetic", "dark")),
+    (("heavy", "black", "bold", "huangyou", "黄油", "poster", "qingke"),
+     ("energetic", "poster", "dark")),
+    (("thin", "light", "细", "轻"), ("dreamy", "minimal")),
+)
+
+
+def _family_presets(family: str) -> set[str]:
+    """The mood presets this family's name says it can serve."""
+    key = _normalize_font(family)
+    presets: set[str] = set()
+    for needles, traits in _FAMILY_TRAITS:
+        if any(_normalize_font(needle) in key for needle in needles):
+            presets.update(traits)
+    if not presets:
+        # An unclassifiable family is still a family the user chose to ship; treat it
+        # as a clean sans and let it serve the default preset.
+        presets.add("modern")
+    return presets
 
 
 def _instancing_available() -> bool:

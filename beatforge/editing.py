@@ -59,7 +59,6 @@ class EditStyle:
     shot_size_contrast: float
     camera_intensity: float
     composite_ratio: float
-    subtitle_layout: str
 
 
 EDIT_STYLES: dict[str, EditStyle] = {
@@ -73,7 +72,6 @@ EDIT_STYLES: dict[str, EditStyle] = {
         # Fast cutting only reads if the shot size keeps changing - otherwise the
         # audience stops being able to tell one cut from the next.
         shot_size_contrast=.16, camera_intensity=1.25, composite_ratio=.30,
-        subtitle_layout="free",
     ),
     # ------------------------------------------------------------ 电影感长镜
     "cinematic": EditStyle(
@@ -84,7 +82,6 @@ EDIT_STYLES: dict[str, EditStyle] = {
         transition_density=.18, transition_flavour="subtle",
         # Long takes need a big size change to feel like a decision rather than a drift.
         shot_size_contrast=.20, camera_intensity=.55, composite_ratio=.12,
-        subtitle_layout="band",
     ),
     # ------------------------------------------------------------ 歌词主导
     "lyric": EditStyle(
@@ -94,7 +91,6 @@ EDIT_STYLES: dict[str, EditStyle] = {
         cut_alignment="lyric", section_speedup=.08,
         transition_density=.28, transition_flavour="subtle",
         shot_size_contrast=.14, camera_intensity=.75, composite_ratio=.20,
-        subtitle_layout="free",
     ),
     # ------------------------------------------------------------ 蒙太奇
     "montage": EditStyle(
@@ -106,7 +102,6 @@ EDIT_STYLES: dict[str, EditStyle] = {
         # Shot-size contrast is the whole grammar here: a wide next to a close-up is a
         # sentence, two mediums next to each other is a list.
         shot_size_contrast=.22, camera_intensity=.95, composite_ratio=.34,
-        subtitle_layout="free",
     ),
     # ------------------------------------------------------------ 纪实手持
     "documentary": EditStyle(
@@ -118,7 +113,6 @@ EDIT_STYLES: dict[str, EditStyle] = {
         # feel authored, which is the opposite of what this style is for.
         transition_density=.10, transition_flavour="subtle",
         shot_size_contrast=.12, camera_intensity=.85, composite_ratio=.05,
-        subtitle_layout="band",
     ),
     # ------------------------------------------------------------ 梦幻叠化
     "dream": EditStyle(
@@ -128,7 +122,6 @@ EDIT_STYLES: dict[str, EditStyle] = {
         cut_alignment="phrase", section_speedup=.05,
         transition_density=.42, transition_flavour="subtle",
         shot_size_contrast=.08, camera_intensity=.45, composite_ratio=.36,
-        subtitle_layout="free",
     ),
     # ------------------------------------------------------------ 冲击碎剪
     "impact": EditStyle(
@@ -138,7 +131,6 @@ EDIT_STYLES: dict[str, EditStyle] = {
         cut_alignment="beat", section_speedup=.30,
         transition_density=.70, transition_flavour="impact",
         shot_size_contrast=.20, camera_intensity=1.4, composite_ratio=.28,
-        subtitle_layout="free",
     ),
     # ------------------------------------------------------------ 极简留白
     "minimal": EditStyle(
@@ -151,7 +143,6 @@ EDIT_STYLES: dict[str, EditStyle] = {
         cut_alignment="phrase", section_speedup=.02,
         transition_density=.14, transition_flavour="subtle",
         shot_size_contrast=.10, camera_intensity=.35, composite_ratio=.08,
-        subtitle_layout="free",
     ),
 }
 

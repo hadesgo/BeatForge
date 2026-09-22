@@ -8,16 +8,11 @@ from PIL import Image
 
 from beatforge.legibility import adaptive_outline, estimate_region_luma, needs_local_dim
 from beatforge.lyrics import (
-    _CLEAR_X,
-    _CLEAR_Y,
     SUBTITLE_EFFECTS,
     LyricLine,
     LyricToken,
-    _fragment_half_box,
-    _overlap_fraction,
     merge_short_lines,
     parse_lrc,
-    plan_placements,
     srt_timestamp,
     write_ass,
 )
@@ -102,115 +97,50 @@ def _breathing_line() -> LyricLine:
     ])
 
 
-def test_the_free_layout_breaks_the_line_at_the_singers_pause() -> None:
-    """Not at the midpoint. Splitting down the middle cuts words in half.
+def test_every_line_is_one_centred_event_in_the_bottom_band(tmp_path: Path) -> None:
+    """The band layout is the only layout: one event per line, pinned by the style.
 
-    "黎明照亮天空" halves to "黎明照 / 亮天空", which breaks 照亮 - a break has to land
-    where the singer breathed, or the layout reads as a bug rather than as phrasing.
-    """
-    placements = plan_placements(
-        [_breathing_line()], [(.5, .5)], width=1280, height=720, margin=72, size=45,
-    )[0]
-
-    assert [fragment.text for fragment in placements] == ["你反正", "不会再担心"]
-    assert placements[1].start == 1.6, "the second fragment starts when it is sung"
-
-
-def test_the_free_layout_keeps_lines_without_a_break_whole() -> None:
-    """No pause and no punctuation means no split, however long the line is."""
-    line = LyricLine(0, 4, "城市亮起灯光", tokens=[
-        LyricToken("城市", 0.0, 1.0), LyricToken("亮起", 1.0, 2.0),
-        LyricToken("灯光", 2.0, 3.0),
-    ])
-    placements = plan_placements(
-        [line], [(.5, .5)], width=1280, height=720, margin=72, size=45,
-    )[0]
-
-    assert len(placements) == 1
-    assert placements[0].text == "城市亮起灯光"
-
-
-def test_the_free_layout_splits_on_punctuation_when_there_are_no_word_timings() -> None:
-    placements = plan_placements(
-        [LyricLine(0, 4, "那天的天气，难得放晴")], [(.5, .5)],
-        width=1280, height=720, margin=72, size=45,
-    )[0]
-
-    assert [fragment.text for fragment in placements] == ["那天的天气", "难得放晴"]
-
-
-@pytest.mark.parametrize(
-    "focus", [(.5, .5), (.5, .25), (.5, .75), (.3, .4), (.7, .6), (.5, .12), (.5, .88)],
-)
-def test_the_free_layout_keeps_the_type_off_the_subject(focus: tuple[float, float]) -> None:
-    """The whole point: the words share the frame with the subject, not sit under it.
-
-    The check is the box the subject occupies rather than a vertical ordering. The
-    reference style puts type *beside* the subject as often as above or below it, so a
-    layout that only ever moved up and down would be avoiding the wrong thing - and an
-    earlier version did exactly that, which collapsed every off-centre shot onto the
-    same two positions.
-
-    R-10 tightens this from the anchor point to the *area* the fragment and the subject
-    cover: the axis clearance still has to hold, and on top of it no more than 5% of a
-    fragment's own area may sit on the subject's box.
-    """
-    placements = plan_placements(
-        [_breathing_line()], [focus], width=1280, height=720, margin=72, size=45,
-    )[0]
-
-    assert placements
-    for fragment in placements:
-        dx = abs(fragment.x / 1280 - focus[0])
-        dy = abs(fragment.y / 720 - focus[1])
-        assert dx >= _CLEAR_X or dy >= _CLEAR_Y, (focus, fragment)
-        half = _fragment_half_box(fragment.text, 1280, 720, 45)
-        overlap = _overlap_fraction(fragment.x / 1280, fragment.y / 720, half, focus)
-        assert overlap <= .05 + 1e-9, (focus, fragment.text, overlap)
-
-
-def test_the_free_layout_does_not_repeat_itself() -> None:
-    """Ten patterns that all land in the same place are one pattern.
-
-    This is what "too rigid" looked like: three anchors, and an off-centre subject
-    collapsing even those onto two fixed positions.
+    The free layout - ten rotated patterns scattering fragments across the frame - was
+    removed on purpose: it read as jumpy and unfocused, a line's pieces appearing in
+    different places at different times. Band placement belongs to the ASS style
+    (``Alignment 2`` + ``MarginV``), so no event may carry its own ``\\pos`` or
+    ``\\move`` - that is what keeps every line exactly where a bottom band sits.
     """
     lines = [
-        LyricLine(i * 4, i * 4 + 4, f"第{i}句歌词要断成两半", tokens=[
-            LyricToken("第i句", i * 4, i * 4 + 1.5),
-            LyricToken("歌词要", i * 4 + 2.0, i * 4 + 3.0),
-            LyricToken("断成两半", i * 4 + 3.0, i * 4 + 4.0),
-        ])
-        for i in range(10)
+        _breathing_line(),
+        LyricLine(4, 8, "城市亮起灯光"),
+        LyricLine(8, 12, "那天的天气，难得放晴"),
     ]
-    placed = plan_placements(
-        lines, [(.5, .5)] * len(lines), width=1280, height=720, margin=72, size=45,
-    )
-
-    shapes = [tuple((f.x, f.y, f.align) for f in row) for row in placed]
-    assert len(set(shapes)) >= 8, f"only {len(set(shapes))} distinct layouts in ten lines"
-    assert all(
-        shapes[index] != shapes[index - 1] for index in range(1, len(shapes))
-    ), "two consecutive lines landed on the same layout"
-
-
-def test_a_fragment_stays_hidden_until_it_is_sung(tmp_path: Path) -> None:
-    """The free layout assembles the line across the frame over its own duration."""
-    line = _breathing_line()
-    placements = plan_placements(
-        [line], [(.5, .5)], width=1280, height=720, margin=72, size=45,
-    )
-    target = tmp_path / "placed.ass"
-    write_ass([line], target, width=1280, height=720, font="sans", size=45, margin=72,
-              effect="cinematic", placements=placements)
+    target = tmp_path / "band.ass"
+    write_ass(lines, target, width=1280, height=720, font="sans", size=45, margin=72,
+              effect="cinematic")
 
     events = [row for row in target.read_text("utf-8-sig").splitlines()
               if row.startswith("Dialogue")]
-    assert len(events) == 2, "one event per fragment"
-    assert "\\pos(" in events[0] and "\\pos(" in events[1]
-    # The first fragment comes in with the line; the second waits for its own moment.
-    assert "\\alpha&HFF&" not in events[0]
-    assert "\\alpha&HFF&\\t(1600,1860,\\alpha&H00&)" in events[1]
+    assert len(events) == 3, "one event per line - the line is never split into fragments"
+    for event in events:
+        assert "\\pos(" not in event, "a band event must not pin its own position"
+        assert "\\move(" not in event, "a band event must not carry its own motion"
+        assert "\\alpha&HFF&" not in event, "no fragment-timing hold may return"
+    assert "Alignment" not in "\n".join(events)
+    style = next(row for row in target.read_text("utf-8-sig").splitlines()
+                 if row.startswith("Style:"))
+    assert style.endswith(",2,48,48,72,1") or ",2,48,48," in style, (
+        "the style must anchor centred bottom (numpad 2) with the project margin"
+    )
+
+
+def test_karaoke_still_sweeps_in_the_band(tmp_path: Path) -> None:
+    """The band keeps the per-character sweep: one centred line is what karaoke is for."""
+    line = _breathing_line()
+    target = tmp_path / "karaoke.ass"
+    write_ass([line], target, width=1280, height=720, font="sans", size=45, margin=72,
+              effect="karaoke")
+
+    events = [row for row in target.read_text("utf-8-sig").splitlines()
+              if row.startswith("Dialogue")]
+    assert len(events) == 1
+    assert "\\k" in events[0], "the karaoke sweep was lost with the free layout"
 
 
 def test_the_band_layout_is_unchanged_without_placements(tmp_path: Path) -> None:
@@ -325,24 +255,6 @@ def test_a_short_first_line_merges_into_the_second() -> None:
     )
     assert len(merged) == 1
     assert merged[0].text == "啊你好"
-
-
-def test_a_tail_shorter_than_the_floor_is_not_split_into_its_own_event() -> None:
-    """R-10: a fragment that would flash for less than the floor is folded back."""
-    line = LyricLine(0, 1.0, "星光", tokens=[
-        LyricToken("星", 0.0, .4), LyricToken("光", .8, .95),
-    ])
-    kept = plan_placements(
-        [line], [(.5, .5)], width=1280, height=720, margin=72, size=45,
-        min_fragment_seconds=.6,
-    )[0]
-    assert len(kept) == 1, "a 0.2s tail was given its own event"
-
-    split = plan_placements(
-        [line], [(.5, .5)], width=1280, height=720, margin=72, size=45,
-        min_fragment_seconds=.0,
-    )[0]
-    assert len(split) == 2, "the split must still be available when each half lives long enough"
 
 
 def test_write_ass_emits_a_per_line_outline(tmp_path: Path) -> None:

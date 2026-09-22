@@ -36,6 +36,10 @@ class VisualMetrics:
     #: Normalised high-frequency energy. A source that already carries noise (a
     #: double-compressed JPEG) scores high and must not be given more grain.
     noise_score: float
+    #: ``(x, y)`` extents of the subject box, 0..1 per axis - the region a full-bleed
+    #: crop must keep in view. ``None`` when not measured (videos, decode failures).
+
+    subject_span: list[float] | None = None
 
 
 @dataclass(slots=True)
@@ -53,6 +57,11 @@ class MediaAsset:
     dominant_color: list[int] = field(default_factory=lambda: [128, 128, 128])
     shot_size: str = "unknown"
     focus_point: list[float] = field(default_factory=lambda: [.5, .5])
+    #: How much of the frame the subject occupies, as ``(x, y)`` extents in ``[0, 1]`` -
+    #: the box a full-bleed crop has to keep in view. Measured from the same saliency
+    #: field that places ``focus_point``; ``None`` for videos, whose own cinematography
+    #: already decides what stays in frame and whose subject is a moving target.
+    subject_span: list[float] | None = None
     luma: float = 0.5
     edge_luma: float = 0.5
     noise_score: float = 0.0
@@ -63,7 +72,7 @@ class MediaAsset:
         return data
 
 
-def discover_media(directory: Path, audit=None) -> list[MediaAsset]:
+def discover_media(directory: Path) -> list[MediaAsset]:
     assets: list[MediaAsset] = []
     for file in sorted(directory.iterdir()):
         suffix = file.suffix.lower()
@@ -73,16 +82,6 @@ def discover_media(directory: Path, audit=None) -> list[MediaAsset]:
         info = probe(file)
         stream = next((x for x in info.get("streams", []) if x.get("codec_type") == "video"), {})
         sidecar = _sidecar(file)
-        if audit is not None and "camera_motion" in sidecar:
-            # ``camera_motion`` was a dead field: nothing filled it, so every asset read
-            # "unknown" while the planner scored on it and the director brief carried it.
-            # It is gone from the model (R-11); a sidecar that still names it is noted so
-            # the user is not left believing it does something.
-            audit.record(
-                "camera_motion", requested=sidecar["camera_motion"], effective=None,
-                overridden_by="deprecated-key",
-                reason=f"{file.name} 的 sidecar 携带已移除字段，已忽略",
-            )
         metrics = _visual_quality(
             file, kind, int(stream.get("width", 0)), int(stream.get("height", 0)),
         )
@@ -96,6 +95,7 @@ def discover_media(directory: Path, audit=None) -> list[MediaAsset]:
             dominant_color=list(sidecar.get("dominant_color", metrics.color)),
             shot_size=sidecar.get("shot_size", "unknown"),
             focus_point=_validated_focus(sidecar.get("focus_point", metrics.focus)),
+            subject_span=_validated_span(sidecar.get("subject_span", metrics.subject_span)),
             luma=float(sidecar.get("luma", metrics.luma)),
             edge_luma=float(sidecar.get("edge_luma", metrics.edge_luma)),
             noise_score=float(sidecar.get("noise_score", metrics.noise_score)),
@@ -145,6 +145,7 @@ def _visual_quality(
             round(float(np.clip(luma, 0, 1)), 4),
             round(float(np.clip(edge_luma, 0, 1)), 4),
             round(noise_score, 4),
+            estimate_subject_span(image),
         )
     except (OSError, ValueError):
         return VisualMetrics(round(.4 + resolution * .3, 4), [128, 128, 128], [.5, .5], .5, .5, 0.0)
@@ -202,6 +203,49 @@ def estimate_focus_point(image: Image.Image) -> list[float]:
     return [round(float(np.clip(focus_x, .2, .8)), 4), round(float(np.clip(focus_y, .18, .82)), 4)]
 
 
+def estimate_subject_span(image: Image.Image) -> list[float] | None:
+    """How much of the frame the salient subject occupies, as ``(x, y)`` extents.
+
+    The full-bleed crop keeps a canvas-shaped window out of the picture; whether the
+    subject survives that window is a question about the subject's *extent*, which a
+    single focus point cannot answer. The spread of the same saliency weights that place
+    ``estimate_focus_point`` does: four standard deviations covers a compact subject and
+    spreads across the frame for a busy or multi-subject one, which is the honest
+    reading - a photo of many things should not be cropped hard.
+    """
+    thumbnail = image.convert("RGB")
+    thumbnail.thumbnail((192, 192))
+    pixels = np.asarray(thumbnail, dtype=np.float32) / 255
+    if pixels.size == 0:
+        return None
+    luma = pixels[..., 0] * .2126 + pixels[..., 1] * .7152 + pixels[..., 2] * .0722
+    grad_x = np.abs(np.diff(luma, axis=1, prepend=luma[:, :1]))
+    grad_y = np.abs(np.diff(luma, axis=0, prepend=luma[:1, :]))
+    saturation = pixels.max(axis=2) - pixels.min(axis=2)
+    saturation_edges = (
+        np.abs(np.diff(saturation, axis=1, prepend=saturation[:, :1]))
+        + np.abs(np.diff(saturation, axis=0, prepend=saturation[:1, :]))
+    )
+    saliency = grad_x + grad_y + saturation_edges * .12
+    height, width = saliency.shape
+    yy, xx = np.mgrid[0:height, 0:width]
+    center_prior = np.exp(-(((xx / max(width - 1, 1) - .5) / .48) ** 2 + ((yy / max(height - 1, 1) - .46) / .52) ** 2))
+    saliency *= .45 + .55 * center_prior
+    threshold = float(np.quantile(saliency, .72))
+    weights = np.where(saliency >= threshold, saliency, 0)
+    total = float(weights.sum())
+    if total < 1e-6:
+        return None
+    mean_x = float((weights * xx).sum() / total)
+    mean_y = float((weights * yy).sum() / total)
+    var_x = float((weights * (xx - mean_x) ** 2).sum() / total)
+    var_y = float((weights * (yy - mean_y) ** 2).sum() / total)
+    scale_x, scale_y = max(width - 1, 1), max(height - 1, 1)
+    span_x = float(np.clip(4 * math.sqrt(var_x) / scale_x, .15, 1.0))
+    span_y = float(np.clip(4 * math.sqrt(var_y) / scale_y, .15, 1.0))
+    return [round(span_x, 4), round(span_y, 4)]
+
+
 def _validated_focus(value: object) -> list[float]:
     if isinstance(value, (list, tuple)) and len(value) == 2:
         try:
@@ -209,3 +253,16 @@ def _validated_focus(value: object) -> list[float]:
         except (TypeError, ValueError):
             pass
     return [.5, .5]
+
+
+def _validated_span(value: object) -> list[float] | None:
+    """A sidecar-provided subject span, or ``None`` when absent/unusable."""
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            return [
+                round(float(np.clip(float(value[0]), .05, 1.0)), 4),
+                round(float(np.clip(float(value[1]), .05, 1.0)), 4),
+            ]
+        except (TypeError, ValueError):
+            pass
+    return None

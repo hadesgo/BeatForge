@@ -12,7 +12,7 @@ from PIL import Image
 from beatforge.audio import AudioAnalysis
 from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection, create_art_direction
-from beatforge.lyrics import LyricLine, Placement
+from beatforge.lyrics import LyricLine
 from beatforge.planner import IMAGE_COMPOSITES, Shot, ShotLayer
 from beatforge.renderer import (
     _CAMERA_MOVES,
@@ -171,7 +171,7 @@ def test_all_still_image_effects_render(effect: str, tmp_path: Path) -> None:
     )
     cfg = RenderConfig(
         width=160, height=90, fps=10, crf=35, preset="ultrafast",
-        image_background_blur=4, film_grain=0, vignette=False,
+        film_grain=0, vignette=False,
     )
     analysis = make_analysis(
         duration=.5, bpm=120, beats=[0, .5], sections=[0, .5], energy=.7,
@@ -617,7 +617,6 @@ def test_the_iris_mask_opens_from_a_keyhole_to_the_whole_frame(tmp_path: Path) -
     )
     cfg = RenderConfig(
         width=320, height=180, fps=10, crf=28, preset="ultrafast",
-        image_background_blur=0, image_foreground_scale=1.0,
         film_grain=0, vignette=False,
     )
     analysis = make_analysis(
@@ -974,7 +973,7 @@ def test_the_knockout_fill_renders_and_differs_from_solid(tmp_path: Path) -> Non
     for fill in ("solid", "knockout"):
         cfg = RenderConfig(width=320, height=180, fps=12, crf=30, preset="ultrafast",
                            film_grain=0, vignette=False, subtitle_fill=fill,
-                           subtitle_layout="band", subtitle_size=28, subtitle_margin=18)
+                           subtitle_size=28, subtitle_margin=18)
         output = tmp_path / f"{fill}.mp4"
         render([shot], [line], music, output, tmp_path / f"cache-{fill}", cfg,
                _transition_art())
@@ -988,7 +987,7 @@ def test_the_knockout_fill_renders_and_differs_from_solid(tmp_path: Path) -> Non
 
 def _composite_cfg() -> RenderConfig:
     return RenderConfig(width=320, height=180, fps=10, crf=35, preset="ultrafast",
-                        film_grain=0, vignette=False, image_background_blur=8)
+                        film_grain=0, vignette=False)
 
 
 def _composite_shot(effect: str, files: list[Path]) -> Shot:
@@ -1155,7 +1154,7 @@ def test_a_single_image_is_cropped_full_bleed(tmp_path: Path) -> None:
                 image_effect="cinematic_depth", source_width=180, source_height=320,
                 focus_point=[.5, .4])
     cfg = RenderConfig(width=320, height=180, fps=10, crf=35, preset="ultrafast",
-                       film_grain=0, vignette=False, image_background_blur=8)
+                       film_grain=0, vignette=False)
     art = create_art_direction(
         make_analysis(duration=1, bpm=120, beats=[0, 1], sections=[0, 1], energy=.6),
         [], cfg,
@@ -1170,6 +1169,47 @@ def test_a_single_image_is_cropped_full_bleed(tmp_path: Path) -> None:
     assert "gblur" not in graph, "the same-image blurred backdrop came back"
     # The still's full-range decode is converted to limited delivery (R-06).
     assert "in_range=full:out_range=limited" in graph
+
+
+def test_a_subject_that_would_be_cut_gets_the_whole_picture_on_a_matte(tmp_path: Path) -> None:
+    """R-04's gate: a tall subject in a wide window is preserved, not cropped away.
+
+    A full-bleed crop centred on the subject's *point* still beheads a subject that is
+    tall in the frame - a standing figure in a 9:16 photo keeps less than half its
+    height in a 16:9 window. When the measured subject extent cannot fit the window the
+    move deepens, the whole picture is fitted onto a flat matte of its own dominant
+    colour instead: one picture, once, and every part of the subject in view.
+    """
+    source = tmp_path / "figure.jpg"
+    Image.new("RGB", (90, 320), (70, 90, 140)).save(source)
+    shot = Shot(0, 0, 1, 1, 0, str(source), "image", 0, "", .6, "steady", "cut", .8,
+                image_effect="cinematic_depth", source_width=90, source_height=320,
+                focus_point=[.5, .45], subject_span=[.5, .8])
+    cfg = RenderConfig(width=320, height=180, fps=10, crf=35, preset="ultrafast",
+                       film_grain=0, vignette=False)
+    art = create_art_direction(
+        make_analysis(duration=1, bpm=120, beats=[0, 1], sections=[0, 1], energy=.6),
+        [], cfg,
+    )
+
+    graph = ";".join(_image_filter_graph(shot, cfg, art, 1.0, 1)[0])
+
+    # The whole picture is fitted, on the flat matte - never cover-cropped.
+    assert "force_original_aspect_ratio=decrease" in graph, "the subject was cropped away"
+    assert "gblur" not in graph, "the matte must not be a blurred copy of the picture"
+    assert "split=2" not in graph, "no same-source dual-scale copy may return"
+    assert "color=c=0x" in graph, "the letterbox was not filled with the dominant colour"
+
+    # And a compact subject on a mild-aspect source still gets the full-bleed treatment:
+    # a 4:3 photo keeps three quarters of its height in a 16:9 window, so a person fits.
+    mild = tmp_path / "landscape.jpg"
+    Image.new("RGB", (320, 240), (70, 90, 140)).save(mild)
+    mild_shot = Shot(0, 0, 1, 1, 0, str(mild), "image", 0, "", .6, "steady", "cut", .8,
+                     image_effect="cinematic_depth", source_width=320, source_height=240,
+                     focus_point=[.5, .45], subject_span=[.3, .3])
+    graph = ";".join(_image_filter_graph(mild_shot, cfg, art, 1.0, 1)[0])
+    assert "force_original_aspect_ratio=increase" in graph
+    assert "force_original_aspect_ratio=decrease" not in graph
 
 
 def test_a_focus_pull_racks_focus_at_a_single_scale(tmp_path: Path) -> None:
@@ -1297,20 +1337,11 @@ def test_the_local_dim_only_fires_for_a_bright_line() -> None:
     assert _dim_windows(lines, [.2, .3, .4]) == []
 
 
-def test_the_line_region_is_the_bottom_band_for_the_classic_layout() -> None:
-    """The band layout has no placements, so its region is the strip at the foot."""
+def test_the_line_region_is_the_bottom_band() -> None:
+    """The band layout is the only layout, so its region is the strip at the foot."""
     cfg = RenderConfig(width=1280, height=720, subtitle_margin=72, subtitle_size=45)
-    x0, y0, x1, y1 = _line_region(0, None, cfg)
+    x0, y0, x1, y1 = _line_region(cfg)
     assert (x0, x1) == (0.0, 1.0)
     assert y1 == 1.0
     assert .7 < y0 < 1.0
-
-
-def test_the_line_region_wraps_the_free_layout_placements() -> None:
-    """The free layout measures the box its fragments actually cover."""
-    cfg = RenderConfig(width=1000, height=500)
-    row = [Placement("甲", 100, 100), Placement("乙", 900, 400)]
-    x0, y0, x1, y1 = _line_region(0, [row], cfg)
-    assert x0 < .1 and y0 < .2
-    assert x1 > .9 and y1 > .8
 

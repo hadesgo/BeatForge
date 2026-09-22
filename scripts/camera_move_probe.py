@@ -117,8 +117,6 @@ def main() -> int:
         shot.source_width, shot.source_height = config.width, config.height
         shot.layers = []
         shot.source_color = [128, 128, 128]
-        config.image_foreground_scale = 1.0
-        config.blurred_image_background = False
         config.shot_match_strength = 0.0
         config.look_strength = 0.0
         config.visual_effects = False

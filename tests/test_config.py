@@ -106,26 +106,42 @@ def test_explicit_distinguishes_a_choice_from_template_boilerplate() -> None:
     """显式 = 用户**选了**一个不等于默认值的取值，而不是"键出现过"。
 
     模板会把 ``min_shot_seconds = 1.8``、``max_shot_seconds = 5.5``、
-    ``subtitle_layout``、``transition_density``、``image_composite_ratio`` 写进每个
-    ``init`` 生成的工程。若"键出现过"就算表态，这些样板行会永久顶掉 edit_style 的
-    节奏接管——``edit_style = "beat"`` 在所有新工程上都只改转场、不改镜长，而且静默。
+    ``transition_density``、``image_composite_ratio`` 写进每个 ``init`` 生成的工程。
+    若"键出现过"就算表态，这些样板行会永久顶掉 edit_style 的节奏接管——
+    ``edit_style = "beat"`` 在所有新工程上都只改转场、不改镜长，而且静默。
     实测（my-mv）：raw ``model_fields_set`` 判定下风格镜长接管完全失效。
     所以判据是「写过 **且** 不等于默认值」。真想压过风格的用户用
     ``edit_style = "manual"``；风格接管到的每一项都经 audit 留痕，不静默。
     """
     from beatforge.config import RenderConfig
 
-    chosen = RenderConfig(min_shot_seconds=2.5, max_shot_seconds=6.0, subtitle_layout="band")
+    chosen = RenderConfig(min_shot_seconds=2.5, max_shot_seconds=6.0, vignette=False)
     assert "min_shot_seconds" in chosen.explicit()
     assert "max_shot_seconds" in chosen.explicit()
-    assert "subtitle_layout" in chosen.explicit()  # band != 默认的 free
+    assert "vignette" in chosen.explicit()  # False != 默认的 True
 
     boilerplate = RenderConfig(min_shot_seconds=1.8, max_shot_seconds=5.5)
     assert "min_shot_seconds" not in boilerplate.explicit()
     assert "max_shot_seconds" not in boilerplate.explicit()
     # 没写过的键不在集合里，仍可被 style 接管。
-    assert "subtitle_layout" not in boilerplate.explicit()
     assert "transition_density" not in boilerplate.explicit()
+    assert "image_composite_ratio" not in boilerplate.explicit()
+
+
+def test_removed_keys_are_a_hard_error_not_a_shrug() -> None:
+    """不再兼容：被移除的配置项必须让加载失败并点名，而不是被悄悄忽略。
+
+    上一轮把单图三键留成"仍接收但无效"，结果"为兼容而收下"和"用户写错了"在程序里
+    无法区分——这正是静默失效家族的另一种形态。现在 RenderConfig 禁止多余键。
+    """
+    import pytest
+
+    from beatforge.config import RenderConfig
+
+    for key in ("blurred_image_background", "image_background_blur", "image_foreground_scale",
+                "subtitle_layout"):
+        with pytest.raises(ValueError, match=key):
+            RenderConfig(**{key: True if key.startswith("blurred") else 1})
 
 
 def test_no_silent_config_override(caplog) -> None:
@@ -135,7 +151,7 @@ def test_no_silent_config_override(caplog) -> None:
     (a) 用户**选了**非默认值 → 生效值 == 用户值，且**没有** WARNING；
     (b) 模板样板形状（键出现、值等于默认值）→ 风格接管，但每一项都要留痕并 WARNING
         ——这正是模板陷阱的修复点：接管发生了，但绝不静默；
-    (c) 用户什么都没写 → style 接管五项，每项都要有 requested/effective/overridden_by，
+    (c) 用户什么都没写 → style 接管四项，每项都要有 requested/effective/overridden_by，
         且 caplog 里出现对应 WARNING。
     """
     import logging
@@ -148,7 +164,7 @@ def test_no_silent_config_override(caplog) -> None:
 
     # (a) 显式优先：用户选了非默认值，风格一律不改，只记录"风格不认同"。
     explicit_render = RenderConfig(
-        min_shot_seconds=2.5, max_shot_seconds=6.0, subtitle_layout="band",
+        min_shot_seconds=2.5, max_shot_seconds=6.0, film_grain=2.4,
         transition_density=0.4, image_composite_ratio=0.4,
     )
     audit_a = ConfigAudit()
@@ -156,12 +172,11 @@ def test_no_silent_config_override(caplog) -> None:
         effective_a = apply_style(explicit_render, style, audit_a)
 
     entries = {item["key"]: item for item in audit_a.as_list()}
-    for key in ("min_shot_seconds", "max_shot_seconds", "subtitle_layout"):
+    for key in ("min_shot_seconds", "max_shot_seconds"):
         assert key in entries, f"{key} 的「风格不认同」没有被记录"
         assert entries[key]["effective"] == entries[key]["requested"], (key, entries[key])
         assert entries[key]["explicit"] is True
     assert effective_a.min_shot_seconds == 2.5
-    assert effective_a.subtitle_layout == "band"
     assert [r for r in caplog.records if r.levelno >= logging.WARNING] == [], (
         "显式配置没有被覆盖，就不该出现任何覆盖 WARNING"
     )
@@ -184,7 +199,7 @@ def test_no_silent_config_override(caplog) -> None:
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warnings) >= 2, "模板样板被接管也必须 WARNING，不许静默"
 
-    # (c) 未表态：五个键全部由 style 接管，每一项都要留痕并 WARNING。
+    # (c) 未表态：四个键全部由 style 接管，每一项都要留痕并 WARNING。
     caplog.clear()
     audit_c = ConfigAudit()
     with caplog.at_level(logging.WARNING, logger="beatforge.audit"):
@@ -192,15 +207,14 @@ def test_no_silent_config_override(caplog) -> None:
 
     entries = {item["key"]: item for item in audit_c.as_list()}
     for key in ("min_shot_seconds", "max_shot_seconds", "transition_density",
-                "image_composite_ratio", "subtitle_layout"):
+                "image_composite_ratio"):
         item = entries[key]
         assert item["overridden_by"] == "edit_style:电影感长镜", item
         assert item["effective"] != item["requested"], item
         assert item["explicit"] is False
     assert effective_c.min_shot_seconds == 3.0
-    assert effective_c.subtitle_layout == "band"
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert len(warnings) >= 5, "每个接管项都要有 WARNING"
+    assert len(warnings) >= 4, "每个接管项都要有 WARNING"
 
 
 def test_audit_is_the_only_place_an_override_is_logged(caplog) -> None:
@@ -211,7 +225,7 @@ def test_audit_is_the_only_place_an_override_is_logged(caplog) -> None:
 
     audit = ConfigAudit()
     with caplog.at_level(logging.WARNING, logger="beatforge.audit"):
-        audit.record("subtitle_layout", requested="band", effective="band",
+        audit.record("film_grain", requested=1.6, effective=1.6,
                      overridden_by="explicit-config", explicit=True)
         audit.record("theme", requested="A", effective="B", overridden_by="edit_style:x")
 

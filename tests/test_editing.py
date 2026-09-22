@@ -65,7 +65,6 @@ def test_every_style_is_internally_consistent(name: str) -> None:
     assert style.transition_flavour in TRANSITION_FLAVOURS, name
     assert 0 <= style.transition_density <= 1, name
     assert 0 <= style.composite_ratio <= 1, name
-    assert style.subtitle_layout in {"band", "free"}, name
     assert style.label and style.summary, name
 
 
@@ -114,7 +113,6 @@ def test_cut_alignment_changes_where_cuts_are_allowed_to_land() -> None:
             energy_gain=1.0, cut_alignment=alignment, section_speedup=.0,
             transition_density=.3, transition_flavour="balanced",
             shot_size_contrast=.1, camera_intensity=1.0, composite_ratio=.2,
-            subtitle_layout="free",
         )
         grids[alignment] = _boundaries(analysis, lines, 2.0, 6.0, None, style)
 
@@ -135,7 +133,7 @@ def test_cutting_on_lyric_lines_puts_the_cuts_on_the_words() -> None:
         label="lyric", summary="", shot_min=1.5, shot_max=4.0, tempo=3.0, energy_gain=.8,
         cut_alignment="lyric", section_speedup=.0, transition_density=.3,
         transition_flavour="subtle", shot_size_contrast=.1, camera_intensity=1.0,
-        composite_ratio=.2, subtitle_layout="free",
+        composite_ratio=.2,
     )
     boundaries = _boundaries(analysis, lines, 1.5, 4.0, None, style)
     starts = {round(line.start, 3) for line in lines}
@@ -156,7 +154,7 @@ def test_a_style_with_no_speedup_keeps_its_shot_length_flat() -> None:
             label="s", summary="", shot_min=1.5, shot_max=4.0, tempo=3.0, energy_gain=.8,
             cut_alignment="downbeat", section_speedup=speedup, transition_density=.3,
             transition_flavour="balanced", shot_size_contrast=.1, camera_intensity=1.0,
-            composite_ratio=.2, subtitle_layout="free",
+            composite_ratio=.2,
         )
         boundaries = _boundaries(analysis, lines, 1.5, 4.0, None, style)
         return [round(b - a, 3) for a, b in pairwise(boundaries)]
@@ -182,7 +180,7 @@ def test_shot_size_contrast_keeps_the_picture_changing() -> None:
             label="s", summary="", shot_min=1.5, shot_max=3.0, tempo=2.2, energy_gain=1.0,
             cut_alignment="downbeat", section_speedup=.1, transition_density=.3,
             transition_flavour="balanced", shot_size_contrast=contrast,
-            camera_intensity=1.0, composite_ratio=.2, subtitle_layout="free",
+            camera_intensity=1.0, composite_ratio=.2,
         )
         shots = create_plan(analysis, _lines(60), assets, None, min_shot=1.5, max_shot=3.0,
                             style=style)

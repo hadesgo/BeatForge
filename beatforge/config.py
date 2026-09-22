@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticUndefined
 
 from beatforge.editing import style_choices
@@ -79,7 +79,6 @@ class RenderConfig(BaseModel):
     subtitle_margin: int = 72
     #: Which editing craft to apply. See beatforge/editing.py for what each one means.
     edit_style: str = "auto"
-    subtitle_layout: Literal["band", "free"] = "free"
     subtitle_fill: Literal["solid", "knockout"] = "solid"
     subtitle_outline: float = Field(default=1.1, ge=0, le=6)
     subtitle_highlight_color: str = "&H0000D7FF"
@@ -88,15 +87,6 @@ class RenderConfig(BaseModel):
     image_composite_ratio: float = Field(default=0.24, ge=0, le=1)
     max_composite_images: int = Field(default=3, ge=2, le=4)
     avoid_asset_repeats: bool = True
-    #: Deprecated and inert. A single image is now cropped full-bleed to the canvas
-    #: (subject-aware, driven by ``focus_point``), so there is no letterbox left for a
-    #: blurred backdrop to fill and no separate foreground scale to set. The keys are
-    #: still accepted so old projects keep loading, but they do nothing; ``pipeline``
-    #: records their presence through ``ConfigAudit`` as ``deprecated-key``.
-    blurred_image_background: bool = True
-    image_background_blur: float = Field(default=26.0, ge=0, le=80)
-    #: Deprecated and inert - see ``blurred_image_background``.
-    image_foreground_scale: float = Field(default=0.92, ge=0.55, le=1.0)
     vignette: bool = True
     film_grain: float = Field(default=1.6, ge=0, le=8)
     look_strength: float = Field(default=0.72, ge=0, le=1)
@@ -105,6 +95,13 @@ class RenderConfig(BaseModel):
     transition_min_seconds: float = Field(default=0.16, ge=0.05, le=1.0)
     transition_max_seconds: float = Field(default=0.55, ge=0.1, le=1.5)
     transition_density: float = Field(default=0.35, ge=0, le=1)
+
+    #: Unknown keys are a hard error, not a shrug. The first quality rework kept the
+    #: single-image keys around as inert compat, and that only worked because nothing
+    #: could tell "accepted for compat" from "typed by mistake". A project carrying a
+    #: removed key now fails here, naming the key - which is the honest reading of
+    #: "this option no longer exists".
+    model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
     def keep_intermediates_high_quality(self) -> RenderConfig:
@@ -119,11 +116,11 @@ class RenderConfig(BaseModel):
         ``model_fields_set`` alone is not enough, and this used to be the whole answer.
         The catch is the shipped template: ``init`` writes the style-owned keys
         (``min_shot_seconds``、``max_shot_seconds``、``transition_density``、
-        ``image_composite_ratio``、``subtitle_layout``) into every ``project.toml`` it
-        creates, so for a template-generated project "the key is present" means
-        "boilerplate", not "the user picked it". Treating it as a decision permanently
-        disables the pacing a style is supposed to own - ``edit_style = "beat"`` would
-        change transitions but never shot length, silently, on every fresh project.
+        ``image_composite_ratio``) into every ``project.toml`` it creates, so for a
+        template-generated project "the key is present" means "boilerplate", not "the
+        user picked it". Treating it as a decision permanently disables the pacing a
+        style is supposed to own - ``edit_style = "beat"`` would change transitions but
+        never shot length, silently, on every fresh project.
 
         So a key counts as spoken only when its value differs from the field default.
         A user who genuinely wants the default to outrank a style sets
@@ -140,17 +137,6 @@ class RenderConfig(BaseModel):
             if default is PydanticUndefined or getattr(self, key) != default:
                 spoken.add(key)
         return frozenset(spoken)
-
-
-#: Render keys kept only so old projects still load. They no longer change the render -
-#: a single image is cropped full-bleed and its backdrop is gone - so ``pipeline`` records
-#: any the user actually wrote as ``deprecated-key`` rather than letting them pass in
-#: silence (R-02/R-11).
-DEPRECATED_IMAGE_KEYS: tuple[str, ...] = (
-    "blurred_image_background",
-    "image_background_blur",
-    "image_foreground_scale",
-)
 
 
 class AIConfig(BaseModel):
@@ -308,7 +294,6 @@ subtitle_size = 46
 edit_style = "auto" # auto 按歌曲情绪自动选；也可固定为某个风格名；manual = 用下面的手工值
 subtitle_effect = "auto" # 也可固定为某个特效名；可选值见 README「字幕特效」
 subtitle_margin = 72
-# subtitle_layout = "free" # free = 分句自由排版并避开主体；band = 传统底部居中一行（写出来即视为显式选择）
 subtitle_fill = "solid" # knockout = 文字从画面里镂空，字中透出提亮虚化的同一帧
 subtitle_outline = 1.1 # 描边宽度；0 为无描边（更融入画面，但需要画面本身够暗）
 subtitle_max_outline = 2.4 # 亮背景自适应描边的上限；描边随背景变亮而加粗、变暗而收细
@@ -318,9 +303,6 @@ image_composites = true # AI 按段落自动选择多图版式：分屏、斜切
 # image_composite_ratio = 0.24 # 多图镜头占比；副歌会适当提高（不写则由 edit_style 决定）
 max_composite_images = 3 # 2 只够双栏；3 可做三联和主副网格；4 仅供节拍蒙太奇
 avoid_asset_repeats = true # 非母题素材充足时每个镜头用不同素材；多图合成只消耗富余素材
-blurred_image_background = true # 已废弃：单图改为按主体全出血裁切，本项不再生效（保留仅为兼容旧工程）
-image_background_blur = 26.0
-image_foreground_scale = 0.92 # 已废弃：单图不再缩放留边，本项不再生效（保留仅为兼容旧工程）
 vignette = true
 film_grain = 1.6
 look_strength = 0.72 # AI 导演色彩弧的应用强度

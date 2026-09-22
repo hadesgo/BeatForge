@@ -61,7 +61,7 @@ def main() -> int:
     sf.write(OUT / "music.wav", (.06 * np.sin(2 * np.pi * 220 * t)).astype(np.float32), sample_rate)
 
     cfg = RenderConfig(width=W, height=H, fps=FPS, crf=28, preset="ultrafast",
-                       film_grain=0, vignette=False, image_background_blur=26.0)
+                       film_grain=0, vignette=False)
     analysis = AudioAnalysis(
         duration=SECONDS, bpm=120, beats=[0.0, 1.0, 2.0, 3.0], sections=[0.0, SECONDS],
         energy_times=[0], energy_values=[.5], average_energy=.5, brightness=.5,

@@ -27,6 +27,36 @@ def test_unknown_preset_uses_modern_fallback(monkeypatch) -> None:
     assert fonts.resolve_subtitle_font("preset:not-real") == fonts.FontChoice("Source Han Sans SC")
 
 
+def test_a_project_font_that_fits_the_mood_is_chosen_first(monkeypatch, tmp_path: Path) -> None:
+    """R-03: fonts shipped in the project's own directory are candidates, not bystanders.
+
+    ``auto`` used to pick only from the bundled preset lists, so a user's own font was
+    reachable by libass yet never selected unless named by hand. A project family whose
+    name says it fits the mood now outranks the built-ins; an unclassified one still
+    loses to the curated list, so a handwriting face is not picked for an energetic
+    chorus merely because the user happened to ship it.
+    """
+    monkeypatch.setattr(fonts, "_available_font_families", lambda _: {"Example Kai Ti"})
+    monkeypatch.setattr(fonts, "_project_font_families", lambda _: {"Example Kai Ti"})
+    choice = fonts.resolve_subtitle_font("preset:lyrical", tmp_path)
+    assert choice.family == "Example Kai Ti"
+
+    # An unclassified project family serves the default preset, but a curated bundled
+    # candidate still wins for a preset its name does not claim.
+    monkeypatch.setattr(fonts, "_available_font_families", lambda _: {"Some Unknown Face"})
+    monkeypatch.setattr(fonts, "_project_font_families", lambda _: {"Some Unknown Face"})
+    assert fonts.resolve_subtitle_font("preset:modern", tmp_path).family == "Some Unknown Face"
+
+
+def test_family_name_traits_map_onto_the_mood_presets() -> None:
+    assert "lyrical" in fonts._family_presets("霞鹜文楷 LXGW WenKai")
+    assert "cinematic" in fonts._family_presets("思源宋体 Source Han Serif")
+    assert "energetic" in fonts._family_presets("Smiley Sans 得意黑")
+    assert "dreamy" in fonts._family_presets("Noto Sans SC Light")
+    # Anything unclassifiable is treated as a clean sans, never as nothing.
+    assert "modern" in fonts._family_presets("Totally Made Up Face")
+
+
 # ------------------------------------------------------------------ the bundle
 
 
@@ -293,7 +323,7 @@ def _rendered_ink(tmp_path: Path, background: Path, stage: Path, weight: int) ->
     write_ass(
         [LyricLine(0, 1, "黎明照亮天空")], script, width=1280, height=720,
         font="Noto Sans SC", size=64, weight=weight, margin=48,
-        effect="cinematic", placements=[], outline=0.0,
+        effect="cinematic", outline=0.0,
     )
     clip, frame = tmp_path / f"weight-{weight}.mp4", tmp_path / f"weight-{weight}.png"
     cfg = RenderConfig(width=1280, height=720, fps=10, crf=28, preset="ultrafast")

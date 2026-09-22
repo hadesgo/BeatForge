@@ -1,9 +1,10 @@
 """One place where every "the program decided for the user" is written down.
 
-A render config and an edit style are two answers to the same question - how long a
-shot may be, whether the picture may split. When they disagree, the program has to
-pick one, and picking silently is how a project ends up shipping a band-layout film to
-someone who wrote ``subtitle_layout = "band"`` and got ``free`` anyway.
+A render config and an edit style are two answers to the same question - how long a shot
+may be, how loud a transition may be. When they disagree, the program has to pick one,
+and picking silently is how a project ends up shipping pacing the user never asked for
+(the ``subtitle_layout`` override that inspired this module was removed with the free
+layout, but the class of bug it stood for is why the audit exists).
 
 The rule this module enforces (R-02) is that **nothing is overridden without a trace**:
 every decision goes through :meth:`ConfigAudit.record`, which is the single place that
@@ -123,7 +124,6 @@ STYLE_OWNED_KEYS: dict[str, str] = {
     "max_shot_seconds": "shot_max",
     "transition_density": "transition_density",
     "image_composite_ratio": "composite_ratio",
-    "subtitle_layout": "subtitle_layout",
 }
 
 

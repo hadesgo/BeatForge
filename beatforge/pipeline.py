@@ -7,7 +7,7 @@ import numpy as np
 
 from beatforge.audio import analyze_music
 from beatforge.audit import ConfigAudit, apply_style
-from beatforge.config import DEPRECATED_IMAGE_KEYS, ProjectConfig
+from beatforge.config import ProjectConfig
 from beatforge.director import create_art_direction
 from beatforge.editing import resolve_style
 from beatforge.lyrics import read_lrc, write_srt
@@ -81,28 +81,17 @@ def _motif_appearances(shots: list[Shot], motifs: list[int]) -> dict[str, int]:
     }
 
 
-def _record_deprecated_keys(project: ProjectConfig, audit: ConfigAudit) -> None:
-    """Note any render key the user wrote that no longer does anything (R-02/R-11)."""
-    explicit = project.render.explicit()
-    for key in DEPRECATED_IMAGE_KEYS:
-        if key in explicit:
-            audit.record(
-                key, requested=getattr(project.render, key), effective=None,
-                overridden_by="deprecated-key", explicit=True,
-                reason="该配置项已废弃，渲染器不再读取",
-            )
-
-
 def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool = False) -> Path:
     require_binaries()
     project.cache_dir.mkdir(parents=True, exist_ok=True)
     if not project.music.exists():
         raise FileNotFoundError(f"音乐文件不存在: {project.music}")
     # One collector for every "the program decided for the user" (R-02): the style
-    # takeovers, the vocal-separation fallback, the deprecated keys and the quality gate
-    # all report through it, and its list lands in ``plan.json`` as ``config_audit``.
+    # takeovers, the vocal-separation fallback and the quality gate all report through
+    # it, and its list lands in ``plan.json`` as ``config_audit``. Removed keys are not
+    # recorded here because they cannot reach this point: the render config forbids
+    # extras, so an old project fails at load time naming the key it carries.
     audit = ConfigAudit()
-    _record_deprecated_keys(project, audit)
     use_ai = project.ai.enabled and not no_ai
     device = resolve_device(project.ai.device)
     if use_ai:
@@ -152,7 +141,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     print(f"    {analysis.bpm:.1f} BPM · {analysis.mood} · {len(analysis.sections) - 1} 个章节")
 
     print("3/5 素材视觉语义索引")
-    assets = discover_media(project.media_dir, audit=audit)
+    assets = discover_media(project.media_dir)
     similarities = None
     source_starts = None
     if use_ai and lyrics:

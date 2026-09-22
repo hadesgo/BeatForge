@@ -127,328 +127,6 @@ _NEON_CYAN = "&H00FFFFD7&"
 _DIM = "&H00303030&"
 
 
-@dataclass(frozen=True, slots=True)
-class Placement:
-    """One drawn fragment of a lyric line, in script coordinates.
-
-    ``align`` is ASS numpad alignment, so 4 anchors the fragment's left edge at ``x``
-    with its vertical centre at ``y``, and 5 centres it on both. ``tokens`` carries the
-    karaoke timings this fragment owns, and ``start`` is when the fragment is sung -
-    the free layout fades each one in on its own time, which is what makes the lyric
-    assemble itself across the frame instead of appearing all at once.
-    """
-
-    text: str
-    x: int
-    y: int
-    align: int = 4
-    tokens: tuple[LyricToken, ...] = ()
-    start: float = 0.0
-
-
-# Free-layout anchors, as fractions of the frame, for a subject sitting in the middle.
-# Lifted from the reference lyric video, which never uses a subtitle band: it splits
-# the line and puts the halves where the subject is not, so the type frames the
-# picture instead of sitting underneath it.
-_FREE_PATTERNS: dict[str, tuple[tuple[float, float, int], tuple[float, float, int]]] = {
-    # Anchors are (x, y, alignment) as fractions of the frame, and the alignment is ASS
-    # numpad: 4 puts the fragment's left edge at x, 5 centres it, 6 puts its right edge
-    # there. Mixing justification is most of what makes a set of layouts read as ten
-    # compositions rather than as one composition in ten places.
-    #
-    # The second anchor of each pair is kept clear of the frame's centre by enough that
-    # a centred subject does not sit under it - a layout that cannot manage that is still
-    # usable, it just gets skipped when the subject is in the middle.
-    #
-    # One half above, one below, subject between them.
-    "sandwich":     ((.50, .19, 5), (.50, .75, 5)),
-    # A descending diagonal, upper left to lower right.
-    "diagonal":     ((.09, .31, 4), (.62, .54, 4)),
-    # The same idea climbing instead of falling.
-    "diagonal_up":  ((.09, .58, 4), (.62, .33, 4)),
-    # One baseline with a deliberate gap, the way a phrase breaks in speech.
-    "gap":          ((.10, .63, 4), (.62, .63, 4)),
-    # Both fragments left, stacked tight against the left edge.
-    "stack_left":   ((.09, .38, 4), (.09, .56, 4)),
-    # The same against the right edge, justified the other way.
-    "stack_right":  ((.91, .31, 6), (.91, .50, 6)),
-    # Both centred and close together - the quietest of the ten, and the one that needs
-    # the subject to be off to one side.
-    "centre_stack": ((.50, .28, 5), (.50, .45, 5)),
-    # Opposite corners, as far apart as the frame allows.
-    "corners":      ((.09, .23, 4), (.91, .79, 6)),
-    # Pinned to the two side edges at different heights, the subject between them.
-    "edges":        ((.08, .44, 4), (.92, .70, 6)),
-    # Low and centred, the second half hanging under the first.
-    "offset":       ((.50, .65, 5), (.50, .80, 5)),
-}
-
-# A step through the table rather than a written-out cycle. The step is coprime with the
-# table size, so the rotation visits all ten before repeating, and because the table is
-# ordered roughly by how much room each pattern leaves in the middle, consecutive lines
-# land on layouts that look nothing alike.
-_FREE_STEP = 3
-
-# How far the layout slides away from a subject that is not in the middle. Shifting the
-# chosen pattern keeps its shape; swapping in a fixed off-centre layout instead collapsed
-# every line of an off-centre shot onto the same two positions, which is what made the
-# free layout feel like one layout.
-_FREE_SHIFT = .16
-_SUBJECT_HIGH = .42
-_SUBJECT_LOW = .58
-
-# How much room a fragment has to leave around the subject, as fractions of the frame.
-# Both axes matter: the reference style puts type beside the subject as often as above
-# or below it, and a vertical-only rule rejects exactly those layouts. The thresholds
-# describe a person-sized subject rather than its bounding box, which is all
-# ``focus_point`` gives us.
-_CLEAR_X = .11
-_CLEAR_Y = .10
-#: The box the subject occupies, as half-extents of the frame. ``focus_point`` gives a
-#: single point, but a person is not a point - so a conservative box is drawn around it,
-#: and a fragment may only overlap it by ``_SUBJECT_OVERLAP`` of its own area (R-10).
-_SUBJECT_HALF_X = .12
-_SUBJECT_HALF_Y = .16
-#: The most of a fragment's area that may sit on the subject.
-_SUBJECT_OVERLAP = .05
-#: A hair more than the threshold, so rounding to whole pixels cannot land a fragment
-#: back inside the box the threshold was meant to clear.
-_CLEAR_MARGIN = .005
-#: How many layouts the rotation will pass over looking for one that clears the subject.
-_FREE_TRIES = 4
-
-# A small deterministic drift so the same pattern never lands pixel-identically twice in
-# one song. Big enough to read as placed by hand, small enough that it never looks like a
-# mistake, and derived from the line index so a given plan always lays out the same way.
-_DRIFT_X = .010
-_DRIFT_Y = .008
-
-# How long a silence between two sung words has to last before the free layout treats
-# it as a phrase break. Below this the singer is just articulating; above it they
-# breathed, and that is where the reference style puts the break.
-_MIN_BREAK_SECONDS = 0.22
-
-# How long each fragment takes to appear once it is sung.
-_FRAGMENT_FADE_MS = 260
-
-
-def plan_placements(
-    lines: list[LyricLine],
-    focus_points: list[tuple[float, float] | None],
-    *,
-    width: int,
-    height: int,
-    margin: int,
-    size: int,
-    min_fragment_seconds: float = .6,
-) -> list[list[Placement]]:
-    """Lay each line out freely, in the parts of the frame its subject is not using.
-
-    Ten patterns rotate through the song. Each candidate is slid as a whole to clear its
-    subject, and the rotation passes over any that still will not fit, so the variety
-    survives an off-centre subject instead of collapsing onto one safe layout.
-
-    ``focus_points`` is the subject centre per line, so the text can be steered away from
-    it. Everything is a fixed rotation off the line index - no random numbers - so a
-    given plan always lays out the same way.
-
-    A line is only split into two fragments when each half lives on screen for at least
-    ``min_fragment_seconds`` (R-10) - a tail that would flash by is folded back into the
-    line. Clearance is judged on the *area* the fragment and the subject actually cover
-    (see ``_clears``), not on the anchor point alone.
-    """
-    names = list(_FREE_PATTERNS)
-    inset = margin / max(height, 1)
-    placements: list[list[Placement]] = []
-    for index, line in enumerate(lines):
-        focus = focus_points[index] if index < len(focus_points) else None
-        fragments = _split_line(line, minimum=min_fragment_seconds)
-        boxes = [
-            _fragment_half_box(text, width, height, size) for text, _, _ in fragments
-        ]
-        anchors = _choose_layout(
-            names, index, (focus[0], focus[1]) if focus else (.5, .5), inset, boxes,
-        )
-        if len(fragments) == 1:
-            # A line with no detectable pause keeps one fragment, at its pattern's first
-            # anchor so it still lands somewhere different each time.
-            (text, tokens, start), (fx, fy, _align) = fragments[0], anchors[0]
-            placements.append([Placement(
-                text, round(width * fx), round(height * fy), 5, tokens, start,
-            )])
-            continue
-        row: list[Placement] = []
-        for (text, tokens, start), (fx, fy, align) in zip(fragments, anchors):
-            row.append(Placement(
-                text, round(width * fx), round(height * fy), align, tokens, start,
-            ))
-        placements.append(row)
-    return placements
-
-
-def _choose_layout(
-    names: list[str], index: int, focus: tuple[float, float], inset: float,
-    boxes: list[tuple[float, float]],
-) -> list[tuple[float, float, int]]:
-    """The first layout in this line's rotation that does not land on the subject.
-
-    Looking a few candidates ahead is what keeps the variety. The alternative - always
-    falling back to one safe layout when the subject is off-centre - is exactly what made
-    the free layout feel like a single layout repeated. Only the anchors that will be
-    drawn (as many as there are fragments) are tested against their boxes.
-    """
-    fallback: list[tuple[float, float, int]] | None = None
-    for step in range(_FREE_TRIES):
-        name = names[(index * _FREE_STEP + step) % len(names)]
-        # The drift is part of the candidate, so clearance is checked against the
-        # positions that actually get drawn rather than the pre-drift ones.
-        placed = _fit(_drift(_FREE_PATTERNS[name], index), focus[1], inset)
-        if fallback is None:
-            fallback = placed
-        if _clears(placed[:len(boxes)], focus, boxes):
-            return placed
-    assert fallback is not None
-    return fallback
-
-
-def _fit(
-    anchors: tuple[tuple[float, float, int], ...], focus_y: float, inset: float,
-) -> list[tuple[float, float, int]]:
-    """Slide a layout vertically until it clears the subject, then keep it in frame.
-
-    The group moves as a whole and slides back if that took it out of frame, so the shape
-    of the pattern survives the move. Clamping each anchor on its own is only the last
-    resort, for a layout taller than the band it has to fit in.
-    """
-    ys = [y for _, y, _ in anchors]
-    gap = _CLEAR_Y + _CLEAR_MARGIN
-    if focus_y < _SUBJECT_HIGH:
-        shift = (focus_y + gap) - min(ys)
-    elif focus_y > _SUBJECT_LOW:
-        shift = (focus_y - gap) - max(ys)
-    else:
-        shift = 0.0
-    low, high = inset, 1 - inset
-    top, bottom = min(ys) + shift, max(ys) + shift
-    if top < low:
-        shift += low - top
-    if bottom > high:
-        shift -= bottom - high
-    return [(x, min(max(y + shift, low), high), align) for x, y, align in anchors]
-
-
-def _clears(
-    anchors: list[tuple[float, float, int]], focus: tuple[float, float],
-    boxes: list[tuple[float, float]],
-) -> bool:
-    """Does the type land on the subject?
-
-    Two tests, and both have to hold. The first is the original axis clearance: a
-    fragment beside the subject is as clear as one above or below it, which is what keeps
-    the ten patterns from collapsing onto one safe position. The second is the one R-10
-    adds - a fragment may not overlap more than ``_SUBJECT_OVERLAP`` of its own area with
-    the box the subject occupies, so a long fragment leaning into the subject is caught
-    even when its anchor still clears the point.
-    """
-    return all(
-        abs(x - focus[0]) >= _CLEAR_X or abs(y - focus[1]) >= _CLEAR_Y
-        for x, y, _ in anchors
-    ) and all(
-        _overlap_fraction(x, y, half, focus) <= _SUBJECT_OVERLAP
-        for (x, y, _), half in zip(anchors, boxes)
-    )
-
-
-def _fragment_half_box(
-    text: str, width: int, height: int, size: int,
-) -> tuple[float, float]:
-    """Half-width and half-height of a fragment's body, as fractions of the frame.
-
-    The width is the string's rough visual width, the height is one line box at the
-    chosen font size. Both are clamped so a runaway estimate cannot reject every layout.
-    """
-    half_w = min(.34, _visual_units(text) * size / (2 * max(width, 1)))
-    half_h = min(.14, size / (2 * max(height, 1)))
-    return max(half_w, .01), max(half_h, .005)
-
-
-def _overlap_fraction(
-    x: float, y: float, half: tuple[float, float], focus: tuple[float, float],
-) -> float:
-    """What fraction of a fragment's area sits inside the subject's box."""
-    half_w, half_h = half
-    overlap_x = max(0.0, min(x + half_w, focus[0] + _SUBJECT_HALF_X)
-                    - max(x - half_w, focus[0] - _SUBJECT_HALF_X))
-    overlap_y = max(0.0, min(y + half_h, focus[1] + _SUBJECT_HALF_Y)
-                    - max(y - half_h, focus[1] - _SUBJECT_HALF_Y))
-    area = (2 * half_w) * (2 * half_h)
-    return (overlap_x * overlap_y) / area if area > 0 else 0.0
-
-
-def _drift(
-    anchors: tuple[tuple[float, float, int], ...], index: int,
-) -> tuple[tuple[float, float, int], ...]:
-    """Nudge a layout by a hair, deterministically, so it never lands twice the same.
-
-    Without this the ten patterns are still ten *fixed* compositions, and a song long
-    enough to come back round to one of them repeats it exactly. The offsets are derived
-    from the line index rather than drawn at random, so a plan stays reproducible.
-    """
-    dx = ((index * 7) % 5 - 2) * _DRIFT_X
-    dy = ((index * 11) % 5 - 2) * _DRIFT_Y
-    return tuple((x + dx, y + dy, align) for x, y, align in anchors)
-
-
-def _split_line(
-    line: LyricLine, *, minimum: float = .6,
-) -> list[tuple[str, tuple[LyricToken, ...], float]]:
-    """Break a line into the fragments a free layout draws separately.
-
-    Returns ``(text, tokens, start)`` per fragment. The break goes at the singer's
-    longest pause, because that is where a break reads as phrasing instead of as a
-    mistake - splitting a line down the middle cuts words in half ("黎明照 / 亮天空"
-    breaks 照亮). Without word timings it falls back to punctuation, and without
-    either the line stays whole and simply gets placed freely.
-
-    A split is only taken when each half lives on screen for at least ``minimum``
-    seconds (R-10); a tail that would flash for less than that is not worth its own
-    event, so the line stays whole.
-    """
-    text = line.text.strip()
-    tokens = list(line.tokens)
-    if len(tokens) >= 2:
-        gap, cut = max(
-            (tokens[index + 1].start - tokens[index].end, index + 1)
-            for index in range(len(tokens) - 1)
-        )
-        if gap >= _MIN_BREAK_SECONDS:
-            head = "".join(token.text for token in tokens[:cut]).strip()
-            tail = "".join(token.text for token in tokens[cut:]).strip()
-            if head and tail and line.end - tokens[cut].start >= minimum:
-                return [
-                    (head, tuple(tokens[:cut]), tokens[0].start),
-                    (tail, tuple(tokens[cut:]), tokens[cut].start),
-                ]
-    for mark in "，。！？、；：,.!?;: ":
-        position = text.find(mark)
-        if 0 < position < len(text) - 1:
-            head, tail = text[:position].strip(), text[position + 1:].strip()
-            tail_start = line.start + (line.end - line.start) / 2
-            if head and tail and line.end - tail_start >= minimum:
-                # Punctuation gives the break but not the timing, so the two halves
-                # share the line's span evenly.
-                return [
-                    (head, (), line.start),
-                    (tail, (), tail_start),
-                ]
-    return [(text, tuple(tokens), line.start)]
-
-
-def _visual_units(text: str) -> float:
-    """Rough width of a string in font-size units: CJK is full width, Latin is not."""
-    return sum(1.0 if ord(char) > 255 else .58 for char in text if char not in "\r\n")
-
-
 def write_ass(
     lines: list[LyricLine],
     file: Path,
@@ -463,7 +141,6 @@ def write_ass(
     line_effects: list[str] | None = None,
     line_outlines: list[float] | None = None,
     weight: int | None = None,
-    placements: list[list[Placement]] | None = None,
     outline: float = 2.2,
     shadow: float = 0.0,
     mask_only: bool = False,
@@ -476,11 +153,10 @@ def write_ass(
     on the event - but the events only override the style, never the other way round, so
     a style left on Bold would make every preset that asks for no weight bold.
 
-    ``placements`` switches the layout: without it every line is one centred line in
-    the bottom band, and with it each line is drawn as the freely positioned fragments
-    ``plan_placements`` chose. ``mask_only`` drops the fill colour to white and the
-    outline to nothing, which is what the knockout compositing needs to read the text
-    as a clean alpha channel rather than as a picture of some letters.
+    Every line is one centred line in the bottom band. ``mask_only`` drops the fill
+    colour to white and the outline to nothing, which is what the knockout compositing
+    needs to read the text as a clean alpha channel rather than as a picture of some
+    letters.
 
     ``line_outlines`` gives each line its own outline width, so a line over a bright
     backdrop can be thickened and a line over a dark one kept thin (R-05). A line with no
@@ -520,71 +196,46 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # does not know. Fall back to the plain fade rather than to karaoke, so a
             # line without word timings still renders sensibly.
             line_effect = "cinematic"
-        fragments = placements[index] if placements and index < len(placements) else None
         line_outline = (
             line_outlines[index]
             if line_outlines and index < len(line_outlines) else None
         )
-        for fragment in fragments or [None]:
-            prefix, text = _subtitle_effect(
-                line_effect, line, width=width, height=height, margin=margin,
-                placement=fragment, mask_only=mask_only, outline=line_outline,
-            )
-            events.append(
-                f"Dialogue: 0,{ass_timestamp(line.start)},{ass_timestamp(line.end)},Lyric,,0,0,0,,{fit}{weight_tag}{prefix}{text}"
-            )
+        prefix, text = _subtitle_effect(
+            line_effect, line, width=width, height=height, margin=margin,
+            mask_only=mask_only, outline=line_outline,
+        )
+        events.append(
+            f"Dialogue: 0,{ass_timestamp(line.start)},{ass_timestamp(line.end)},Lyric,,0,0,0,,{fit}{weight_tag}{prefix}{text}"
+        )
     file.write_text(header + "\n".join(events) + "\n", "utf-8-sig")
-
-
-def _anchor(placement: Placement | None, *, move_from: tuple[int, int] | None = None, ms: int = 0) -> str:
-    """Pin a fragment where the free layout put it.
-
-    ``\\pos`` and ``\\move`` are mutually exclusive in ASS - the later one wins - so a
-    fragment that slides in gets ``\\move`` alone, with its destination at the layout
-    position rather than at the frame's centre.
-    """
-    if placement is None:
-        return ""
-    if move_from is None:
-        return rf"\pos({placement.x},{placement.y})\an{placement.align}"
-    return (
-        rf"\move({placement.x + move_from[0]},{placement.y + move_from[1]},"
-        rf"{placement.x},{placement.y},0,{ms})\an{placement.align}"
-    )
 
 
 def _subtitle_effect(
     effect: str, line: LyricLine, *, width: int, height: int, margin: int,
-    placement: Placement | None = None, mask_only: bool = False,
+    mask_only: bool = False,
     outline: float | None = None,
 ) -> tuple[str, str]:
-    """Return the override prefix and the (possibly rewritten) text for one fragment.
-
-    A fragment carries its own slice of the line, so every effect works on that slice
-    and the anchor is prepended once at the end.
-    """
+    """Return the override prefix and the (possibly rewritten) text for one line."""
     duration = max(.01, line.end - line.start)
     base_y = height - margin
     centre_x = width // 2
-    fragment = placement.text if placement else line.text
-    text = _ass_text(fragment)
+    text = _ass_text(line.text)
     tags = ""
 
     if effect == "karaoke":
         tags = r"\fad(160,220)\blur0.4\fscx92\fscy92\t(0,200,\fscx100\fscy100\blur0)"
-        text = _karaoke_fragment(line, placement)
+        text = _karaoke_line(line)
     elif effect == "bounce":
         tags = r"\fad(90,180)\fscx76\fscy76\t(0,130,\fscx108\fscy108)\t(130,240,\fscx100\fscy100)"
     elif effect == "float":
         tags = (r"\fad(260,360)"
-                + (_anchor(placement, move_from=(0, 14), ms=500)
-                   or rf"\move({centre_x},{base_y + 14},{centre_x},{base_y},0,500)")
+                + rf"\move({centre_x},{base_y + 14},{centre_x},{base_y},0,500)"
                 + r"\blur0.5")
     elif effect == "glow":
         tags = r"\fad(220,300)\blur3\bord3\t(0,320,\blur0.5\bord2.2)"
     elif effect == "typewriter":
         tags = r"\fad(80,240)"
-        text = _typewriter_text(fragment, duration)
+        text = _typewriter_text(line.text, duration)
     elif effect == "punch":
         # Arrives far too large and slams into place. The blur is what sells the
         # speed - without it the frame just looks like a bad scale.
@@ -592,12 +243,11 @@ def _subtitle_effect(
     elif effect == "slide":
         travel = round(width * .18)
         tags = (r"\fad(120,200)"
-                + (_anchor(placement, move_from=(-travel, 0), ms=260)
-                   or rf"\move({centre_x - travel},{base_y},{centre_x},{base_y},0,260)"))
+                + rf"\move({centre_x - travel},{base_y},{centre_x},{base_y},0,260)")
     elif effect == "flip_in":
         # Each character flips up into place, so the line assembles itself.
         tags = r"\fad(0,200)"
-        text = _per_character(fragment, lambda index, count, total: (
+        text = _per_character(line.text, lambda index, count, total: (
             rf"{{\fry90\fscx55\fscy55\alpha&HFF&"
             rf"\t({index * 45},{index * 45 + 230},\fry0\fscx100\fscy100\alpha&H00&)}}"
         ))
@@ -620,7 +270,7 @@ def _subtitle_effect(
                 r"\t(0,90,\frz-2)\t(90,180,\frz2)\t(180,270,\frz-2)\t(270,360,\frz0)")
     elif effect == "wave":
         tags = r"\fad(140,220)"
-        text = _per_character(fragment, lambda index, count, total: (
+        text = _per_character(line.text, lambda index, count, total: (
             rf"{{\fry0\fscx100"
             rf"\t({index * 55},{index * 55 + 140},\fry-72\fscx78)"
             rf"\t({index * 55 + 140},{index * 55 + 280},\fry0\fscx100)}}"
@@ -665,29 +315,7 @@ def _subtitle_effect(
         # geometric and alpha tag above. Only the fill and the outline change: a mask
         # that is not solid white would read as a half-transparent letter.
         tags = _strip_fill(tags)
-    tags = _fragment_entrance(tags, line, placement)
-    return f"{{{_anchor(placement)}{tags}}}", text
-
-
-def _fragment_entrance(tags: str, line: LyricLine, placement: Placement | None) -> str:
-    """Hold a fragment back until it is sung, then fade it in.
-
-    This is what makes the free layout read the way the reference does: the line
-    assembles itself across the frame over its own duration instead of appearing all
-    at once. A fragment that starts with its line keeps whatever entrance the effect
-    gave it, which is why the delay has to be measured rather than assumed.
-    """
-    if placement is None:
-        return tags
-    delay = round(max(0.0, placement.start - line.start) * 1000)
-    if delay <= 40:
-        return tags
-    # The effect's own fade-in would fight this one for the alpha channel, so that half
-    # is dropped and only the fade-out at the end of the line is kept. Appending rather
-    # than prepending matters: libass applies ``\t`` chains in order, so the later one
-    # wins for the property they share.
-    tags = re.sub(r"\\fad\(\s*[\d.]+", r"\\fad(0", tags)
-    return tags + rf"\alpha&HFF&\t({delay},{delay + _FRAGMENT_FADE_MS},\alpha&H00&)"
+    return f"{{{tags}}}", text
 
 
 def _strip_fill(tags: str) -> str:
@@ -697,19 +325,6 @@ def _strip_fill(tags: str) -> str:
     not which colour it happens to be drawn in.
     """
     return re.sub(r"\\(?:1c|2c|3c|4c|bord|shad|blur)[^\\}]*", "", tags)
-
-
-def _karaoke_fragment(line: LyricLine, placement: Placement | None) -> str:
-    """Karaoke markup for one fragment.
-
-    Under the free layout the fragment *is* the karaoke: it fades in at the moment it
-    is sung, so a character sweep on top would say the same thing twice. The plain text
-    is returned and ``_fragment_entrance`` supplies the timing. The band layout keeps
-    the sweep, which is what a single centred line has to work with.
-    """
-    if placement is None:
-        return _karaoke_line(line)
-    return _ass_text(placement.text)
 
 
 def _per_character(text: str, tag_for) -> str:
@@ -762,6 +377,11 @@ def _typewriter_text(text: str, duration: float) -> str:
         f"{{\\alpha&HFF&\\t({index * step},{index * step + 60},\\alpha&H00&)}}{_ass_text(character)}"
         for index, character in enumerate(characters)
     )
+
+
+def _visual_units(text: str) -> float:
+    """Rough width of a string in font-size units: CJK is full width, Latin is not."""
+    return sum(1.0 if ord(char) > 255 else .58 for char in text if char not in "\r\n")
 
 
 def _fit_font_size(text: str, width: int, size: int) -> str:
