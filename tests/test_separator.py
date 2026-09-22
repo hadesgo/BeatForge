@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from beatforge.audit import ConfigAudit
 from beatforge.config import AIConfig, ProjectConfig
 from beatforge.models.separator import (
     SeparationUnavailable,
@@ -177,7 +178,7 @@ def test_the_recogniser_is_given_the_vocal_stem(tmp_path: Path, monkeypatch) -> 
         "beatforge.models.separator.separate_vocals", lambda *_a, **_k: stem,
     )
 
-    source, label = speech_source(project, "cpu")
+    source, label = speech_source(project, "cpu", ConfigAudit())
 
     assert source == stem
     assert "人声轨" in label
@@ -186,7 +187,7 @@ def test_the_recogniser_is_given_the_vocal_stem(tmp_path: Path, monkeypatch) -> 
 def test_separation_can_be_turned_off(tmp_path: Path) -> None:
     project = _project(tmp_path, separate_vocals=False)
 
-    source, label = speech_source(project, "cpu")
+    source, label = speech_source(project, "cpu", ConfigAudit())
 
     assert source == project.music
     assert "未做人声分离" in label
@@ -196,7 +197,8 @@ def test_a_missing_extra_falls_back_to_the_mix_and_says_so(tmp_path: Path, monke
     """Degrading is fine; degrading quietly is not.
 
     A transcript taken from the mix is a different and worse transcript, and nothing
-    downstream can tell the two apart.
+    downstream can tell the two apart - so the fallback goes through the ``ConfigAudit``
+    (R-02), not a bare ``print``.
     """
     project = _project(tmp_path)
 
@@ -204,11 +206,14 @@ def test_a_missing_extra_falls_back_to_the_mix_and_says_so(tmp_path: Path, monke
         raise SeparationUnavailable("人声分离需要 audio-separator")
 
     monkeypatch.setattr("beatforge.models.separator.separate_vocals", unavailable)
-    source, label = speech_source(project, "cpu")
+    audit = ConfigAudit()
+    source, label = speech_source(project, "cpu", audit)
 
     assert source == project.music
     assert "人声分离不可用" in label
     assert "audio-separator" in label
+    recorded = {item["key"]: item for item in audit.as_list()}
+    assert recorded["speech_source"]["overridden_by"] == "separate-vocals-unavailable"
 
 
 def test_separation_is_on_by_default() -> None:

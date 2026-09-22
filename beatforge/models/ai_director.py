@@ -389,7 +389,6 @@ def _build_context(
                 "description": asset.description,
                 "mood": asset.mood,
                 "shot_size": asset.shot_size,
-                "camera_motion": asset.camera_motion,
             }
             for asset in candidates
         ],

@@ -61,7 +61,31 @@ def _treatment() -> DirectorTreatment:
     )
 
 
-def test_director_preferences_influence_shot_selection() -> None:
+def _motif_song() -> AudioAnalysis:
+    """Long enough that the schedule can actually reserve a motif its appearances."""
+    return AudioAnalysis(
+        duration=40,
+        bpm=120,
+        beats=[x / 2 for x in range(81)],
+        downbeats=[float(x) for x in range(0, 41, 2)],
+        sections=[0, 20, 40],
+        energy_times=[0, 40],
+        energy_values=[0.5, 0.5],
+        average_energy=0.5,
+        brightness=0.5,
+        mood="cinematic",
+        mood_scores={"cinematic": 1},
+        section_labels=["verse", "chorus"],
+    )
+
+
+def test_director_motif_is_reserved_and_recurs() -> None:
+    """R-03: the director's motif is scheduled into reserved slots ahead of scoring.
+
+    It is not merely a preferred asset any more - a motif that appears once is a shot,
+    not a theme. The reservation is what makes a two-shot allusion come back, and the
+    same treatment still carries the section's ``transition_tone`` onto the shot.
+    """
     assets = [
         MediaAsset(
             0, Path("a.jpg"), "image", float("inf"), 100, 100, quality_score=0.5
@@ -77,18 +101,22 @@ def test_director_preferences_influence_shot_selection() -> None:
             shot_size="closeup",
         ),
     ]
-    similarities = np.array([[0.55, 0.50], [0.55, 0.50]])
+    lyrics = [LyricLine(index * 4, index * 4 + 4, f"第{index}句") for index in range(10)]
+    similarities = np.full((len(lyrics), len(assets)), 0.55)
     shots = create_plan(
-        _analysis(),
-        [LyricLine(0, 4, "独自醒来"), LyricLine(4, 8, "奔向天光")],
+        _motif_song(),
+        lyrics,
         assets,
         similarities,
         min_shot=1.5,
         max_shot=5,
         treatment=_treatment(),
     )
-    assert shots[0].media_id == 1
-    assert shots[0].transition_tone == "soft"
+    motifs = [shot for shot in shots if shot.is_motif]
+    assert motifs, "the director's motif was never reserved"
+    assert {shot.media_id for shot in motifs} == {1}
+    assert len(motifs) >= 3, f"the motif only came back {len(motifs)} time(s)"
+    assert shots[0].transition_tone == "soft", "the section's tone was dropped"
 
 
 def test_director_receives_per_lyric_candidates_and_video_timestamps() -> None:

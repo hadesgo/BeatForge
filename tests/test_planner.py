@@ -5,15 +5,20 @@ from pathlib import Path
 import numpy as np
 
 from beatforge.audio import AudioAnalysis
+from beatforge.audit import ConfigAudit
+from beatforge.editing import EDIT_STYLES
 from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
+from beatforge.models.ai_director import DirectorTreatment, SectionDirection
 from beatforge.planner import (
     IMAGE_COMPOSITES,
     Shot,
     _break_transition_repeats,
     _choose_image_effect,
     _least_used_assets,
+    _motif_schedule,
     _reuse_penalty,
+    _section_target_length,
     _transition_family,
     _upscale_penalty,
     create_plan,
@@ -42,10 +47,83 @@ def _images(count: int) -> list[MediaAsset]:
     ]
 
 
+def _videos(count: int, start: int = 0, duration: float = 30.0) -> list[MediaAsset]:
+    return [
+        MediaAsset(start + i, Path(f"v{i}.mp4"), "video", duration, 1920, 1080)
+        for i in range(count)
+    ]
+
+
 def _visible_ids(shots) -> list[int]:
     return [shot.media_id for shot in shots] + [
         layer.media_id for shot in shots for layer in shot.layers
     ]
+
+
+# --- R-01 / R-03 fixtures -------------------------------------------------------------
+
+def _section_arc(arc: str, count: int) -> list[float]:
+    """The ``cut_intensity`` shape a director speaks, as one value per section."""
+    if arc == "flat_low":
+        return [.2] * count
+    if arc == "flat_high":
+        return [.85] * count
+    if arc == "rise":
+        return [round(float(value), 3) for value in np.linspace(.15, .9, count)]
+    if arc == "fall":
+        return [round(float(value), 3) for value in np.linspace(.9, .15, count)]
+    if arc == "alternate":
+        return [.85 if index % 2 else .2 for index in range(count)]
+    raise ValueError(f"unknown arc {arc!r}")
+
+
+def _treatment(
+    section_count: int, *, arc: str = "flat_low", tone: str = "neutral",
+    intent: str = "continuity", motifs: list[int] | None = None,
+) -> DirectorTreatment:
+    """A director treatment whose ``cut_intensity`` follows ``arc`` (R-01/R-07).
+
+    The coverage sweeps build songs through this so the *phase* of every rotation moves
+    with the arc, and so a loud seam can actually be authorised to shout - a treatment
+    whose ``transition_tone`` stays neutral would silently starve the impact families.
+    """
+    values = _section_arc(arc, section_count)
+    return DirectorTreatment(
+        concept="测试导演方案",
+        narrative_arc="从安静走向释放的测试叙事",
+        visual_style="克制统一的测试视觉风格",
+        grade_profile="cinematic",
+        motif_asset_ids=list(motifs or []),
+        sections=[
+            SectionDirection(
+                section_index=index,
+                narrative_role=f"第 {index} 段的叙事作用",
+                cut_intensity=value,
+                transition_tone=tone,
+                edit_intent=intent,
+            )
+            for index, value in enumerate(values)
+        ],
+    )
+
+
+def _reach_song(
+    duration: float, labels: list[str], *, mood: str = "cinematic",
+    peak: float = .5, melody: float = .5,
+) -> AudioAnalysis:
+    """A song that visits every section type, for the coverage sweeps."""
+    return AudioAnalysis(
+        duration=duration, bpm=120,
+        beats=[x / 2 for x in range(int(duration * 2) + 1)],
+        downbeats=[float(x) for x in range(0, int(duration) + 1, 2)],
+        sections=[index * duration / len(labels) for index in range(len(labels) + 1)],
+        energy_times=[0, duration * .25, duration * .45, duration * .75, duration],
+        energy_values=[.15, .95, .6, peak, .2],
+        average_energy=.5, brightness=.5, mood=mood, mood_scores={mood: 1},
+        section_labels=labels,
+        melody_times=[0, duration / 2, duration], melody_values=[.2, melody, .3],
+        melodic_motion=.6, rhythmic_density=80,
+    )
 
 
 def test_plan_is_continuous() -> None:
@@ -148,17 +226,32 @@ def test_transition_density_zero_suppresses_only_inside_section_moves() -> None:
 
 
 def test_a_section_change_outranks_an_impact_inside_one() -> None:
-    """The strongest move the music can justify belongs at the structural seam."""
+    """The strongest move the music can justify belongs at the structural seam.
+
+    R-07 moved the permission to shout to the director: a loud seam earns a flash only
+    when the section's ``transition_tone`` - or an ``impact`` intent on one side - has
+    authorised it. Loudness on its own is not a licence any more, which is what used to
+    put a burst of flashes into a warm documentary.
+    """
     into_chorus = _transition_family(
-        _shot(0, "verse", .5, section_index=0), _shot(1, "chorus", .9, section_index=1),
+        _shot(0, "verse", .5, section_index=0),
+        _shot(1, "chorus", .9, section_index=1, tone="bright"),
         index=0, visible=0, mood="cinematic", density=.35,
     )
     into_outro = _transition_family(
         _shot(0, "chorus", .5, section_index=1), _shot(1, "outro", .3, section_index=2),
         index=0, visible=0, mood="cinematic", density=.35,
     )
+    unauthorised = _transition_family(
+        _shot(0, "verse", .5, section_index=0), _shot(1, "chorus", .9, section_index=1),
+        index=0, visible=0, mood="cinematic", density=.35,
+    )
+
     assert into_chorus == "flash"
     assert into_outro == "dip"
+    assert unauthorised not in {"flash", "glitch", "film_burn", "light_leak"}, (
+        "an unauthorised seam still shouted"
+    )
 
 
 def test_transition_rotations_advance_on_visible_transitions_not_shot_index() -> None:
@@ -292,6 +385,12 @@ def test_repeated_lyrics_reuse_only_when_no_alternative_exists() -> None:
 
 
 def test_assets_are_never_shown_twice_when_supply_is_sufficient() -> None:
+    """R-03: while untouched non-motif material remains, no non-motif comes back.
+
+    With no motifs enabled this is the original zero-reuse guarantee, strengthened: the
+    plan is not allowed to reach for a repeated picture while a fresh one is on the
+    table. The motif contract has its own test below.
+    """
     analysis = _grid(100)
     lyrics = _lines(100)
     assets = _images(50)
@@ -306,6 +405,97 @@ def test_assets_are_never_shown_twice_when_supply_is_sufficient() -> None:
     assert len(visible) == len(set(visible))
     # Composites are still allowed to spend the surplus material.
     assert any(shot.layers for shot in shots)
+
+
+def test_motifs_recur_while_non_motifs_stay_fresh() -> None:
+    """R-03: the director's motifs come back on purpose; everything else stays new.
+
+    A motif that appears once is a shot, not a theme. The schedule reserves each motif
+    its appearances ahead of scoring, and a non-motif is still never shown twice while
+    fresh non-motif material is left. The total motif share has to sit inside the
+    8%–30% band, which is what stops a short song from padding motifs to hit ``≥3``.
+    """
+    analysis = _grid(120)
+    lyrics = _lines(120)
+    assets = _images(60)
+    motifs = [0, 1, 2]
+    similarities = np.random.default_rng(5).uniform(.2, .9, size=(len(lyrics), len(assets)))
+
+    shots = create_plan(
+        analysis, lyrics, assets, similarities, min_shot=1.8, max_shot=5.5,
+        motifs=motifs, image_composite_ratio=0,
+    )
+
+    counts = Counter(shot.media_id for shot in shots)
+    assert {shot.media_id for shot in shots if shot.is_motif} == set(motifs), (
+        "an enabled motif never came back"
+    )
+    for motif in motifs:
+        assert counts[motif] >= 3, f"motif {motif} only appeared {counts[motif]} times"
+
+    non_motif = [shot.media_id for shot in shots if not shot.is_motif]
+    assert len(non_motif) == len(set(non_motif)), (
+        "a non-motif returned while fresh material was still available"
+    )
+    motif_share = sum(counts[motif] for motif in motifs) / len(shots)
+    assert .08 <= motif_share <= .30, f"motif share {motif_share:.0%} left the 8%–30% band"
+
+
+def test_motif_schedule_drops_motifs_rather_than_padding_a_short_song() -> None:
+    """The double clamp: cap the total at 30%, then drop motifs that will not fit.
+
+    Five themes on a forty-shot song asking for three appearances each would be 37% -
+    not a motif, a slideshow. The schedule has to *reduce the number of motifs*, which
+    is the whole point of the user's edge-case decision, not pad each one to ``≥3``.
+    """
+    sections = ["verse", "chorus"] * 20  # forty shots
+    schedule = _motif_schedule(sections, [1, 2, 3, 4, 5])
+
+    kept = set(schedule.values())
+    assert len(kept) < 5, f"too many motifs survived on a short song: {sorted(kept)}"
+    assert len(schedule) <= int(len(sections) * .30), "the 30% cap was exceeded"
+    assert all(list(schedule.values()).count(motif) >= 3 for motif in kept)
+
+
+def test_motif_schedule_is_empty_for_a_film_too_short_to_hold_one() -> None:
+    """Two shots cannot hold a recurring theme, and the schedule says so rather than lie."""
+    assert _motif_schedule(["verse", "chorus"], [1, 2, 3]) == {}
+
+
+def test_section_target_length_inverts_intensity_into_the_window() -> None:
+    """R-01: intensity 1 asks for the shortest shot, intensity 0 for the longest."""
+    minimum, maximum = 1.5, 5.0
+    assert _section_target_length(1.0, minimum, maximum, 0.0, 0.0) == minimum
+    assert _section_target_length(0.0, minimum, maximum, 0.0, 0.0) == maximum
+    # ``speedup`` tightens toward the end of the section but never leaves the window.
+    late = _section_target_length(0.0, minimum, maximum, .5, 1.0)
+    assert minimum <= late < maximum
+
+
+def test_shot_lengths_follow_the_director_intensity_arc() -> None:
+    """R-01: the arc decides the shot length; the window only bounds it.
+
+    A ``flat_low`` arc (calm) has to cut longer shots than a ``flat_high`` one (intense),
+    and neither may leave the effective window - which is the explicit config's, not the
+    style's, per the priority decision.
+    """
+    analysis = _reach_song(160, ["intro", "verse", "chorus", "bridge", "outro"])
+    calm = create_plan(
+        analysis, _lines(160), _images(90), None, min_shot=1.8, max_shot=5.5,
+        treatment=_treatment(5, arc="flat_low"),
+    )
+    intense = create_plan(
+        analysis, _lines(160), _images(90), None, min_shot=1.8, max_shot=5.5,
+        treatment=_treatment(5, arc="flat_high"),
+    )
+
+    calm_mean = sum(shot.duration for shot in calm) / len(calm)
+    intense_mean = sum(shot.duration for shot in intense) / len(intense)
+    assert calm_mean > intense_mean + .5, (
+        f"the arc barely moved the cut: calm {calm_mean:.2f}s vs intense {intense_mean:.2f}s"
+    )
+    assert max(shot.duration for shot in intense) <= 5.5 + 1e-6
+    assert min(shot.duration for shot in intense) >= 1.8 - 1e-6
 
 
 def test_scarce_assets_are_spread_evenly_instead_of_repeating_hero_shots() -> None:
@@ -337,6 +527,94 @@ def test_asset_repeat_policy_can_be_turned_off() -> None:
 
     assert len({shot.media_id for shot in strict}) == len(strict)
     assert len({shot.media_id for shot in loose}) < len(loose)
+
+
+def test_video_quota_lifts_real_motion_above_the_still_floor() -> None:
+    """R-08: a soft quota so real footage does not drown in the still library.
+
+    The clips here are shorter than the shots, so the scorer's loop penalty pushes them
+    below the stills and an unquoted edit leaves them on the shelf. The quota keeps the
+    video share at or above the 15% target, and the non-motif zero-reuse rule stays
+    intact - the quota only ever prefers videos the tier already offers.
+    """
+    analysis = _grid(120)
+    lyrics = _lines(120)
+    # A deep still library is the starvation case: the clips are short enough to score
+    # below the stills, and there are far more stills than shots, so an unquoted edit
+    # leaves every clip on the shelf.
+    assets = _images(120) + _videos(10, start=120, duration=2.0)
+
+    off = create_plan(analysis, lyrics, assets, None, min_shot=1.8, max_shot=5.5)
+    on = create_plan(
+        analysis, lyrics, assets, None, min_shot=1.8, max_shot=5.5, video_quota=.15,
+    )
+
+    on_share = sum(1 for shot in on if shot.kind == "video") / len(on)
+    off_share = sum(1 for shot in off if shot.kind == "video") / len(off)
+    assert on_share >= .15, f"the video quota left real motion at {on_share:.0%}"
+    assert on_share > off_share, "the quota did not change anything"
+
+
+def test_quality_floor_keeps_the_worst_footage_off_screen() -> None:
+    """R-09: an unusable source (a photo of a screen) is gated by quality.
+
+    With plenty of good material above the P5 floor the gate holds and the bad asset is
+    never chosen as a primary shot.
+    """
+    analysis = _grid(60)
+    lyrics = _lines(60)
+    assets = [
+        *_images(20),
+        MediaAsset(20, Path("screen-photo.jpg"), "image", float("inf"), 1920, 1080,
+                   quality_score=.02),
+    ]
+
+    shots = create_plan(
+        analysis, lyrics, assets, None, min_shot=1.8, max_shot=5.5, quality_floor=.45,
+    )
+
+    assert all(shot.media_id != 20 for shot in shots), "the P5 gate let a bad source through"
+
+
+def test_quality_floor_gives_way_and_records_it_when_nothing_is_good_enough() -> None:
+    """R-09 + R-02: the gate may release, but never silently.
+
+    When the pool holds nothing above the floor the gate has to release - there is a film
+    to make - and the surrender is written into the ``ConfigAudit`` rather than swallowed.
+    """
+    analysis = _grid(40)
+    lyrics = _lines(40)
+    assets = [
+        MediaAsset(0, Path("bad-a.jpg"), "image", float("inf"), 1920, 1080, quality_score=.10),
+        MediaAsset(1, Path("bad-b.jpg"), "image", float("inf"), 1920, 1080, quality_score=.12),
+    ]
+    audit = ConfigAudit()
+
+    shots = create_plan(
+        analysis, lyrics, assets, None, min_shot=1.8, max_shot=5.5,
+        quality_floor=.90, audit=audit,
+    )
+
+    assert shots, "the gate must release rather than render nothing"
+    assert any(item["key"] == "quality_floor" for item in audit.as_list()), (
+        "the quality gate degraded without declaring it"
+    )
+
+
+def test_a_pool_where_every_asset_is_a_motif_still_plans() -> None:
+    """R-03 edge case: with no non-motif supply the ranking stands, no slot is left empty.
+
+    A three-photo project can have all three named as motifs, which empties the non-motif
+    pool the main loop draws from. The fallback must be "rank everything", not ``max()``
+    over an empty list.
+    """
+    shots = create_plan(
+        _grid(60), _lines(60), _images(3), None, min_shot=1.8, max_shot=5.5,
+        motifs=[0, 1, 2],
+    )
+
+    assert shots
+    assert all(shot.media_id in {0, 1, 2} for shot in shots)
 
 
 def test_least_used_tier_and_reuse_penalty_follow_visible_history() -> None:
@@ -480,13 +758,16 @@ def test_planned_effects_are_all_names_the_renderer_can_build() -> None:
     """A name the renderer does not recognise degrades silently to a default move.
 
     That failure is invisible in the plan and only shows up as a whole video of
-    identical push-ins, so pin the vocabulary from both ends.
+    identical push-ins, so pin the vocabulary from both ends. ``parallax`` is gone
+    (R-04): its whole mechanism was the same-image double the single-image rework
+    forbids, so it is not a name the planner may still emit.
     """
     from beatforge.renderer import _CAMERA_MOVES
 
     known = set(_CAMERA_MOVES) | set(IMAGE_COMPOSITES) | {
-        "film_bars", "iris", "parallax", "source_video",
+        "film_bars", "iris", "source_video",
     }
+    assert "parallax" not in known
     shots = create_plan(
         _varied_song(), _lines(120), _images(90), None,
         min_shot=1.5, max_shot=4, image_composite_ratio=.35,
@@ -511,7 +792,6 @@ def test_planned_transition_families_are_all_known_to_the_renderer() -> None:
     assert len(used) >= 8, f"the plan barely used the vocabulary: {sorted(used)}"
 
 
-
 def test_every_camera_move_is_reachable_from_some_song() -> None:
     """A move the planner can never pick is dead weight, and nothing would say so.
 
@@ -522,73 +802,84 @@ def test_every_camera_move_is_reachable_from_some_song() -> None:
 
     Which names a narrow branch can reach depends on the *phase* of the rotation where
     the branch starts, and that phase comes from how many single-image shots preceded
-    it. Sweep the song length as well as its mood: an impact branch that is entered at
-    counter 11 only ever offers four of its five moves, however many moods it is tried
-    against, because every song of the same length enters it at the same place. Two
-    lengths is enough to shift the phase.
+    it. Sweep the song length, the mood *and* the director's ``cut_intensity`` arc (R-01
+    rewrites the cut grid, so the same song with a different arc enters every branch at
+    a different counter). ``flat_low`` and ``flat_high`` differ in shot count as well as
+    phase, and the three lengths alone are not enough once a treatment is driving the
+    boundaries.
     """
     from beatforge.renderer import _CAMERA_MOVES
 
     labels = ["intro", "verse", "chorus", "bridge", "solo", "outro"]
     used: set[str] = set()
-    for duration in (160.0, 152.0):
+    for duration in (160.0, 152.0, 168.0):
         for mood in ("energetic", "uplifting", "melancholic", "dreamy", "romantic", "dark", "cinematic"):
             for peak in (.5, .95):
                 for melody in (.3, .9):
-                    analysis = AudioAnalysis(
-                        duration=duration, bpm=120,
-                        beats=[x / 2 for x in range(int(duration * 2) + 1)],
-                        downbeats=[float(x) for x in range(0, int(duration) + 1, 2)],
-                        sections=[index * duration / len(labels) for index in range(len(labels) + 1)],
-                        energy_times=[0, duration * .25, duration * .45, duration * .75, duration],
-                        energy_values=[.15, .95, .6, peak, .2],
-                        average_energy=.5, brightness=.5, mood=mood,
-                        mood_scores={mood: 1}, section_labels=labels,
-                        melody_times=[0, duration / 2, duration], melody_values=[.2, melody, .3],
-                        melodic_motion=.6, rhythmic_density=80,
-                    )
+                    analysis = _reach_song(duration, labels, mood=mood, peak=peak, melody=melody)
                     shots = create_plan(
                         analysis, _lines(duration), _images(80), None,
                         min_shot=1.5, max_shot=4, image_composite_ratio=.35,
                     )
                     used.update(shot.image_effect for shot in shots)
 
+    # The director arc then moves the same song's boundaries, and with them the phase of
+    # every rotation - the R-01 dimension the original sweep did not have.
+    for arc in ("flat_low", "flat_high", "rise", "fall", "alternate"):
+        for intent in ("continuity", "breathe", "impact"):
+            analysis = _reach_song(160.0, labels, mood="cinematic", peak=.8, melody=.6)
+            shots = create_plan(
+                analysis, _lines(160), _images(80), None,
+                min_shot=1.5, max_shot=4, image_composite_ratio=.35,
+                treatment=_treatment(len(labels), arc=arc, intent=intent),
+            )
+            used.update(shot.image_effect for shot in shots)
+
     missing = sorted(set(_CAMERA_MOVES) - used)
     assert not missing, f"no song can select these moves: {missing}"
 
 
 def test_every_transition_family_is_reachable_from_some_song() -> None:
-    """Same starvation risk as the camera moves, but with a different cause.
+    """Same starvation risk as the camera moves, but with three extra causes.
 
     A transition branch is narrow - ``open`` only fires on a section change in a
     dreamy song, ``radial`` only on a section change into the chorus in a restless
-    one - so rotating on the cut index lets its few firings land on the same residue
-    and starve the rest of the group. Rotating on the visible count fixes that, but
-    reachability still depends on the *song*: a layout whose section boundaries all
-    sit above the ``.78`` energy gate never reaches the chorus branch at all. These
-    eight layouts are the smallest set that covers the whole library, found by
-    sweeping layouts against energy shapes; a single fixed song covers about half.
+    one, ``close`` only on a *quiet* seam in a restless song - so rotating on the cut
+    index lets its few firings land on the same residue and starve the rest of the
+    group. Rotating on the visible count fixes that, but reachability still depends on
+    the *song*, the *style flavour* and, since R-07, the *director's authorisation*:
+
+    - ``flash``/``glitch``/``film_burn``/``light_leak`` need a ``transition_tone`` of
+      bright or dark (or an ``impact`` intent) before they may appear at all;
+    - ``squeeze`` lives only in the style's impact pool, so a balanced sweep alone can
+      never reach it;
+    - ``close`` needs a restless song *and* a flavour that will not quieten it away.
+
+    Sweep all three. A NEUTRAL treatment - the old fixture - would quietly starve the
+    loud families and nothing would have caught it.
     """
     from beatforge.renderer import _EFFECT_TRANSITIONS, _TRANSITION_LIBRARY
 
     layouts = {
         "six": ["intro", "verse", "chorus", "bridge", "solo", "outro"],
         "vcvc": ["verse", "chorus", "verse", "chorus", "outro"],
+        # Ten alternating sections so the restless "quiet seam" branch fires often
+        # enough to walk its whole rotation and expose ``close``.
+        "solo": ["verse", "solo"] * 5,
     }
     shapes = {
         "fall": ([0, 45, 90, 160], [.9, .25, .85, .3]),
         "rise": ([0, 30, 55, 100, 160], [.15, .95, .5, .9, .2]),
         "early": ([0, 25, 50, 80, 160], [.95, .3, .95, .35, .2]),
+        # A flat mid level: never loud enough for the flash branch, so the quiet and
+        # mid-energy branches get their turn.
+        "flat": ([0, 160], [.6, .6]),
+        # A flat high level: always above the energy gate, for the inside-section pool.
+        "high": ([0, 160], [.82, .82]),
     }
-    sweep = [
-        ("six", "fall", "energetic"), ("six", "fall", "dreamy"),
-        ("six", "fall", "cinematic"), ("six", "rise", "energetic"),
-        ("six", "rise", "dreamy"), ("six", "early", "energetic"),
-        ("six", "early", "dreamy"), ("vcvc", "early", "energetic"),
-    ]
-
     used: set[str] = set()
-    for layout, shape, mood in sweep:
+
+    def run(layout: str, shape: str, mood: str, *, style=None, treatment=None) -> None:
         labels = layouts[layout]
         times, values = shapes[shape]
         analysis = AudioAnalysis(
@@ -605,8 +896,34 @@ def test_every_transition_family_is_reachable_from_some_song() -> None:
         shots = create_plan(
             analysis, _lines(160), _images(80), None,
             min_shot=1.5, max_shot=4, transition_density=1,
+            style=style, treatment=treatment,
         )
         used.update(shot.transition for shot in shots)
+
+    # (a) the three style flavours over a spread of songs. The flavour decides which
+    # inside-section pool is used, and whether impact families are quietened away.
+    for style_name in ("beat", "montage", "cinematic"):
+        style = EDIT_STYLES[style_name]
+        for layout in ("six", "vcvc", "solo"):
+            for shape in ("fall", "rise", "early", "flat"):
+                for mood in ("energetic", "dreamy"):
+                    run(layout, shape, mood, style=style)
+
+    # (b) director arcs, with the tone R-07 needs to authorise the impact families.
+    # Without a bright/dark tone a loud seam falls back to a quiet family.
+    for arc in ("flat_low", "flat_high", "rise", "fall", "alternate"):
+        for tone in ("dark", "bright", "soft"):
+            for intent in ("continuity", "impact"):
+                treatment = _treatment(6, arc=arc, tone=tone, intent=intent)
+                run("six", "rise", "energetic", treatment=treatment)
+
+    # (c) style *and* treatment together: an impact-flavoured edit that the director has
+    # authorised, on a song that never drops below the inside-section energy gate. This
+    # is the only path to ``squeeze``, which lives solely in the impact pool.
+    for tone in ("dark", "bright"):
+        for layout in ("six", "solo"):
+            run(layout, "high", "energetic",
+                style=EDIT_STYLES["beat"], treatment=_treatment(6, tone=tone))
 
     known = set(_TRANSITION_LIBRARY) | set(_EFFECT_TRANSITIONS)
     missing = sorted(known - used)

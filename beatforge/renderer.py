@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import numpy as np
 from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection
 from beatforge.fonts import stage_fonts
+from beatforge.legibility import adaptive_outline, estimate_region_luma, needs_local_dim
 from beatforge.lyrics import LyricLine, Placement, plan_placements, write_ass
 from beatforge.planner import IMAGE_COMPOSITES, Shot
 from beatforge.runtime import command, duration
@@ -20,6 +22,17 @@ from beatforge.runtime import command, duration
 _KNOCKOUT_LIFT = 0.16
 _KNOCKOUT_DIM = -0.10
 _KNOCKOUT_SATURATION = 1.25
+
+#: How far the glyph-shaped patch of picture is pulled down under a bright-backdrop line
+#: (R-05's local dim). Smaller than the knockout dim because it is confined to the
+#: letters' own halo rather than the whole frame - enough to seat the type, no more.
+_SUBTITLE_DIM = -0.14
+
+#: Half the padding drawn around a line's placements when its backdrop is measured, as
+#: fractions of the frame. The measured box is a little larger than the type itself, so a
+#: bright edge just outside the letters still counts towards the reading.
+_LINE_REGION_X = .16
+_LINE_REGION_Y = .07
 
 
 def render(
@@ -65,17 +78,35 @@ def render(
     # project's own directory means the bundled families are actually reachable.
     fonts_dir = stage_fonts(config.subtitle_fonts_dir)
     placements = _subtitle_placements(lyrics, shots, config)
+    # Read the backdrop under each line, so a line over a bright beach gets a heavier
+    # outline than one over a night scene (R-05). The reading is purely CPU.
+    line_lumas = _subtitle_lumas(lyrics, shots, placements, config, cache)
+    line_outlines = [
+        adaptive_outline(
+            luma, config.subtitle_outline, max_outline=config.subtitle_max_outline,
+        )
+        for luma in line_lumas
+    ] if lyrics else None
+    dim_windows = _dim_windows(lyrics, line_lumas)
     write_ass(
         lyrics, subtitle, width=config.width, height=config.height,
         font=art.font, size=config.subtitle_size, weight=art.font_weight,
         margin=config.subtitle_margin, effect=art.base_subtitle_effect,
         highlight_color=art.highlight_color, line_effects=art.line_effects,
         placements=placements, outline=config.subtitle_outline,
+        line_outlines=line_outlines,
         mask_only=config.subtitle_fill == "knockout",
     )
     args = ["ffmpeg", "-y", "-v", "error", "-i", str(picture), "-i", str(music)]
     if lyrics and config.subtitle_fill == "knockout":
         args += ["-filter_complex", _knockout_graph(subtitle, duration(picture), config, fonts_dir),
+                 "-map", "[vout]"]
+    elif lyrics and dim_windows:
+        # A line sits over a bright enough backdrop that an outline alone will not hold
+        # it: dim the glyph-shaped patch of picture under just those lines (R-05). No
+        # backdrop is added anywhere else - the default frame has no scrim.
+        args += ["-filter_complex",
+                 _legibility_graph(subtitle, duration(picture), config, fonts_dir, dim_windows),
                  "-map", "[vout]"]
     elif lyrics:
         args += ["-vf", _subtitle_filter(subtitle, config, fonts_dir), "-map", "0:v:0"]
@@ -134,6 +165,35 @@ def _knockout_graph(subtitle: Path, seconds: float, cfg: RenderConfig, fonts_dir
     )
 
 
+def _legibility_graph(
+    subtitle: Path, seconds: float, cfg: RenderConfig, fonts_dir: Path | None,
+    windows: list[tuple[float, float]],
+) -> str:
+    """Draw the lyric over a glyph-shaped patch of slightly dimmed picture.
+
+    This is the optional half of R-05: the outline already thickens on a bright backdrop,
+    but where the picture is *very* bright the letters can still wash out. Rather than lay
+    a translucent scrim across the whole frame - which would dim the picture the audience
+    came to see - the frame is darkened only inside the shape of the letters, and the
+    whole patch is gated to the on-screen window of the lines that asked for it. A line is
+    only visible during its own window, so gating the patch by time confines the dim to
+    exactly the lines that needed it.
+
+    When no line needs it the caller simply draws the plain ``ass`` filter, so the default
+    frame carries no scrim at all.
+    """
+    enable = "+".join(f"between(t,{start:.3f},{end:.3f})" for start, end in windows)
+    return (
+        f"[0:v]split=2[base][treat];"
+        f"[treat]eq=brightness={_SUBTITLE_DIM:.3f},format=rgba[halosink];"
+        f"color=c=black:s={cfg.width}x{cfg.height}:r={cfg.fps}:d={seconds:.3f},"
+        f"{_subtitle_filter(subtitle, cfg, fonts_dir)},format=gray[mask];"
+        f"[halosink][mask]alphamerge[halo];"
+        f"[base][halo]overlay=0:0:format=auto:enable='{enable}',"
+        f"{_subtitle_filter(subtitle, cfg, fonts_dir)},format=yuv420p[vout]"
+    )
+
+
 def _subtitle_placements(
     lyrics: list[LyricLine], shots: list[Shot], cfg: RenderConfig,
 ) -> list[list[Placement]] | None:
@@ -153,26 +213,95 @@ def _subtitle_placements(
     )
 
 
-def _lyric_focus_points(
-    lyrics: list[LyricLine], shots: list[Shot],
-) -> list[tuple[float, float] | None]:
-    """The subject position of the shot each lyric lands in.
+def _lyric_shot_indices(lyrics: list[LyricLine], shots: list[Shot]) -> list[int]:
+    """Which shot each lyric line lands in.
 
     Shots and lyrics are both in time order, so one walk covers the whole list rather
-    than searching the shot list again for every line.
+    than searching the shot list again for every line. The line's midpoint decides the
+    shot it belongs to, which is what a viewer reads as "the picture the words are over".
     """
-    points: list[tuple[float, float] | None] = []
+    indices: list[int] = []
     cursor = 0
     for line in lyrics:
         midpoint = (line.start + line.end) / 2
         while cursor < len(shots) - 1 and shots[cursor].end <= midpoint:
             cursor += 1
-        focus = shots[cursor].focus_point if shots else None
+        indices.append(cursor)
+    return indices
+
+
+def _lyric_focus_points(
+    lyrics: list[LyricLine], shots: list[Shot],
+) -> list[tuple[float, float] | None]:
+    """The subject position of the shot each lyric lands in."""
+    points: list[tuple[float, float] | None] = []
+    for index in _lyric_shot_indices(lyrics, shots):
+        focus = shots[index].focus_point if shots else None
         points.append(
             (float(focus[0]), float(focus[1]))
             if focus and len(focus) == 2 else None
         )
     return points
+
+
+def _subtitle_lumas(
+    lyrics: list[LyricLine], shots: list[Shot], placements: list[list[Placement]] | None,
+    cfg: RenderConfig, cache: Path,
+) -> list[float]:
+    """The backdrop luminance under each lyric line, for the outline and dim decisions.
+
+    The reading is taken from the *source* media of the shot the line lands in, over the
+    region the line occupies - the band it sits in, or the box its placements cover. A
+    video contributes a single cached frame. Anything unreadable returns a neutral
+    mid-grey, so a lyric always gets an outline and never blocks a render.
+    """
+    if not lyrics:
+        return []
+    legibility_cache = cache / "legibility"
+    lumas: list[float] = []
+    for index in range(len(lyrics)):
+        if not shots:
+            lumas.append(.5)
+            continue
+        shot = shots[_lyric_shot_indices(lyrics, shots)[index]]
+        focus = shot.focus_point if shot.focus_point and len(shot.focus_point) == 2 else None
+        lumas.append(estimate_region_luma(
+            shot.file, shot.kind, focus, _line_region(index, placements, cfg),
+            legibility_cache, at=shot.source_start,
+        ))
+    return lumas
+
+
+def _line_region(
+    index: int, placements: list[list[Placement]] | None, cfg: RenderConfig,
+) -> tuple[float, float, float, float]:
+    """The normalised box a line occupies: its placements, or the bottom band.
+
+    With the free layout the box is drawn around the fragments the line was placed at; in
+    the band layout it is the strip at the foot of the frame the centred line sits in.
+    """
+    if placements and index < len(placements) and placements[index]:
+        row = placements[index]
+        xs = [fragment.x / max(cfg.width, 1) for fragment in row]
+        ys = [fragment.y / max(cfg.height, 1) for fragment in row]
+        return (
+            max(0.0, min(xs) - _LINE_REGION_X), max(0.0, min(ys) - _LINE_REGION_Y),
+            min(1.0, max(xs) + _LINE_REGION_X), min(1.0, max(ys) + _LINE_REGION_Y),
+        )
+    margin = cfg.subtitle_margin / max(cfg.height, 1)
+    size = cfg.subtitle_size / max(cfg.height, 1)
+    return (0.0, max(0.0, 1.0 - margin - size), 1.0, 1.0)
+
+
+def _dim_windows(
+    lyrics: list[LyricLine], lumas: list[float],
+) -> list[tuple[float, float]]:
+    """On-screen windows of the lines whose backdrop is bright enough to need a dim."""
+    return [
+        (line.start, line.end)
+        for line, luma in zip(lyrics, lumas)
+        if needs_local_dim(luma)
+    ]
 
 
 def _render_shot(
@@ -192,12 +321,9 @@ def _render_shot(
     visual = (f"scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase:flags=lanczos,"
               f"crop={cfg.width}:{cfg.height}:"
               f"x='clip(iw*{focus_x}-ow/2,0,iw-ow)':y='clip(ih*{focus_y}-oh/2,0,ih-oh)',setsar=1")
-    grade = art.grade_filter
-    effects = [
-        _shot_match_filter(shot, cfg.shot_match_strength),
-        grade,
-        _section_color_filter(shot, art, section_count, cfg.look_strength),
-    ]
+    # One merged grade, not three stacked ones (R-06): the shot match, the director's
+    # grade and the section tint all land on the same couple of operators.
+    effects = _grade_filter(shot, art, section_count, cfg)
     if cfg.visual_effects:
         upscale = (
             max(cfg.width / shot.source_width, cfg.height / shot.source_height)
@@ -207,10 +333,12 @@ def _render_shot(
             effects.append("unsharp=5:5:0.55:5:5:0")
         elif shot.motion == "gentle":
             effects.append("gblur=sigma=0.18")
-        if art.vignette:
-            effects.append("vignette=PI/5")
-        if art.grain > 0:
-            effects.append(f"noise=alls={art.grain}:allf=t+u")
+        vignette = _vignette(shot, art)
+        if vignette:
+            effects.append(vignette)
+        grain = _grain(shot, art)
+        if grain:
+            effects.append(grain)
     effects += _cut_effects(incoming, outgoing, render_duration, cfg)
     args = ["ffmpeg", "-y", "-v", "error"]
     args += ["-stream_loop", "-1", "-ss", str(shot.source_start)]
@@ -248,17 +376,18 @@ def _render_image_shot(
     for file in files:
         args += ["-loop", "1", "-framerate", str(cfg.fps), "-i", file]
     filters, current = _image_filter_graph(shot, cfg, art, render_duration, len(files))
-    finishing = [
-        _shot_match_filter(shot, cfg.shot_match_strength), art.grade_filter,
-        _section_color_filter(shot, art, section_count, cfg.look_strength),
-    ]
+    # The three color stages are merged into at most two operators (R-06), so a shot
+    # that used to carry six color ops now carries two.
+    finishing = _grade_filter(shot, art, section_count, cfg)
     if cfg.visual_effects:
         if shot.motion == "dynamic":
             finishing.append("unsharp=5:5:0.42:5:5:0")
-        if art.vignette:
-            finishing.append("vignette=PI/5")
-        if art.grain > 0:
-            finishing.append(f"noise=alls={art.grain}:allf=t+u")
+        vignette = _vignette(shot, art)
+        if vignette:
+            finishing.append(vignette)
+        grain = _grain(shot, art)
+        if grain:
+            finishing.append(grain)
     finishing += _cut_effects(incoming, outgoing, render_duration, cfg)
     finish = ",".join(item for item in finishing if item)
     # Normalize to the exact target canvas: a filter chain can emit an odd width, and
@@ -364,10 +493,10 @@ _CAMERA_MOVES: dict[str, _CameraMove] = {
     "pulse_in": _CameraMove(0.0, 0.105, curve="pulse", pulses=2),
 }
 
-# Parallax drives two planes of the same image at different rates; the gap between
-# the rates is the depth cue. The backdrop is magnified less and travels less.
-_PARALLAX_BACK = _CameraMove(0.0, 0.040, x_from=-0.050, x_to=0.050, y_to=-0.020)
-_PARALLAX_FRONT = _CameraMove(0.0, 0.055, x_from=-0.115, x_to=0.115, y_to=-0.045)
+# Parallax was removed with the single-image rework (R-04). Its two planes were the
+# same image split into a blurred backdrop and a scaled foreground - the dual-scale
+# double the rework forbids - and a real depth cue is not recoverable from a flat photo.
+# ``_framing_effect`` no longer emits it and the planner's vocabulary no longer carries it.
 
 _EASES = {
     "linear": lambda p: p,
@@ -624,19 +753,13 @@ def _image_filter_graph(
     amount = (max(.35, art.camera_intensity) * (1 + shot.melody * .18)
               * {"dynamic": 1.35, "gentle": .7}.get(shot.motion, 1.0))
 
-    # Parallax needs the backdrop and the foreground as separate streams, so it has
-    # to claim the input before anything composites the two together. With no
-    # blurred backdrop there is no second plane to offset, so it falls through to a
-    # plain camera move instead.
-    if effect == "parallax" and cfg.blurred_image_background:
-        _adapt_image_layers(filters, 0, "px", cfg.width, cfg.height, cfg)
-        for plane, plane_move in (("bg", _PARALLAX_BACK), ("fg", _PARALLAX_FRONT)):
-            quad = _camera_quad(plane_move, amount, direction, frames, cfg.fps, cfg.height / cfg.width)
-            filters.append(f"[px{plane}]{_perspective_filter(quad)}[px{plane}m]")
-        filters.append("[pxbgm][pxfgm]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1[composite]")
-        return filters, "[composite]"
-
-    _adapt_image(filters, 0, "adapted", cfg.width, cfg.height, cfg)
+    # R-04: a single image is cropped full-bleed to the canvas, exactly like the video
+    # branch - subject-aware, driven by ``focus_point``. There is no blurred same-source
+    # backdrop and no scaled foreground any more; that pair was one picture at two
+    # scales, which is the double the rework exists to kill. The scale also converts
+    # the still's full-range decode to the limited range the delivery expects.
+    _fill_frame(filters, 0, "adapted", cfg.width, cfg.height,
+                focus=shot.focus_point, full_range=True)
     move = _CAMERA_MOVES.get(effect, _CAMERA_MOVES["cinematic_depth"])
     # A breathe shot, or the outro, releases rather than drives: reverse a push so
     # the frame opens up instead of closing in. Moves that already end where they
@@ -646,6 +769,13 @@ def _image_filter_graph(
     quad = _camera_quad(move, amount, direction, frames, cfg.fps, cfg.height / cfg.width)
     filters.append(f"[adapted]{_perspective_filter(quad)}[moved]")
     current = "[moved]"
+    if effect == "focus_pull":
+        # R-04 redefines focus_pull as a same-scale rack focus rather than a
+        # blurred-backdrop double: one full-bleed frame split into a sharp copy and a
+        # blurred copy, cross-faded over the shot so the picture comes *into* focus.
+        # The two copies are the same size, so this is not the dual-scale double the
+        # single-image rework forbids - it is the sharpness axis, not the framing axis.
+        current = _focus_pull(filters, current, cfg, duration)
     if move.drag:
         # A whip pan travels several pixels in a single frame, which on its own reads
         # as a jump cut rather than as speed. Blending the neighbouring frames along
@@ -838,11 +968,14 @@ def _composite_graph(
         count = min(input_count, 4)
         # Deliberately the one composite that keeps the letterbox treatment: it shows
         # one image at a time rather than several at once, so there is no second field
-        # to compete with and no duplicate at a second scale. Keeping each frame inset
-        # also makes the montage read as a sequence of photographs rather than as a
-        # hard cut between full frames.
+        # to compete with, and keeping each frame inset makes the montage read as a
+        # sequence of photographs rather than as a hard cut between full frames. The
+        # backdrop is now a flat tile of the shot's dominant colour (``_matte_frame``)
+        # rather than a blurred copy of the same image - the same-source double is
+        # exactly what R-04 removes, and this was its last remaining user.
         for index in range(count):
-            _adapt_image(filters, index, f"montage{index}", cfg.width, cfg.height, cfg)
+            _matte_frame(filters, index, f"montage{index}", cfg.width, cfg.height,
+                         shot.source_color, cfg, duration)
         current = "[montage0]"
         planned_starts = [0.0, *(layer.enter_offset for layer in shot.layers[:count - 1])]
         if any(value <= 0 for value in planned_starts[1:]):
@@ -861,60 +994,87 @@ def _composite_graph(
     return None
 
 
-def _adapt_image_layers(
-    filters: list[str], input_index: int, label: str,
-    width: int, height: int, cfg: RenderConfig,
-) -> None:
-    """Emit the blurred backdrop and the sharp foreground as two separate labels.
-
-    ``_adapt_image`` overlays them immediately, which is what most effects want.
-    Parallax has to move each plane at its own rate *before* they meet, so it asks
-    for the labels and does the overlay itself.
-    """
-    foreground_width = max(2, round(width * cfg.image_foreground_scale / 2) * 2)
-    foreground_height = max(2, round(height * cfg.image_foreground_scale / 2) * 2)
-    blur = cfg.image_background_blur if cfg.blurred_image_background else 0
-    background_effect = f"gblur=sigma={blur:.2f},eq=brightness=-.055:saturation=.88" if blur > 0 else "null"
-    filters.append(
-        f"[{input_index}:v]split=2[{label}bgsrc][{label}fgsrc];"
-        f"[{label}bgsrc]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={width}:{height},{background_effect},setsar=1[{label}bg];"
-        f"[{label}fgsrc]scale={foreground_width}:{foreground_height}:"
-        f"force_original_aspect_ratio=decrease:flags=lanczos,setsar=1[{label}fg]"
-    )
-
-
-def _adapt_image(
-    filters: list[str], input_index: int, label: str,
-    width: int, height: int, cfg: RenderConfig,
-) -> None:
-    """Fit without distortion and fill any letterbox area with a blurred copy."""
-    _adapt_image_layers(filters, input_index, label, width, height, cfg)
-    filters.append(
-        f"[{label}bg][{label}fg]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1[{label}]"
-    )
-
-
 def _fill_frame(
     filters: list[str], input_index: int, label: str, width: int, height: int,
+    *, focus: list[float] | None = None, full_range: bool = False,
 ) -> None:
     """Scale to cover the region and crop the overflow, leaving no letterbox at all.
 
-    The blurred-backdrop treatment exists for one image that does not fill the frame,
-    and it is the wrong tool inside a composite twice over: each image brings its own
-    blurred field, so the frame ends up carrying two competing backgrounds, and the
-    picture appears twice at two different scales. A composite wants every panel
-    full-bleed, so the frame reads as one picture divided rather than as a collage.
+    This is the single-image path (R-04): the picture is cropped full-bleed to the
+    canvas and the overflow is thrown away. When ``focus`` is given the crop is driven
+    off the subject instead of the centre, exactly as the video branch does it, so a
+    lone portrait still keeps its subject. There is deliberately no ``decrease`` variant
+    - the removed ``_adapt_image`` pair was the same picture again at a second scale,
+    and nothing draws a picture inside a picture any more.
 
-    The format is pinned because panels get stacked: a JPEG decodes as full-range
-    ``yuvj420p`` and a PNG as RGB, and a stack of mismatched panels only works if
-    ffmpeg happens to insert the right conversion.
+    The format is pinned because these labels get stacked: a JPEG decodes as full-range
+    ``yuvj420p`` and a PNG as RGB, and a stack of mismatched panels only works if ffmpeg
+    happens to insert the right conversion. ``full_range`` additionally converts the
+    still's full-range decode to the limited range the delivery expects (R-06); the
+    composite panels stay full-range through the graph and are converted once at the end.
     """
+    if focus is not None:
+        focus_x, focus_y = _safe_focus(focus)
+        crop = (f"crop={width}:{height}:x='clip(iw*{focus_x}-ow/2,0,iw-ow)':"
+                f"y='clip(ih*{focus_y}-oh/2,0,ih-oh)'")
+    else:
+        crop = f"crop={width}:{height}"
+    range_arg = ":in_range=full:out_range=limited" if full_range else ""
     filters.append(
         f"[{input_index}:v]scale={width}:{height}:"
-        f"force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={width}:{height},setsar=1,format=yuv420p[{label}]"
+        f"force_original_aspect_ratio=increase:flags=lanczos{range_arg},"
+        f"{crop},setsar=1,format=yuv420p[{label}]"
     )
+
+
+def _matte_frame(
+    filters: list[str], input_index: int, label: str, width: int, height: int,
+    colour: list[int], cfg: RenderConfig, duration: float,
+) -> None:
+    """Lay an inset full-bleed picture over a flat tile of its own dominant colour.
+
+    The one composite that keeps the letterbox treatment (R-04): it shows one picture at
+    a time, so the inset carries its own reading - a run of photographs. What it must not
+    keep is the blurred same-source backdrop; a still, flat tile of the shot's dominant
+    colour fills the letterbox instead, which is the same intent without the double.
+    """
+    inset_width = _even(round(width * .92)) or 2
+    inset_height = _even(round(height * .92)) or 2
+    _fill_frame(filters, input_index, f"{label}pic", inset_width, inset_height)
+    base = list(colour)[:3]
+    padded = base + [128] * (3 - len(base))
+    red, green, blue = (max(0, min(255, int(value))) for value in padded)
+    tile = f"0x{red:02X}{green:02X}{blue:02X}"
+    filters.append(
+        f"color=c={tile}:s={width}x{height}:r={cfg.fps}:d={_plane_duration(duration, cfg):.4f}[{label}bg];"
+        f"[{label}bg][{label}pic]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1[{label}]"
+    )
+
+
+def _focus_pull(filters: list[str], label: str, cfg: RenderConfig, duration: float) -> str:
+    """Rack focus on one full-bleed frame, without a second-scale copy.
+
+    ``focus_pull`` used to mean "a sharp foreground over a softened backdrop", which was
+    the same-image double R-04 removes. Focus is the *sharpness* axis, not the framing
+    axis, so it moves from space to time: the frame is split into a sharp copy and a
+    blurred copy - same size, so not a dual-scale double - and the two are cross-faded
+    over the shot. The picture comes into focus. The blend is driven by ``T`` (seconds),
+    clamped so the frames pulled past the shot's end hold on the sharp copy.
+
+    ``blend`` only needs ``all_expr`` to drive a custom cross-fade; there is no ``custom``
+    *mode* in this ffmpeg (``all_mode=custom`` is rejected as an invalid value), and a mode
+    would be ignored anyway once an expression is present. ``A`` is the sharp input, ``B``
+    the blurred one, so the weight starts fully on ``B`` and lands fully on ``A``.
+    """
+    blur = max(1.6, cfg.width / 420)
+    span = max(0.01, duration)
+    filters.append(
+        f"{label}split=2[focussharp][focussoft];"
+        f"[focussoft]gblur=sigma={blur:.2f}[focusblur];"
+        f"[focussharp][focusblur]blend="
+        f"all_expr='A*clip(T/{span:.4f},0,1)+B*(1-clip(T/{span:.4f},0,1))'[focused]"
+    )
+    return "[focused]"
 
 
 def _safe_focus(value: list[float]) -> tuple[float, float]:
@@ -967,6 +1127,101 @@ def _section_color_filter(shot: Shot, art: ArtDirection, section_count: int, str
     return ""
 
 
+#: The two operators every color stage has to funnel through. Merging the shot match,
+#: the director's grade and the section tint onto these two is R-06 - the three stages
+#: used to stack up to six operators on one shot.
+_EQ_KNOB = re.compile(r"\b(brightness|contrast|saturation)=(-?\d*\.?\d+)")
+_CB_KNOB = re.compile(r"\b(rs|gs|bs)=(-?\d*\.?\d+)")
+
+#: Ceiling on the *multiplied* saturation gain. Each stage is "subtle" on its own, but
+#: three of them multiplied can push a warm, low-chroma source far past a natural grade.
+_MAX_SATURATION = 1.10
+
+#: A vignette only helps a picture whose edges are bright enough to be pulled down
+#: without going muddy. Below this the corners are already dark and it only crushes them.
+_VIGNETTE_EDGE_LUMA = 0.19
+
+#: A source carrying this much high-frequency energy is already as grainy as the grade
+#: wants; adding more only feeds the encoder noise it then spends bits preserving.
+_GRAIN_NOISE_CEILING = 0.6
+
+
+def _grade_filter(
+    shot: Shot, art: ArtDirection, section_count: int, cfg: RenderConfig,
+) -> list[str]:
+    """The shot's whole color grade, as at most two operators (R-06).
+
+    The shot match, the director's ``grade_filter`` and the section tint used to run one
+    after another - up to six ``eq``/``colorbalance`` operators on a single shot, which
+    makes the grade impossible to read back. They are folded here into at most one ``eq``
+    (brightness summed, contrast and saturation multiplied) and at most one
+    ``colorbalance`` (the vectors summed). Neutral operators are dropped and the merged
+    saturation gain is clamped, so a pile of individually-"subtle" stages cannot add up
+    to a look nobody chose.
+    """
+    brightness, contrast, saturation = 0.0, 1.0, 1.0
+    red, green, blue = 0.0, 0.0, 0.0
+    stages = (
+        _shot_match_filter(shot, cfg.shot_match_strength),
+        art.grade_filter,
+        _section_color_filter(shot, art, section_count, cfg.look_strength),
+    )
+    for stage in stages:
+        if not stage:
+            continue
+        for name, value in _EQ_KNOB.findall(stage):
+            amount = float(value)
+            if name == "brightness":
+                brightness += amount
+            elif name == "contrast":
+                contrast *= amount
+            else:
+                saturation *= amount
+        for name, value in _CB_KNOB.findall(stage):
+            amount = float(value)
+            if name == "rs":
+                red += amount
+            elif name == "gs":
+                green += amount
+            else:
+                blue += amount
+    saturation = min(saturation, _MAX_SATURATION)
+    operators: list[str] = []
+    if abs(brightness) > 1e-6 or abs(contrast - 1) > 1e-6 or abs(saturation - 1) > 1e-6:
+        operators.append(
+            f"eq=brightness={brightness:.4f}:contrast={contrast:.4f}:saturation={saturation:.4f}"
+        )
+    if max(abs(red), abs(green), abs(blue)) > 1e-6:
+        operators.append(f"colorbalance=rs={red:.4f}:gs={green:.4f}:bs={blue:.4f}")
+    return operators
+
+
+def _vignette(shot: Shot, art: ArtDirection) -> str:
+    """The vignette filter, or ``""`` when the source would only be crushed by it.
+
+    R-06 makes the vignette conditional. It is a tool for a bright, flat-edged frame;
+    applied to one already dark at the edges it simply eats the corners. The gate reads
+    ``edge_luma`` - the brightness of the *border*, measured at discovery - so a dark
+    subject against a bright wall still earns its vignette.
+    """
+    if not art.vignette or shot.edge_luma < _VIGNETTE_EDGE_LUMA:
+        return ""
+    return "vignette=PI/5"
+
+
+def _grain(shot: Shot, art: ArtDirection) -> str:
+    """The grain filter, or ``""`` when the source already carries noise (R-06).
+
+    Grain used to be applied unconditionally, so a double-compressed source got a second
+    layer of noise and the encoder then paid to preserve it - which is the R-12 volume
+    problem in reverse. The gate reads ``noise_score`` so a clean source keeps its film
+    texture.
+    """
+    if art.grain <= 0 or shot.noise_score >= _GRAIN_NOISE_CEILING:
+        return ""
+    return f"noise=alls={art.grain}:allf=t+u"
+
+
 def _video_encode_args(cfg: RenderConfig, *, intermediate: bool) -> list[str]:
     args = [
         "-c:v", "libx264", "-preset", cfg.preset,
@@ -975,6 +1230,10 @@ def _video_encode_args(cfg: RenderConfig, *, intermediate: bool) -> list[str]:
     ]
     if cfg.encoder_tune != "none":
         args.extend(["-tune", cfg.encoder_tune])
+    # R-06: deliver limited range explicitly. The still links convert to limited at the
+    # source, and this tag is what makes the player read the frames that way instead of
+    # inferring the range from the picture.
+    args.extend(["-color_range", "tv"])
     return args
 
 

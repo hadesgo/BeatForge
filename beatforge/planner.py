@@ -14,7 +14,21 @@ from beatforge.lyrics import LyricLine
 from beatforge.media import MediaAsset
 
 if TYPE_CHECKING:
+    from beatforge.audit import ConfigAudit
     from beatforge.models.ai_director import DirectorTreatment, SectionDirection
+
+#: Share of the film a director's motifs should occupy, in total. Kept as a module
+#: constant so ``scripts/reuse_probe.py`` can be pointed at it: the acceptance band is
+#: 8%–30%, and this is the single number that moves it.
+_MOTIF_SHARE = 0.10
+#: Hard ceiling on motif shots, whatever the share works out to. A song where
+#: ``shot_count * share / len(motifs)`` would push the motif share past this has too
+#: many motifs enabled, not too few repeats - so the schedule drops motifs instead.
+_MOTIF_CAP_SHARE = 0.30
+#: Every motif is expected to come back at least this often, when the song is long
+#: enough to hold it. The number is a floor to aim for, not a guarantee: at eight shots,
+#: three appearances for even one motif is more than the cap allows.
+_MOTIF_MIN_REPEATS = 3
 
 
 @dataclass(slots=True)
@@ -49,7 +63,6 @@ class Shot:
     section: str = "unknown"
     edit_intent: str = "continuity"
     transition_tone: str = "neutral"
-    camera_motion: str = "unknown"
     section_index: int = -1
     source_color: list[int] = field(default_factory=lambda: [128, 128, 128])
     focus_point: list[float] = field(default_factory=lambda: [.5, .5])
@@ -57,6 +70,13 @@ class Shot:
     source_height: int = 0
     image_effect: str = "cinematic_depth"
     layers: list[ShotLayer] = field(default_factory=list)
+    #: This shot is a reserved appearance of one of the director's motifs.
+    is_motif: bool = False
+    #: Brightness/exposure of the source, carried off the asset for the grade and the
+    #: vignette gate. The renderer reads the shot, never the media file again.
+    luma: float = 0.5
+    edge_luma: float = 0.5
+    noise_score: float = 0.0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -80,25 +100,34 @@ def create_plan(
     avoid_asset_repeats: bool = True,
     transition_density: float | None = None,
     style: EditStyle | None = None,
+    motifs: list[int] | None = None,
+    video_quota: float = 0.0,
+    quality_floor: float = 0.0,
+    audit: ConfigAudit | None = None,
 ) -> list[Shot]:
     """Lay out shots on the musical grid and pick media for each of them.
 
-    Reuse policy: an asset that is already on screen is only chosen again when the
-    remaining untouched assets can no longer cover the remaining shots. While the
-    supply lasts, every shot gets something the audience has not seen yet.
+    Reuse policy (R-03): a **non-motif** asset that is already on screen is only chosen
+    again once every non-motif asset has been seen - while the untouched supply lasts,
+    each shot gets something new. The director's **motifs** are the deliberate exception:
+    they are scheduled into reserved slots ahead of time and come back on purpose, so the
+    film has a handful of images the audience recognises instead of 255 strangers.
 
-    A style owns the settings it has an opinion about - shot length, transition
-    density, composite ratio - because a style and a hand-set value are two answers to
-    the same question. Everything it does not name is taken from the arguments.
+    A style still sets the *habit* - which grid a cut lands on, how loud a transition may
+    be - but it no longer owns the shot-length window: that is decided in
+    ``audit.apply_style`` (explicit config first), and this function only falls back to
+    the style's window when no explicit one was passed. ``min_shot``/``max_shot`` given
+    here are used as-is when present.
     """
-    if style is not None:
-        min_shot, max_shot = style.shot_min, style.shot_max
-        transition_density = style.transition_density
-        image_composite_ratio = style.composite_ratio
     if min_shot is None or max_shot is None:
-        raise ValueError("需要给出 min_shot/max_shot，或指定一个 edit_style")
-    transition_density = .35 if transition_density is None else transition_density
-    image_composite_ratio = .24 if image_composite_ratio is None else image_composite_ratio
+        if style is None:
+            raise ValueError("需要给出 min_shot/max_shot，或指定一个 edit_style")
+        min_shot = style.shot_min if min_shot is None else min_shot
+        max_shot = style.shot_max if max_shot is None else max_shot
+    if transition_density is None:
+        transition_density = style.transition_density if style else .35
+    if image_composite_ratio is None:
+        image_composite_ratio = style.composite_ratio if style else .24
     boundaries = _boundaries(analysis, lyrics, min_shot, max_shot, treatment, style)
     # How hard this edit insists on a shot-size change across a cut.
     contrast = style.shot_size_contrast if style else .09
@@ -106,7 +135,6 @@ def create_plan(
     usage: dict[int, int] = {}
     last_seen: dict[int, int] = {}
     previous: MediaAsset | None = None
-    chorus_motifs: list[int] = []
     video_cursors: dict[int, float] = {}
     lyric_visual_history: dict[str, set[int]] = {}
     active_line_id: int | None = None
@@ -114,10 +142,24 @@ def create_plan(
     active_line_visual_assets: set[int] = set()
     shots: list[Shot] = []
     shot_count = len(boundaries) - 1
-    # Camera-move rotations advance on this, not on the shot index. Composites claim a
-    # share of the shots, and a rotation keyed off the global index would then lose
-    # whichever slots those shots occupied - with enough composites in one section, a
-    # whole group of moves can never be reached at all.
+    columns = {asset.id: index for index, asset in enumerate(assets)}
+    by_id = {asset.id: asset for asset in assets}
+    active_motifs = [motif for motif in dict.fromkeys(motifs if motifs is not None
+                    else (treatment.motif_asset_ids if treatment else [])) if motif in by_id]
+    motif_ids = set(active_motifs)
+    # Motifs are reserved *before* the main loop, from the section each shot lands in, so
+    # the schedule never depends on which asset the scorer would have picked - and the
+    # plan stays reproducible.
+    shot_sections = [
+        section_at(analysis, (start + end) / 2)[0] for start, end in pairwise(boundaries)
+    ]
+    reserved = _motif_schedule(shot_sections, active_motifs)
+    video_target = round(shot_count * max(0.0, video_quota))
+    used_videos = 0
+    # Camera-move rotations advance on this, not on the shot index. Composites and motif
+    # slots claim a share of the shots, and a rotation keyed off the global index would
+    # then lose whichever slots those shots occupied - with enough composites in one
+    # section, a whole group of moves can never be reached at all.
     single_image_cursor = 0
     for index, (start, end) in enumerate(pairwise(boundaries)):
         midpoint = (start + end) / 2
@@ -131,10 +173,19 @@ def create_plan(
             active_line_visual_assets = set()
         previously_visible_for_lyric = lyric_visual_history.get(active_lyric_key, set())
         remaining_shots = shot_count - index
-        minimum_usage, least_used = _least_used_assets(assets, usage)
+        reserved_remaining = sum(1 for slot in reserved if slot >= index)
+        non_motif_assets = [asset for asset in assets if asset.id not in motif_ids]
+        non_motif_min = (
+            min(usage.get(asset.id, 0) for asset in non_motif_assets)
+            if non_motif_assets else 0
+        )
+        non_motif_least = [
+            asset for asset in non_motif_assets if usage.get(asset.id, 0) == non_motif_min
+        ]
         # Assets left over after covering every remaining shot with a distinct one.
-        # Only this surplus may be spent on composite layers.
-        spare_assets = len(least_used) - remaining_shots
+        # Only this surplus may be spent on composite layers, and motifs are not part of
+        # the supply - they are already spoken for by ``reserved``.
+        spare_assets = len(non_motif_least) - (remaining_shots - reserved_remaining)
         energy = analysis.energy_at(midpoint)
         section, section_index = section_at(analysis, midpoint)
         direction = treatment.section(section_index) if treatment else None
@@ -149,28 +200,73 @@ def create_plan(
             continuity = _color_similarity(previous, asset) * (.08 if section != "chorus" else .03)
             shot_variety = -contrast if previous and previous.shot_size != "unknown" and previous.shot_size == asset.shot_size else 0
             section_fit = .10 if section == "chorus" and asset.kind == "video" else .06 if section in {"intro", "outro"} and asset.kind == "image" else 0
-            motif = .12 if section == "chorus" and asset.id in chorus_motifs else 0
             director_score = _director_asset_score(asset, direction, treatment)
             duration_penalty = .24 if asset.kind == "video" and asset.duration < shot_duration + .25 else 0.0
             framing_penalty = _framing_penalty(asset, target_width / max(target_height, 1))
             upscale_penalty = _upscale_penalty(asset, target_width, target_height)
-            score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + motif + director_score - repeat - duration_penalty - framing_penalty - upscale_penalty
+            score = semantic + mood + movement + quality + continuity + shot_variety + section_fit + director_score - repeat - duration_penalty - framing_penalty - upscale_penalty
             ranked.append((score, asset, semantic, asset_column))
-        # A repeated lyric line should not show the same picture twice.
-        candidates = [item for item in ranked if item[1].id not in previously_visible_for_lyric] or ranked
-        if avoid_asset_repeats:
-            # Prefer the least-used assets so the audience keeps seeing new material;
-            # an asset is only shown again once everything else has caught up.
-            tier = [item for item in candidates if usage.get(item[1].id, 0) == minimum_usage]
-            candidates = tier or candidates
-        _, selected, semantic, selected_column = max(candidates, key=lambda item: item[0])
+        reserved_motif = reserved.get(index)
+        if reserved_motif is not None:
+            # A motif slot: the asset was chosen before scoring, and the least-used tier
+            # logic deliberately does not apply - that is the whole point of reserving it.
+            selected = by_id[reserved_motif]
+            semantic = next(
+                (item[2] for item in ranked if item[1].id == reserved_motif), 0.0
+            )
+            selected_column = columns[reserved_motif]
+            is_motif = True
+        else:
+            is_motif = False
+            # The non-motif supply, unless there is none - a pool where every asset is a
+            # motif (a three-photo project, say) has nothing else to draw on, so the
+            # ranking stands rather than leaving the slot with no candidate at all.
+            pool = [item for item in ranked if item[1].id not in motif_ids] or ranked
+            if quality_floor > 0:
+                gated = [item for item in pool if item[1].quality_score >= quality_floor]
+                if gated:
+                    pool = gated
+                elif audit is not None:
+                    # The gate only gives way when nothing above the floor is left, and
+                    # that surrender is declared rather than silent (R-02/R-09).
+                    low = [item for item in pool if item[1].quality_score < quality_floor]
+                    audit.record(
+                        "quality_floor", requested=quality_floor, effective=0.0,
+                        overridden_by="quality-floor-degraded",
+                        reason=(
+                            f"素材池中已无 ≥ Q{quality_floor * 100:.0f} 分位的主镜头可用，"
+                            f"{len(low)} 个低质素材放行"
+                        ),
+                    )
+            # A repeated lyric line should not show the same picture twice.
+            candidates = [item for item in pool if item[1].id not in previously_visible_for_lyric] or pool
+            if avoid_asset_repeats:
+                # Prefer the least-used non-motif assets so the audience keeps seeing new
+                # material; a non-motif is only shown again once every other non-motif has
+                # caught up.
+                tier = [item for item in candidates if usage.get(item[1].id, 0) == non_motif_min]
+                candidates = tier or candidates
+            if video_target > 0 and used_videos < video_target and (
+                used_videos * max(shot_count, 1) < video_target * (index + 1)
+            ):
+                # R-08: a soft quota. Videos starve because the pool is mostly stills and
+                # the scorer runs shot-by-shot; while the edit is *behind* its video
+                # target for this point in the timeline, prefer the videos that are
+                # already in the zero-reuse tier. Videos the tier does not offer are left
+                # alone rather than forced - that keeps the non-motif zero-reuse rule
+                # intact, and the pace is measured against the running position rather
+                # than a fixed count so the clips spread across the whole film.
+                video_tier = [item for item in candidates if item[1].kind == "video"]
+                if video_tier:
+                    candidates = video_tier
+            _, selected, semantic, selected_column = max(candidates, key=lambda item: item[0])
         continues_previous = previous is not None and selected.id == previous.id
         usage[selected.id] = usage.get(selected.id, 0) + 1
         last_seen[selected.id] = index
+        if selected.kind == "video":
+            used_videos += 1
         if line is not None:
             active_line_visual_assets.add(selected.id)
-        if section == "chorus" and selected.id not in chorus_motifs and len(chorus_motifs) < 2:
-            chorus_motifs.append(selected.id)
         available = max(0.0, selected.duration - shot_duration - 0.1) if math.isfinite(selected.duration) else 0.0
         if selected.kind == "video" and continues_previous and video_cursors.get(selected.id, 0) <= available:
             source_start = video_cursors[selected.id]
@@ -185,13 +281,17 @@ def create_plan(
         layers: list[ShotLayer] = []
         if selected.kind == "image":
             # Composites may draw on the whole pool, but they always favour the
-            # least-used images so they cannot drain the shots still to come.
-            layer_pool = candidates if (spare_assets >= 0 or not avoid_asset_repeats) else ranked
+            # least-used images so they cannot drain the shots still to come - and never
+            # a motif, which is reserved for its own slots.
+            layer_pool = [item for item in ranked if item[1].id not in motif_ids]
+            if not (spare_assets >= 0 or not avoid_asset_repeats):
+                layer_pool = ranked
             image_candidates = [
                 item for item in sorted(
                     layer_pool, key=lambda item: (usage.get(item[1].id, 0), -item[0]),
                 )
                 if item[1].kind == "image" and item[1].id != selected.id
+                and item[1].id not in motif_ids
                 and item[1].id not in previously_visible_for_lyric
             ]
             if avoid_asset_repeats and spare_assets >= 0:
@@ -199,7 +299,7 @@ def create_plan(
                 # surplus to the distinct ones still needed to cover the remaining shots.
                 spare_pool = [
                     item for item in image_candidates
-                    if usage.get(item[1].id, 0) == minimum_usage
+                    if usage.get(item[1].id, 0) == non_motif_min
                 ]
                 image_candidates = (spare_pool or image_candidates)[:spare_assets]
             image_effect, layer_count = _choose_image_effect(
@@ -236,7 +336,6 @@ def create_plan(
             section=section,
             edit_intent=direction.edit_intent if direction else "impact" if section == "chorus" and energy > .65 else "breathe" if section in {"intro", "outro"} else "continuity",
             transition_tone=direction.transition_tone if direction else "neutral",
-            camera_motion=selected.camera_motion,
             section_index=section_index,
             source_color=selected.dominant_color.copy(),
             focus_point=selected.focus_point.copy(),
@@ -244,12 +343,76 @@ def create_plan(
             source_height=selected.height,
             image_effect=image_effect,
             layers=layers,
+            is_motif=is_motif,
+            luma=selected.luma,
+            edge_luma=selected.edge_luma,
+            noise_score=selected.noise_score,
         ))
     _assign_transitions(
         shots, mood=analysis.mood, density=transition_density,
         flavour=style.transition_flavour if style else "balanced",
     )
     return shots
+
+
+def _motif_schedule(
+    shot_sections: list[str],
+    motifs: list[int],
+    *,
+    min_repeats: int = _MOTIF_MIN_REPEATS,
+    share: float = _MOTIF_SHARE,
+    cap_share: float = _MOTIF_CAP_SHARE,
+) -> dict[int, int]:
+    """Reserve the shots where a director's motifs come back. Pure, deterministic.
+
+    Motifs have to *repeat* to be motifs - a visual theme that appears once is a shot.
+    The reservations are laid out before any asset is scored so the schedule does not
+    depend on the scorer, and they are spread across the whole film with a per-motif
+    phase so the theme recurs throughout rather than clumping at the front.
+
+    Two clamps keep the schedule honest on short songs. The total is capped at
+    ``cap_share`` of the shots, and when the floor of ``min_repeats`` cannot fit inside
+    that cap the schedule **drops motifs** rather than padding counts - five themes on a
+    forty-shot song asking for three appearances each is 37%, not a motif. On a very
+    short song even one motif cannot reach the floor, and the schedule degrades to fewer
+    appearances, which is the best that is arithmetically available.
+    """
+    shot_count = len(shot_sections)
+    active = list(dict.fromkeys(motifs))
+    if shot_count <= 0 or not active:
+        return {}
+    budget = int(shot_count * cap_share)
+    if budget <= 0:
+        return {}
+    max_motifs = max(1, budget // max(1, min_repeats))
+    if len(active) > max_motifs:
+        active = active[:max_motifs]
+    per = max(min_repeats, round(shot_count * share / len(active)))
+    per = max(1, min(per, budget // len(active)))
+    if per <= 0:
+        return {}
+    schedule: dict[int, int] = {}
+    span = per * len(active)
+    for position, motif in enumerate(active):
+        for step in range(per):
+            fraction = (step + 0.5) / per
+            fraction = (fraction + position / (span + 1)) % 1.0
+            index = min(shot_count - 1, int(fraction * shot_count))
+            index = _nearest_free_slot(index, schedule, shot_count)
+            if index is not None:
+                schedule[index] = motif
+    return schedule
+
+
+def _nearest_free_slot(index: int, taken: dict[int, int], shot_count: int) -> int | None:
+    """The nearest shot index not already reserved, searching forward then back."""
+    if index not in taken:
+        return index
+    for step in range(1, shot_count):
+        for candidate in (index + step, index - step):
+            if 0 <= candidate < shot_count and candidate not in taken:
+                return candidate
+    return None
 
 
 def _least_used_assets(
@@ -398,17 +561,21 @@ def _single_image_effect(
 def _framing_effect(cursor: int, section: str, energy: float, edit_intent: str) -> str:
     """Return a framing treatment for roughly one shot in twelve, else ``""``.
 
-    Letterboxing, an iris and parallax are the still-image equivalent of a
-    composite: each is worth seeing once and tedious if every shot gets one. The
-    gate keeps them occasional without making them random.
+    A letterbox and an iris are the still-image equivalent of a composite: each is
+    worth seeing once and tedious if every shot gets one. The gate keeps them
+    occasional without making them random.
+
+    ``parallax`` used to be the third name here. It was removed with the single-image
+    rework (R-04): its whole mechanism was splitting one still into a blurred backdrop
+    and a scaled foreground - the same-image double it was meant to avoid - and a
+    genuine depth cue is not recoverable from a flat photo. Two names instead of three
+    also lowers how often a frame gets any frame at all, which is the point.
     """
     if ((cursor * 53 + 7) % 100) / 100 >= .085:
         return ""
     if section == "intro":
         return "iris"
-    if edit_intent == "breathe" or section in {"outro", "bridge", "solo"}:
-        return "parallax"
-    return "film_bars" if energy > .7 else "parallax"
+    return "film_bars" if energy > .7 else ""
 
 
 def _layer_entry_offsets(
@@ -442,6 +609,12 @@ def _boundaries(
     the style says they should. Which grid a cut may land on is the most audible
     decision an editor makes: every beat reads as the cut playing percussion, bar lines
     read as phrase punctuation, and lyric starts read as the words carrying the edit.
+
+    When a director's treatment is present, the *intensity arc decides the target shot
+    length* and the style only supplies the window and the grid (R-01): a section the
+    director called intense cuts short, a section it called calm holds. With no
+    treatment - a ``--no-ai`` run, or a rule-director fallback - the original
+    tempo/energy formula answers instead, so every AI-less render is unchanged.
     """
     tempo = style.tempo if style else 3.8
     gain = style.energy_gain if style else 1.5
@@ -449,20 +622,38 @@ def _boundaries(
     alignment = style.cut_alignment if style else "downbeat"
 
     anchors = sorted({0.0, analysis.duration, *analysis.sections})
+    # A director rarely uses the whole 0..1 intensity scale. The my-mv treatment spans
+    # 0.20-0.65; fed in raw, that spends under half the window, and the film comes out
+    # uniformly slow (measured: per-section means 3.36-3.60s, p90/p10 = 1.76, Pearson r
+    # = -0.44) instead of contrasted. Rescaling the arc *within this song* onto the full
+    # window keeps the director's relative intent - calm stays calmer than its chorus -
+    # while restoring the contrast R-01 exists to produce. Songs whose arc is genuinely
+    # flat are left alone: there is no contrast to recover.
+    arc_lo = arc_hi = None
+    if treatment is not None and treatment.sections:
+        levels = [section.cut_intensity for section in treatment.sections]
+        arc_lo, arc_hi = min(levels), max(levels)
     output = [0.0]
     for target in anchors[1:]:
         cursor = output[-1]
         while target - cursor > maximum:
             section, section_index = section_at(analysis, cursor)
-            section_scale = .78 if section == "chorus" else 1.18 if section in {"intro", "outro", "bridge"} else 1.0
             direction = treatment.section(section_index) if treatment else None
-            if direction:
-                section_scale *= 1.25 - direction.cut_intensity * .65
-            # Tighten toward the end of a section. An editor accelerates into the drop;
-            # the reverse - shots getting longer as the section builds - reads as an
-            # edit that has run out of ideas right where it should be peaking.
-            section_scale *= 1 - speedup * _section_progress(analysis, section_index, cursor)
-            ideal = cursor + np.clip((tempo - analysis.energy_at(cursor) * gain) * section_scale, minimum, maximum)
+            if direction is not None:
+                intensity = direction.cut_intensity
+                if arc_hi is not None and arc_lo is not None and arc_hi > arc_lo:
+                    intensity = (intensity - arc_lo) / (arc_hi - arc_lo)
+                progress = _section_progress(analysis, section_index, cursor)
+                ideal = cursor + _section_target_length(
+                    intensity, minimum, maximum, speedup, progress,
+                )
+            else:
+                section_scale = .78 if section == "chorus" else 1.18 if section in {"intro", "outro", "bridge"} else 1.0
+                # Tighten toward the end of a section. An editor accelerates into the
+                # drop; the reverse - shots getting longer as the section builds - reads
+                # as an edit that has run out of ideas right where it should be peaking.
+                section_scale *= 1 - speedup * _section_progress(analysis, section_index, cursor)
+                ideal = cursor + np.clip((tempo - analysis.energy_at(cursor) * gain) * section_scale, minimum, maximum)
             candidates = _cut_candidates(
                 analysis, lyrics, cursor, minimum, maximum, target, alignment,
             )
@@ -476,6 +667,22 @@ def _boundaries(
     if output[-1] != analysis.duration:
         output.append(analysis.duration)
     return sorted(set(output))
+
+
+def _section_target_length(
+    intensity: float, minimum: float, maximum: float, speedup: float, progress: float,
+) -> float:
+    """The shot length a director's per-section intensity asks for (R-01).
+
+    Intensity runs 0..1 and maps straight onto the window: 1 wants the shortest shot the
+    style allows, 0 the longest. That inversion is the point - the arc is the target, and
+    the window is only the range it may pick inside. ``speedup`` then tightens the target
+    toward the end of the section, the same way an editor accelerates into the drop.
+    """
+    span = maximum - minimum
+    target = maximum - float(intensity) * span
+    target *= 1 - speedup * float(progress)
+    return float(np.clip(target, minimum, maximum))
 
 
 def _cut_candidates(
@@ -584,15 +791,16 @@ def _color_similarity(previous: MediaAsset | None, current: MediaAsset) -> float
 
 
 def _motion_fit(asset: MediaAsset, energy: float) -> float:
+    """How well a source suits a moment, by energy alone.
+
+    Stills get a gentle bias toward the quiet end: a still cut into a loud section works,
+    but it should not be the first choice when moving footage is on the table. Video used
+    to read ``camera_motion`` here, but the field was never populated - every asset read
+    "unknown", so the branch scored everything the same while pretending to know. It is
+    gone (R-11) and neither kind carries fabricated movement metadata any more.
+    """
     if asset.kind == "image":
         return (1 - energy) * .06
-    motion = asset.camera_motion.lower()
-    active = any(word in motion for word in ("fast", "handheld", "whip", "tracking", "dynamic", "快速", "手持", "跟拍"))
-    calm = any(word in motion for word in ("static", "locked", "slow", "tripod", "固定", "缓慢"))
-    if active:
-        return energy * .13 - (1 - energy) * .04
-    if calm:
-        return (1 - energy) * .10
     return .04 + energy * .04
 
 
@@ -663,12 +871,21 @@ _QUIET_SWAPS: dict[str, tuple[str, ...]] = {
     "close": ("circle", "soft"),
 }
 
+#: The transitions that shout. Under R-07 each of these needs the *music* to authorise
+#: it - a director section marked ``transition_tone`` bright or dark, or an ``impact``
+#: intent on one side of the cut. Falling back to an unnamed energy gate is what put 58
+#: flashes and glitches into a "warm documentary" cut.
+_IMPACT_FAMILIES = frozenset({"flash", "glitch", "film_burn", "light_leak", "zoom"})
+
 # Inside a section, the pool a visible cut draws from. Same musical moment, three
 # different volumes: a quiet edit dissolves, a loud one is part of the percussion.
+# The rotations are kept short (four to six names) so one song cannot walk the whole
+# library - R-07 asks for at most eight families in any single film. Every family still
+# appears in some pool or some branch, so the coverage sweep can still reach it.
 _INSIDE_POOLS: dict[str, tuple[str, ...]] = {
-    "subtle": ("blur", "soft", "smooth", "mask", "reveal", "circle", "wipe", "slide"),
-    "balanced": ("wipe", "slide", "diag", "pixel", "squeeze", "corner", "wind", "glitch"),
-    "impact": ("glitch", "flash", "pixel", "squeeze", "slice", "zoom", "wind", "corner"),
+    "subtle": ("blur", "soft", "mask", "wipe"),
+    "balanced": ("wipe", "slide", "diag", "pixel", "corner"),
+    "impact": ("glitch", "flash", "pixel", "zoom", "squeeze"),
 }
 
 
@@ -697,6 +914,21 @@ def _assign_transitions(
     _break_transition_repeats(shots)
 
 
+def _impact_authorised(shot: Shot, following: Shot) -> bool:
+    """Is the music allowed a loud transition at this cut?
+
+    The old code asked only how loud the *following* shot was, which is a property of the
+    mix, not of the film: a quiet, warm documentary still has loud moments. R-07 moves the
+    permission to the director - a section the director called bright or dark may shout,
+    as may a cut either side of which carries an ``impact`` intent. Everything else is
+    quiet by default even where the meter is high.
+    """
+    tone = following.transition_tone if following.transition_tone != "neutral" else shot.transition_tone
+    if "impact" in {shot.edit_intent, following.edit_intent}:
+        return True
+    return tone in {"bright", "dark"}
+
+
 def _transition_family(
     shot: Shot, following: Shot, *, index: int, visible: int, mood: str, density: float,
     flavour: str = "balanced",
@@ -718,12 +950,16 @@ def _transition_family(
     tone = following.transition_tone if following.transition_tone != "neutral" else shot.transition_tone
     dreamy = mood in {"dreamy", "romantic"} or tone == "soft"
     restless = mood in {"energetic", "dark"} or tone == "bright"
+    authorised = _impact_authorised(shot, following)
 
     if shot.section_index != following.section_index:
         # Structural punctuation: the strongest move the music can justify. A seam is
         # always punctuated, which is why it sits above the density gate - the gate is
         # about how many *ordinary* cuts get to be visible, not about the seams.
-        return _quieten(_structural_family(shot, following, visible, dreamy, restless), flavour, visible)
+        return _quieten(
+            _structural_family(shot, following, visible, dreamy, restless, authorised),
+            flavour, visible,
+        )
 
     # Inside a section, spend a bounded share of the cut points on visible moves. This
     # has to come before the intent branches: a breathe or an impact cut is still a cut
@@ -741,6 +977,10 @@ def _transition_family(
         energy = max(shot.energy, following.energy)
         if energy > .70:
             pool = _INSIDE_POOLS.get(flavour, _INSIDE_POOLS["balanced"])
+            if not authorised:
+                # A loud meter is not a licence to shout (R-07): fall back to the
+                # balanced pool, whose names read as energy rather than as impact.
+                pool = _INSIDE_POOLS["balanced"]
             family = pool[visible % len(pool)]
         elif energy < .32:
             family = ("blur", "soft", "dissolve")[visible % 3] if dreamy else ("dissolve", "soft")[visible % 2]
@@ -751,10 +991,12 @@ def _transition_family(
 
 def _structural_family(
     shot: Shot, following: Shot, visible: int, dreamy: bool, restless: bool,
+    authorised: bool,
 ) -> str:
     """The family a seam between two sections earns."""
-    if following.energy > .78:
-        # A cut this loud wants a flash or a glitch, not a blend.
+    if following.energy > .78 and authorised:
+        # A cut this loud wants a flash or a glitch, not a blend - but only when the
+        # director's tone or intent has actually asked the edit to shout (R-07).
         return ("flash", "glitch", "light_leak")[visible % 3]
     if following.section == "chorus":
         return ("radial", "wind", "mask")[visible % 3] if restless else ("zoom", "mask", "smooth")[visible % 3]

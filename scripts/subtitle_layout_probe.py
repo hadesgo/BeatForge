@@ -12,6 +12,7 @@ Run: uv run python scripts/subtitle_layout_probe.py
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -142,6 +143,24 @@ def sheet(video: Path, tmp: Path, columns: int = 4) -> Image.Image:
     return board
 
 
+def legibility_note(subtitle: Path) -> str:
+    """What the script actually carries (R-05): band asks for no ``\\pos``, outlines vary.
+
+    The band layout must not pin a position - the style's own bottom-centre alignment is
+    the layout - and every line's outline should be the width its backdrop asked for, so
+    the ``\\bord`` values are expected to differ from line to line rather than being one
+    number copied onto all of them.
+    """
+    events = [
+        row for row in subtitle.read_text("utf-8-sig").splitlines()
+        if row.startswith("Dialogue")
+    ]
+    positions = sum(row.count(r"\pos(") for row in events)
+    borders = sorted({m for row in events for m in re.findall(r"\\bord([\d.]+)", row)})
+    shown = " ".join(borders) if borders else "（沿用样式默认）"
+    return f"\\pos 出现 {positions} 次 · 自适应描边 \\bord 取值：{shown}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--layout", default="free", choices=("free", "band"))
@@ -154,6 +173,9 @@ def main() -> int:
 
     if shutil.which("ffmpeg") is None:
         raise SystemExit("PATH 中缺少 ffmpeg")
+    # ffmpeg's concat demuxer resolves a relative clip path against the concat file's own
+    # directory, so a relative output folder doubles the path and the join fails.
+    args.out = args.out.resolve()
     shutil.rmtree(args.out, ignore_errors=True)
     args.out.mkdir(parents=True)
 
@@ -173,6 +195,7 @@ def main() -> int:
     video = args.out / "layout.mp4"
     render(shots_list, lyrics_list, args.out / "music.wav", video, args.out / "cache", cfg, art)
 
+    print(legibility_note(args.out / "cache" / "lyrics.ass"))
     board = sheet(video, args.out)
     target = args.out / f"subtitle-{args.layout}-{args.fill}.png"
     board.save(target)

@@ -194,18 +194,37 @@ def test_shot_size_contrast_keeps_the_picture_changing() -> None:
     assert clashes(.22) < clashes(0.0) / 3, "the contrast rule barely did anything"
 
 
-def test_the_style_owns_the_pacing_it_was_given() -> None:
-    """A style and a hand-set shot length are two answers to the same question."""
+def test_an_explicit_shot_length_outranks_the_style() -> None:
+    """R-02/R-01: a hand-set shot length is an answer the style has to defer to.
+
+    A style and a hand-set shot length answer the same question, and under decision #1 the
+    user's explicit answer is the one that stands. So when the window is set by hand the
+    fast and slow styles are pinned inside it instead of overwriting it - the old
+    ``min_shot, max_shot = style.shot_min, style.shot_max`` that let the style win is gone.
+    Left silent, the style takes the window back, which is the whole reason to name one.
+    """
     analysis = _song(90)
+    hand_set = {"min_shot": 4.0, "max_shot": 6.0}
     fast = create_plan(
-        analysis, _lines(90), _media(80), None, min_shot=4.0, max_shot=6.0,
-        style=EDIT_STYLES["beat"],
+        analysis, _lines(90), _media(80), None, style=EDIT_STYLES["beat"], **hand_set,
     )
     slow = create_plan(
-        analysis, _lines(90), _media(80), None, min_shot=4.0, max_shot=6.0,
-        style=EDIT_STYLES["cinematic"],
+        analysis, _lines(90), _media(80), None, style=EDIT_STYLES["cinematic"], **hand_set,
     )
-    assert len(fast) > len(slow) * 2, "the style did not override the explicit shot length"
+    # Neither style may step outside the window the user set by hand...
+    for shot in (*fast, *slow):
+        assert 4.0 - 1e-6 <= shot.duration <= 6.0 + 1e-6, shot.duration
+    # ...so the two styles now agree on the pace instead of the style deciding it.
+    assert abs(len(fast) - len(slow)) <= max(2, round(len(slow) * .25)), (len(fast), len(slow))
+
+    # With no explicit window the style owns the pacing again - and owns it hard.
+    silent_fast = create_plan(
+        analysis, _lines(90), _media(80), None, style=EDIT_STYLES["beat"],
+    )
+    silent_slow = create_plan(
+        analysis, _lines(90), _media(80), None, style=EDIT_STYLES["cinematic"],
+    )
+    assert len(silent_fast) > len(silent_slow) * 2, (len(silent_fast), len(silent_slow))
 
 
 def test_a_quiet_style_never_reaches_for_a_loud_transition() -> None:

@@ -53,6 +53,34 @@ def read_lrc(file: Path, total_duration: float) -> list[LyricLine]:
     return parse_lrc(file.read_text("utf-8"), total_duration)
 
 
+def merge_short_lines(lines: list[LyricLine], *, minimum: float = .6) -> list[LyricLine]:
+    """Fold lines that are on screen for less than ``minimum`` into a neighbour.
+
+    A caption that lives for a quarter of a second cannot be read; it just flickers. The
+    words are not worth dropping, so a short line is appended to the line before it - or,
+    for a short line at the very start where there is nothing before it, to the line
+    after - and the merged line keeps the union of the two spans and both token lists.
+    Returns a new list; the input is left untouched.
+    """
+    merged: list[LyricLine] = []
+    for line in lines:
+        if merged and line.end - line.start < minimum:
+            previous = merged[-1]
+            merged[-1] = LyricLine(
+                previous.start, max(previous.end, line.end),
+                f"{previous.text}{line.text}", previous.tokens + line.tokens,
+            )
+        else:
+            merged.append(line)
+    if len(merged) >= 2 and merged[0].end - merged[0].start < minimum:
+        first, second = merged[0], merged[1]
+        merged[0:2] = [LyricLine(
+            first.start, max(first.end, second.end),
+            f"{first.text}{second.text}", first.tokens + second.tokens,
+        )]
+    return merged
+
+
 def srt_timestamp(value: float) -> str:
     millis = max(0, round(value * 1000))
     hours, millis = divmod(millis, 3_600_000)
@@ -176,9 +204,13 @@ _SUBJECT_LOW = .58
 # ``focus_point`` gives us.
 _CLEAR_X = .11
 _CLEAR_Y = .10
-#: A hair more than the threshold, so rounding to whole pixels cannot land a fragment
-#: back inside the box the threshold was meant to clear.
-_CLEAR_MARGIN = .005
+#: The box the subject occupies, as half-extents of the frame. ``focus_point`` gives a
+#: single point, but a person is not a point - so a conservative box is drawn around it,
+#: and a fragment may only overlap it by ``_SUBJECT_OVERLAP`` of its own area (R-10).
+_SUBJECT_HALF_X = .12
+_SUBJECT_HALF_Y = .16
+#: The most of a fragment's area that may sit on the subject.
+_SUBJECT_OVERLAP = .05
 #: A hair more than the threshold, so rounding to whole pixels cannot land a fragment
 #: back inside the box the threshold was meant to clear.
 _CLEAR_MARGIN = .005
@@ -208,6 +240,7 @@ def plan_placements(
     height: int,
     margin: int,
     size: int,
+    min_fragment_seconds: float = .6,
 ) -> list[list[Placement]]:
     """Lay each line out freely, in the parts of the frame its subject is not using.
 
@@ -218,14 +251,24 @@ def plan_placements(
     ``focus_points`` is the subject centre per line, so the text can be steered away from
     it. Everything is a fixed rotation off the line index - no random numbers - so a
     given plan always lays out the same way.
+
+    A line is only split into two fragments when each half lives on screen for at least
+    ``min_fragment_seconds`` (R-10) - a tail that would flash by is folded back into the
+    line. Clearance is judged on the *area* the fragment and the subject actually cover
+    (see ``_clears``), not on the anchor point alone.
     """
     names = list(_FREE_PATTERNS)
     inset = margin / max(height, 1)
     placements: list[list[Placement]] = []
     for index, line in enumerate(lines):
         focus = focus_points[index] if index < len(focus_points) else None
-        anchors = _choose_layout(names, index, (focus[0], focus[1]) if focus else (.5, .5), inset)
-        fragments = _split_line(line)
+        fragments = _split_line(line, minimum=min_fragment_seconds)
+        boxes = [
+            _fragment_half_box(text, width, height, size) for text, _, _ in fragments
+        ]
+        anchors = _choose_layout(
+            names, index, (focus[0], focus[1]) if focus else (.5, .5), inset, boxes,
+        )
         if len(fragments) == 1:
             # A line with no detectable pause keeps one fragment, at its pattern's first
             # anchor so it still lands somewhere different each time.
@@ -245,12 +288,14 @@ def plan_placements(
 
 def _choose_layout(
     names: list[str], index: int, focus: tuple[float, float], inset: float,
+    boxes: list[tuple[float, float]],
 ) -> list[tuple[float, float, int]]:
     """The first layout in this line's rotation that does not land on the subject.
 
     Looking a few candidates ahead is what keeps the variety. The alternative - always
     falling back to one safe layout when the subject is off-centre - is exactly what made
-    the free layout feel like a single layout repeated.
+    the free layout feel like a single layout repeated. Only the anchors that will be
+    drawn (as many as there are fragments) are tested against their boxes.
     """
     fallback: list[tuple[float, float, int]] | None = None
     for step in range(_FREE_TRIES):
@@ -260,7 +305,7 @@ def _choose_layout(
         placed = _fit(_drift(_FREE_PATTERNS[name], index), focus[1], inset)
         if fallback is None:
             fallback = placed
-        if _clears(placed, focus):
+        if _clears(placed[:len(boxes)], focus, boxes):
             return placed
     assert fallback is not None
     return fallback
@@ -292,18 +337,52 @@ def _fit(
     return [(x, min(max(y + shift, low), high), align) for x, y, align in anchors]
 
 
-def _clears(anchors: list[tuple[float, float, int]], focus: tuple[float, float]) -> bool:
-    """Does any fragment land on the subject?
+def _clears(
+    anchors: list[tuple[float, float, int]], focus: tuple[float, float],
+    boxes: list[tuple[float, float]],
+) -> bool:
+    """Does the type land on the subject?
 
-    A box test, not a distance: a fragment beside the subject is as clear as one above
-    it. The anchor stands in for the fragment's body, which understates how far a
-    left-justified fragment reaches and overstates it for a right-justified one - close
-    enough for a threshold, and the reference style works the same way.
+    Two tests, and both have to hold. The first is the original axis clearance: a
+    fragment beside the subject is as clear as one above or below it, which is what keeps
+    the ten patterns from collapsing onto one safe position. The second is the one R-10
+    adds - a fragment may not overlap more than ``_SUBJECT_OVERLAP`` of its own area with
+    the box the subject occupies, so a long fragment leaning into the subject is caught
+    even when its anchor still clears the point.
     """
     return all(
         abs(x - focus[0]) >= _CLEAR_X or abs(y - focus[1]) >= _CLEAR_Y
         for x, y, _ in anchors
+    ) and all(
+        _overlap_fraction(x, y, half, focus) <= _SUBJECT_OVERLAP
+        for (x, y, _), half in zip(anchors, boxes)
     )
+
+
+def _fragment_half_box(
+    text: str, width: int, height: int, size: int,
+) -> tuple[float, float]:
+    """Half-width and half-height of a fragment's body, as fractions of the frame.
+
+    The width is the string's rough visual width, the height is one line box at the
+    chosen font size. Both are clamped so a runaway estimate cannot reject every layout.
+    """
+    half_w = min(.34, _visual_units(text) * size / (2 * max(width, 1)))
+    half_h = min(.14, size / (2 * max(height, 1)))
+    return max(half_w, .01), max(half_h, .005)
+
+
+def _overlap_fraction(
+    x: float, y: float, half: tuple[float, float], focus: tuple[float, float],
+) -> float:
+    """What fraction of a fragment's area sits inside the subject's box."""
+    half_w, half_h = half
+    overlap_x = max(0.0, min(x + half_w, focus[0] + _SUBJECT_HALF_X)
+                    - max(x - half_w, focus[0] - _SUBJECT_HALF_X))
+    overlap_y = max(0.0, min(y + half_h, focus[1] + _SUBJECT_HALF_Y)
+                    - max(y - half_h, focus[1] - _SUBJECT_HALF_Y))
+    area = (2 * half_w) * (2 * half_h)
+    return (overlap_x * overlap_y) / area if area > 0 else 0.0
 
 
 def _drift(
@@ -320,7 +399,9 @@ def _drift(
     return tuple((x + dx, y + dy, align) for x, y, align in anchors)
 
 
-def _split_line(line: LyricLine) -> list[tuple[str, tuple[LyricToken, ...], float]]:
+def _split_line(
+    line: LyricLine, *, minimum: float = .6,
+) -> list[tuple[str, tuple[LyricToken, ...], float]]:
     """Break a line into the fragments a free layout draws separately.
 
     Returns ``(text, tokens, start)`` per fragment. The break goes at the singer's
@@ -328,6 +409,10 @@ def _split_line(line: LyricLine) -> list[tuple[str, tuple[LyricToken, ...], floa
     mistake - splitting a line down the middle cuts words in half ("黎明照 / 亮天空"
     breaks 照亮). Without word timings it falls back to punctuation, and without
     either the line stays whole and simply gets placed freely.
+
+    A split is only taken when each half lives on screen for at least ``minimum``
+    seconds (R-10); a tail that would flash for less than that is not worth its own
+    event, so the line stays whole.
     """
     text = line.text.strip()
     tokens = list(line.tokens)
@@ -339,7 +424,7 @@ def _split_line(line: LyricLine) -> list[tuple[str, tuple[LyricToken, ...], floa
         if gap >= _MIN_BREAK_SECONDS:
             head = "".join(token.text for token in tokens[:cut]).strip()
             tail = "".join(token.text for token in tokens[cut:]).strip()
-            if head and tail:
+            if head and tail and line.end - tokens[cut].start >= minimum:
                 return [
                     (head, tuple(tokens[:cut]), tokens[0].start),
                     (tail, tuple(tokens[cut:]), tokens[cut].start),
@@ -348,12 +433,13 @@ def _split_line(line: LyricLine) -> list[tuple[str, tuple[LyricToken, ...], floa
         position = text.find(mark)
         if 0 < position < len(text) - 1:
             head, tail = text[:position].strip(), text[position + 1:].strip()
-            if head and tail:
+            tail_start = line.start + (line.end - line.start) / 2
+            if head and tail and line.end - tail_start >= minimum:
                 # Punctuation gives the break but not the timing, so the two halves
                 # share the line's span evenly.
                 return [
                     (head, (), line.start),
-                    (tail, (), line.start + (line.end - line.start) / 2),
+                    (tail, (), tail_start),
                 ]
     return [(text, tuple(tokens), line.start)]
 
@@ -375,6 +461,7 @@ def write_ass(
     effect: str = "karaoke",
     highlight_color: str = "&H0000D7FF",
     line_effects: list[str] | None = None,
+    line_outlines: list[float] | None = None,
     weight: int | None = None,
     placements: list[list[Placement]] | None = None,
     outline: float = 2.2,
@@ -394,6 +481,12 @@ def write_ass(
     ``plan_placements`` chose. ``mask_only`` drops the fill colour to white and the
     outline to nothing, which is what the knockout compositing needs to read the text
     as a clean alpha channel rather than as a picture of some letters.
+
+    ``line_outlines`` gives each line its own outline width, so a line over a bright
+    backdrop can be thickened and a line over a dark one kept thin (R-05). A line with no
+    entry keeps the single ``outline`` value. The width is emitted as a base ``\\bord``
+    before the effect's own tags, so an effect that sets its border on purpose (``glow``,
+    ``neon``) still owns it.
     """
     primary = "&H00FFFFFF" if mask_only else highlight_color
     outline_colour = "&H00000000" if mask_only else "&H90000000"
@@ -428,10 +521,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # line without word timings still renders sensibly.
             line_effect = "cinematic"
         fragments = placements[index] if placements and index < len(placements) else None
+        line_outline = (
+            line_outlines[index]
+            if line_outlines and index < len(line_outlines) else None
+        )
         for fragment in fragments or [None]:
             prefix, text = _subtitle_effect(
                 line_effect, line, width=width, height=height, margin=margin,
-                placement=fragment, mask_only=mask_only,
+                placement=fragment, mask_only=mask_only, outline=line_outline,
             )
             events.append(
                 f"Dialogue: 0,{ass_timestamp(line.start)},{ass_timestamp(line.end)},Lyric,,0,0,0,,{fit}{weight_tag}{prefix}{text}"
@@ -459,6 +556,7 @@ def _anchor(placement: Placement | None, *, move_from: tuple[int, int] | None = 
 def _subtitle_effect(
     effect: str, line: LyricLine, *, width: int, height: int, margin: int,
     placement: Placement | None = None, mask_only: bool = False,
+    outline: float | None = None,
 ) -> tuple[str, str]:
     """Return the override prefix and the (possibly rewritten) text for one fragment.
 
@@ -478,14 +576,14 @@ def _subtitle_effect(
     elif effect == "bounce":
         tags = r"\fad(90,180)\fscx76\fscy76\t(0,130,\fscx108\fscy108)\t(130,240,\fscx100\fscy100)"
     elif effect == "float":
-        tags = (rf"\fad(260,360)\1c{_WHITE}"
+        tags = (r"\fad(260,360)"
                 + (_anchor(placement, move_from=(0, 14), ms=500)
                    or rf"\move({centre_x},{base_y + 14},{centre_x},{base_y},0,500)")
                 + r"\blur0.5")
     elif effect == "glow":
         tags = r"\fad(220,300)\blur3\bord3\t(0,320,\blur0.5\bord2.2)"
     elif effect == "typewriter":
-        tags = rf"\fad(80,240)\1c{_WHITE}"
+        tags = r"\fad(80,240)"
         text = _typewriter_text(fragment, duration)
     elif effect == "punch":
         # Arrives far too large and slams into place. The blur is what sells the
@@ -504,15 +602,17 @@ def _subtitle_effect(
             rf"\t({index * 45},{index * 45 + 230},\fry0\fscx100\fscy100\alpha&H00&)}}"
         ))
     elif effect == "neon":
-        # A white core inside a coloured halo that breathes.
-        tags = (rf"\fad(160,260)\1c{_WHITE}\3c{_NEON_CYAN}\bord3\blur5"
-                rf"\t(0,650,\blur10\bord4)\t(650,1300,\blur5\bord3)")
+        # A bright core (the configured highlight colour) inside a coloured halo that
+        # breathes. The core colour is left to the style so the project's own colour shows
+        # through; only the halo, which defines the effect, is set here.
+        tags = (rf"\fad(160,260)\3c{_NEON_CYAN}\bord3\blur5"
+                r"\t(0,650,\blur10\bord4)\t(650,1300,\blur5\bord3)")
     elif effect == "neon_flicker":
         # A neon sign that has not warmed up: mostly lit, with two stutters.
-        tags = (rf"\fad(60,180)\1c{_WHITE}\3c{_NEON_CYAN}\bord3\blur6"
-                rf"\t(0,70,\alpha&H30&)\t(70,120,\alpha&H00&)"
-                rf"\t(120,170,\alpha&H55&)\t(170,230,\alpha&H00&)"
-                rf"\t(700,780,\alpha&H35&)\t(780,850,\alpha&H00&)")
+        tags = (rf"\fad(60,180)\3c{_NEON_CYAN}\bord3\blur6"
+                r"\t(0,70,\alpha&H30&)\t(70,120,\alpha&H00&)"
+                r"\t(120,170,\alpha&H55&)\t(170,230,\alpha&H00&)"
+                r"\t(700,780,\alpha&H35&)\t(780,850,\alpha&H00&)")
     elif effect == "shake":
         # ``\jitter`` is a libass extension, so the rotation chain is the guarantee:
         # if a build ignores the jitter, the line still moves.
@@ -526,18 +626,25 @@ def _subtitle_effect(
             rf"\t({index * 55 + 140},{index * 55 + 280},\fry0\fscx100)}}"
         ))
     elif effect == "rainbow":
-        # Six hues over two seconds, then back to the first so the loop is seamless.
+        # Six hues over two seconds, then back to the first so the loop is seamless. The
+        # opening hue is set through an instant ``\t`` rather than a static ``\1c`` so the
+        # line never carries a static colour other than the configured highlight (R-05);
+        # every colour the audience sees is produced by the animation.
         steps = 6
         span = max(1, round(duration * 1000 / steps))
         cycle = ("&H000000FF&", "&H0000FFFF&", "&H0000FF00&",
                  "&H00FFFF00&", "&H00FF0000&", "&H00FF00FF&")
-        tags = rf"\fad(200,300)\1c{cycle[0]}"
+        tags = r"\fad(200,300)" + rf"\t(0,1,\1c{cycle[0]})"
         for step in range(steps):
             tags += f"\\t({step * span},{(step + 1) * span},\\1c{cycle[(step + 1) % steps]})"
     elif effect == "spotlight":
-        # Starts dark and dim, as if the light has not found it yet.
-        tags = (rf"\fad(0,240)\1c{_DIM}\blur3\fscx96\fscy96"
-                rf"\t(0,520,\1c{_WHITE}\blur0\fscx100\fscy100)")
+        # Starts dark and dim, as if the light has not found it yet. The dark start is
+        # itself an animation step (an instant ``\t`` at t=0) so the event keeps a single
+        # static base colour - the configured highlight - and the effect is defined purely
+        # by its colour animation (R-05).
+        tags = (r"\fad(0,240)\blur3\fscx96\fscy96"
+                rf"\t(0,1,\1c{_DIM})"
+                rf"\t(1,520,\1c{_WHITE}\blur0\fscx100\fscy100)")
     elif effect == "glitch":
         # Chromatic fringing plus an alpha stutter: the two things a dropped signal
         # does to a caption.
@@ -546,8 +653,13 @@ def _subtitle_effect(
                 rf"\t(400,470,\alpha&H45&)\t(470,540,\alpha&H00&)"
                 rf"\t(900,960,\alpha&H35&)\t(960,1030,\alpha&H00&)")
     else:
-        tags = rf"\fad(360,460)\1c{_WHITE}\blur1.2\t(0,360,\blur0)"
+        tags = r"\fad(360,460)\blur1.2\t(0,360,\blur0)"
 
+    # The adaptive outline is a base width, so it goes in before the effect's own tags:
+    # an effect that sets its border on purpose (glow, neon) still wins, everything else
+    # gets the width the backdrop asked for.
+    if outline is not None:
+        tags = f"\\bord{outline:g}" + tags
     if mask_only:
         # The mask has to trace the same shape the audience sees, so it keeps every
         # geometric and alpha tag above. Only the fill and the outline change: a mask

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_core import PydanticUndefined
 
 from beatforge.editing import style_choices
 from beatforge.lyrics import SUBTITLE_EFFECTS
@@ -62,6 +63,9 @@ class RenderConfig(BaseModel):
     )
     subtitle_size: int = 46
     subtitle_effect: SubtitleEffectChoice = "auto"
+    #: Ceiling for the background-adaptive lyric outline (R-05). The outline is thickened
+    #: on bright backgrounds and thinned on dark ones; this is how far it may grow.
+    subtitle_max_outline: float = Field(default=2.4, ge=0, le=8)
 
     @field_validator("edit_style")
     @classmethod
@@ -84,8 +88,14 @@ class RenderConfig(BaseModel):
     image_composite_ratio: float = Field(default=0.24, ge=0, le=1)
     max_composite_images: int = Field(default=3, ge=2, le=4)
     avoid_asset_repeats: bool = True
+    #: Deprecated and inert. A single image is now cropped full-bleed to the canvas
+    #: (subject-aware, driven by ``focus_point``), so there is no letterbox left for a
+    #: blurred backdrop to fill and no separate foreground scale to set. The keys are
+    #: still accepted so old projects keep loading, but they do nothing; ``pipeline``
+    #: records their presence through ``ConfigAudit`` as ``deprecated-key``.
     blurred_image_background: bool = True
     image_background_blur: float = Field(default=26.0, ge=0, le=80)
+    #: Deprecated and inert - see ``blurred_image_background``.
     image_foreground_scale: float = Field(default=0.92, ge=0.55, le=1.0)
     vignette: bool = True
     film_grain: float = Field(default=1.6, ge=0, le=8)
@@ -102,6 +112,45 @@ class RenderConfig(BaseModel):
         # never be more compressed than the delivery encode.
         self.intermediate_crf = min(self.intermediate_crf, self.crf)
         return self
+
+    def explicit(self) -> frozenset[str]:
+        """The keys the user actually chose, as far as this program can tell.
+
+        ``model_fields_set`` alone is not enough, and this used to be the whole answer.
+        The catch is the shipped template: ``init`` writes the style-owned keys
+        (``min_shot_seconds``、``max_shot_seconds``、``transition_density``、
+        ``image_composite_ratio``、``subtitle_layout``) into every ``project.toml`` it
+        creates, so for a template-generated project "the key is present" means
+        "boilerplate", not "the user picked it". Treating it as a decision permanently
+        disables the pacing a style is supposed to own - ``edit_style = "beat"`` would
+        change transitions but never shot length, silently, on every fresh project.
+
+        So a key counts as spoken only when its value differs from the field default.
+        A user who genuinely wants the default to outrank a style sets
+        ``edit_style = "manual"``; and whatever a style does take over is logged
+        through the audit, so no takeover is silent.
+        """
+        spoken: set[str] = set()
+        for key in self.model_fields_set:
+            info = type(self).model_fields.get(key)
+            if info is None:
+                spoken.add(key)
+                continue
+            default = info.get_default(call_default_factory=True)
+            if default is PydanticUndefined or getattr(self, key) != default:
+                spoken.add(key)
+        return frozenset(spoken)
+
+
+#: Render keys kept only so old projects still load. They no longer change the render -
+#: a single image is cropped full-bleed and its backdrop is gone - so ``pipeline`` records
+#: any the user actually wrote as ``deprecated-key`` rather than letting them pass in
+#: silence (R-02/R-11).
+DEPRECATED_IMAGE_KEYS: tuple[str, ...] = (
+    "blurred_image_background",
+    "image_background_blur",
+    "image_foreground_scale",
+)
 
 
 class AIConfig(BaseModel):
@@ -249,26 +298,29 @@ crf = 19
 intermediate_crf = 14 # 中间文件使用更高质量，减少多次编码造成的细节损失
 preset = "medium"
 encoder_tune = "film" # 也可用 grain/animation/none
-min_shot_seconds = 1.8
-max_shot_seconds = 5.5
+# 下面这些键由 edit_style 接管（见 README「剪辑风格」）。保持注释 = 让风格决定节奏；
+# 一旦取消注释，取值不等于默认值时会被当成你的显式选择，风格对它失效（并写入 config_audit）。
+# min_shot_seconds = 1.8
+# max_shot_seconds = 5.5
 subtitle_font = "auto"
 subtitle_fonts_dir = "fonts" # 项目自己的额外字体目录；仓库自带的九个中文字体始终可用
 subtitle_size = 46
 edit_style = "auto" # auto 按歌曲情绪自动选；也可固定为某个风格名；manual = 用下面的手工值
 subtitle_effect = "auto" # 也可固定为某个特效名；可选值见 README「字幕特效」
 subtitle_margin = 72
-subtitle_layout = "free" # free = 分句自由排版并避开主体；band = 传统的底部居中一行
+# subtitle_layout = "free" # free = 分句自由排版并避开主体；band = 传统底部居中一行（写出来即视为显式选择）
 subtitle_fill = "solid" # knockout = 文字从画面里镂空，字中透出提亮虚化的同一帧
 subtitle_outline = 1.1 # 描边宽度；0 为无描边（更融入画面，但需要画面本身够暗）
+subtitle_max_outline = 2.4 # 亮背景自适应描边的上限；描边随背景变亮而加粗、变暗而收细
 subtitle_highlight_color = "&H0000D7FF" # ASS 的金黄色（BGR）
 visual_effects = true
 image_composites = true # AI 按段落自动选择多图版式：分屏、斜切、三联、主副网格、节拍蒙太奇
-image_composite_ratio = 0.24 # 多图镜头占比；副歌会适当提高
+# image_composite_ratio = 0.24 # 多图镜头占比；副歌会适当提高（不写则由 edit_style 决定）
 max_composite_images = 3 # 2 只够双栏；3 可做三联和主副网格；4 仅供节拍蒙太奇
-avoid_asset_repeats = true # 素材充足时每个镜头用不同素材；多图合成只消耗富余素材
-blurred_image_background = true # 图片保持原比例，空余区域由同图模糊背景填满
+avoid_asset_repeats = true # 非母题素材充足时每个镜头用不同素材；多图合成只消耗富余素材
+blurred_image_background = true # 已废弃：单图改为按主体全出血裁切，本项不再生效（保留仅为兼容旧工程）
 image_background_blur = 26.0
-image_foreground_scale = 0.92
+image_foreground_scale = 0.92 # 已废弃：单图不再缩放留边，本项不再生效（保留仅为兼容旧工程）
 vignette = true
 film_grain = 1.6
 look_strength = 0.72 # AI 导演色彩弧的应用强度
@@ -276,7 +328,7 @@ shot_match_strength = 0.3 # 不同来源素材的轻量曝光/饱和度匹配
 professional_transitions = true
 transition_min_seconds = 0.16
 transition_max_seconds = 0.55
-transition_density = 0.35 # 段落内部使用可见转场的比例；0 = 只在段落切换时转场，1 = 每个切点都转场
+# transition_density = 0.35 # 段落内部使用可见转场的比例；0 = 只在段落切换时转场（不写则由 edit_style 决定）
 
 [render.subtitle_fonts]
 energetic = "preset:energetic"

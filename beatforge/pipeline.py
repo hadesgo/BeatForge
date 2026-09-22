@@ -3,13 +3,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 from beatforge.audio import analyze_music
-from beatforge.config import ProjectConfig
+from beatforge.audit import ConfigAudit, apply_style
+from beatforge.config import DEPRECATED_IMAGE_KEYS, ProjectConfig
 from beatforge.director import create_art_direction
 from beatforge.editing import resolve_style
 from beatforge.lyrics import read_lrc, write_srt
-from beatforge.media import discover_media
-from beatforge.planner import create_plan
+from beatforge.media import MediaAsset, discover_media
+from beatforge.planner import Shot, create_plan
 from beatforge.renderer import render
 from beatforge.runtime import (
     duration,
@@ -20,8 +23,13 @@ from beatforge.runtime import (
     resolve_device,
 )
 
+#: R-08: the share of shots the planner should try to hand to real moving footage when the
+#: pool has any. A soft quota - it only lifts video above the still floor, it never blocks a
+#: better still.
+_VIDEO_QUOTA = .15
 
-def speech_source(project: ProjectConfig, device: str) -> tuple[Path, str]:
+
+def speech_source(project: ProjectConfig, device: str, audit: ConfigAudit) -> tuple[Path, str]:
     """The audio the recogniser should listen to, and a label for the log.
 
     An ASR model asked to transcribe a full mix is hearing a voice through a drum kit,
@@ -31,7 +39,8 @@ def speech_source(project: ProjectConfig, device: str) -> tuple[Path, str]:
 
     Separation is a heavy optional dependency, so a missing extra falls back to the mix
     instead of failing the run. It says so loudly, because a transcript taken from the
-    mix is a different and worse transcript and nothing downstream can tell.
+    mix is a different and worse transcript and nothing downstream can tell - and that
+    fallback goes through ``ConfigAudit`` (R-02), not a bare ``print``.
     """
     if not project.ai.separate_vocals:
         return project.music, "原始混音（未做人声分离）"
@@ -44,8 +53,44 @@ def speech_source(project: ProjectConfig, device: str) -> tuple[Path, str]:
             device=device, offline=project.ai.offline,
         )
     except SeparationUnavailable as exc:
+        audit.record(
+            "speech_source", requested="separated-vocals", effective="mix",
+            overridden_by="separate-vocals-unavailable", explicit=False, reason=str(exc),
+        )
         return project.music, f"原始混音（人声分离不可用：{exc}）"
     return stem, f"人声轨 {stem.name}"
+
+
+def _quality_floor(assets: list[MediaAsset]) -> float:
+    """R-09: the pool's P5 quality score - the line a primary shot has to clear.
+
+    A pool too small to have a meaningful fifth percentile gets no gate at all, so a
+    two-photo project is never told it has no usable material.
+    """
+    scores = [asset.quality_score for asset in assets]
+    if len(scores) < 2:
+        return 0.0
+    return float(np.quantile(scores, .05))
+
+
+def _motif_appearances(shots: list[Shot], motifs: list[int]) -> dict[str, int]:
+    """How many shots each director motif actually reached (R-03)."""
+    return {
+        str(motif): sum(1 for shot in shots if shot.media_id == motif)
+        for motif in sorted(motifs)
+    }
+
+
+def _record_deprecated_keys(project: ProjectConfig, audit: ConfigAudit) -> None:
+    """Note any render key the user wrote that no longer does anything (R-02/R-11)."""
+    explicit = project.render.explicit()
+    for key in DEPRECATED_IMAGE_KEYS:
+        if key in explicit:
+            audit.record(
+                key, requested=getattr(project.render, key), effective=None,
+                overridden_by="deprecated-key", explicit=True,
+                reason="该配置项已废弃，渲染器不再读取",
+            )
 
 
 def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool = False) -> Path:
@@ -53,6 +98,11 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     project.cache_dir.mkdir(parents=True, exist_ok=True)
     if not project.music.exists():
         raise FileNotFoundError(f"音乐文件不存在: {project.music}")
+    # One collector for every "the program decided for the user" (R-02): the style
+    # takeovers, the vocal-separation fallback, the deprecated keys and the quality gate
+    # all report through it, and its list lands in ``plan.json`` as ``config_audit``.
+    audit = ConfigAudit()
+    _record_deprecated_keys(project, audit)
     use_ai = project.ai.enabled and not no_ai
     device = resolve_device(project.ai.device)
     if use_ai:
@@ -70,7 +120,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
         lyrics = read_lrc(project.lyrics, total_duration)
     elif use_ai:
         from beatforge.models.transcriber import transcribe
-        source, source_label = speech_source(project, device)
+        source, source_label = speech_source(project, device, audit)
         print(f"    {source_label}")
         lyrics = transcribe(
             source,
@@ -102,7 +152,7 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     print(f"    {analysis.bpm:.1f} BPM · {analysis.mood} · {len(analysis.sections) - 1} 个章节")
 
     print("3/5 素材视觉语义索引")
-    assets = discover_media(project.media_dir)
+    assets = discover_media(project.media_dir, audit=audit)
     similarities = None
     source_starts = None
     if use_ai and lyrics:
@@ -145,30 +195,35 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
     )
     if style is not None:
         print(f"    剪辑风格：{style.label} · {style.summary}")
-    # A style owns the settings it has an opinion about; the render config keeps the
-    # ones it does not, and everything the style does not name is passed through as-is.
-    render_config = project.render if style is None else project.render.model_copy(update={
-        "subtitle_layout": style.subtitle_layout,
-    })
+    # A style only owns the settings the user never wrote (explicit-first, R-02); the fold
+    # is the single place a style is allowed to touch the render config, and it records
+    # every takeover it makes. The effective config - not the raw one - is what the plan
+    # and the render both use, so nothing downstream has to re-apply the style.
+    render_config = apply_style(project.render, style, audit)
+    motifs = treatment.motif_asset_ids if treatment else None
     shots = create_plan(
         analysis, lyrics, assets, similarities,
-        min_shot=project.render.min_shot_seconds,
-        max_shot=project.render.max_shot_seconds,
+        min_shot=render_config.min_shot_seconds,
+        max_shot=render_config.max_shot_seconds,
         treatment=treatment,
         source_starts=source_starts,
-        target_width=project.render.width,
-        target_height=project.render.height,
-        image_composites=project.render.image_composites,
-        image_composite_ratio=project.render.image_composite_ratio,
-        max_composite_images=project.render.max_composite_images,
-        avoid_asset_repeats=project.render.avoid_asset_repeats,
-        transition_density=project.render.transition_density,
+        target_width=render_config.width,
+        target_height=render_config.height,
+        image_composites=render_config.image_composites,
+        image_composite_ratio=render_config.image_composite_ratio,
+        max_composite_images=render_config.max_composite_images,
+        avoid_asset_repeats=render_config.avoid_asset_repeats,
+        transition_density=render_config.transition_density,
         style=style,
+        motifs=motifs,
+        video_quota=_VIDEO_QUOTA,
+        quality_floor=_quality_floor(assets),
+        audit=audit,
     )
-    art = create_art_direction(analysis, lyrics, project.render, treatment, style)
+    art = create_art_direction(analysis, lyrics, render_config, treatment, style)
     plan_file = project.cache_dir / "plan.json"
     plan = {
-        "version": 3,
+        "version": 4,
         "models": {
             "asr": project.ai.qwen_asr_model if use_ai else None,
             "aligner": project.ai.qwen_aligner_model if use_ai else None,
@@ -184,13 +239,15 @@ def run_project(project: ProjectConfig, *, plan_only: bool = False, no_ai: bool 
             "vision_reranker": project.ai.vision_reranker_model if similarities is not None else None,
             "director": project.ai.director_model if treatment is not None else None,
         },
-        "render": project.render.model_dump(mode="json"),
+        "render": render_config.model_dump(mode="json"),
         "art_direction": art.as_dict(),
         "director_treatment": treatment.model_dump(mode="json") if treatment else None,
         "analysis": analysis.as_dict(),
         "lyrics": [line.as_dict() for line in lyrics],
         "media": [asset.as_dict() for asset in assets],
         "shots": [shot.as_dict() for shot in shots],
+        "motif_appearances": _motif_appearances(shots, motifs or []),
+        "config_audit": audit.as_list(),
     }
     plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), "utf-8")
     print(f"    {len(shots)} 个镜头 · {plan_file}")

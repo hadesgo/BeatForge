@@ -12,7 +12,7 @@ from PIL import Image
 from beatforge.audio import AudioAnalysis
 from beatforge.config import RenderConfig
 from beatforge.director import ArtDirection, create_art_direction
-from beatforge.lyrics import LyricLine
+from beatforge.lyrics import LyricLine, Placement
 from beatforge.planner import IMAGE_COMPOSITES, Shot, ShotLayer
 from beatforge.renderer import (
     _CAMERA_MOVES,
@@ -21,8 +21,14 @@ from beatforge.renderer import (
     _KNOCKOUT_LIFT,
     _TRANSITION_LIBRARY,
     _camera_quad,
+    _dim_windows,
+    _fill_frame,
+    _grade_filter,
+    _grain,
     _image_filter_graph,
     _knockout_graph,
+    _legibility_graph,
+    _line_region,
     _perspective_filter,
     _render_shot,
     _section_color_filter,
@@ -31,6 +37,7 @@ from beatforge.renderer import (
     _transition_effect_filters,
     _transition_spec,
     _video_encode_args,
+    _vignette,
     render,
 )
 from beatforge.runtime import duration
@@ -146,7 +153,7 @@ def test_end_to_end_renderer_composes_effect_transitions(tmp_path: Path) -> None
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
 @pytest.mark.parametrize("effect", sorted(set(_CAMERA_MOVES) | set(IMAGE_COMPOSITES) | {
-    "film_bars", "iris", "parallax",
+    "film_bars", "iris",
 }))
 def test_all_still_image_effects_render(effect: str, tmp_path: Path) -> None:
     files = []
@@ -1114,33 +1121,39 @@ def test_the_subtitle_filter_hands_libass_exactly_one_font_directory(tmp_path: P
     assert "fontsdir=" not in _subtitle_filter(script, cfg, tmp_path / "missing")
 
 
-def test_beat_montage_keeps_its_letterbox_on_purpose(tmp_path: Path) -> None:
-    """It is the one composite that is *not* full-bleed, and that is a decision.
+def test_beat_montage_keeps_its_inset_on_a_flat_matte(tmp_path: Path) -> None:
+    """It is the one composite that keeps the letterbox, but not the double (R-04).
 
-    It shows one image at a time, so there is no second field to compete with and no
-    duplicate at a second scale - the two things that made the simultaneous composites
-    look wrong. Keeping each frame inset also reads as a sequence of photographs rather
-    than as a hard cut between full frames. Written down here so the next person to
-    notice the inconsistency does not "fix" it.
+    It shows one image at a time, so the inset has an independent reading - a run of
+    photographs rather than a hard cut between full frames - and that inset is a decision
+    worth keeping. What it must not keep is the blurred same-source backdrop: that was the
+    picture again at a second scale, the exact double the single-image rework removes. A
+    still tile of the shot's dominant colour fills the letterbox instead.
     """
     graph = _composite_filters("beat_montage", tmp_path)
 
-    assert "gblur" in graph, "beat_montage lost the inset treatment it is meant to keep"
-    # ``decrease`` is the inset foreground; the ``increase`` in the same chain is the
-    # blurred backdrop, which is how the treatment fills the letterbox at all.
-    assert "force_original_aspect_ratio=decrease" in graph
+    # The inset reading is kept ...
+    assert "overlay=x=(W-w)/2:y=(H-h)/2" in graph, "beat_montage lost its inset"
+    # ... but the blurred copy of the same picture is gone, and so is any `decrease`
+    # foreground: the inset itself is a full-bleed crop of the picture.
+    assert "gblur" not in graph, "beat_montage kept the same-image blurred backdrop"
+    assert "force_original_aspect_ratio=decrease" not in graph
+    assert "force_original_aspect_ratio=increase" in graph
+    assert "color=c=0x" in graph, "the letterbox was not filled with a flat matte"
 
 
-def test_a_single_image_still_gets_its_blurred_backdrop(tmp_path: Path) -> None:
-    """The fix must not take the letterbox treatment away from the case it is for.
+def test_a_single_image_is_cropped_full_bleed(tmp_path: Path) -> None:
+    """R-04: a lone photo fills the canvas - no letterbox, no second scale.
 
-    A lone portrait photo on a landscape canvas is exactly what the blurred fill exists
-    to handle, and cropping it to fill would throw away most of the picture.
+    The blurred-backdrop treatment is gone. A portrait photo on a landscape canvas is
+    cropped full-bleed around its subject, exactly like the video branch, so the frame is
+    one picture rather than the same picture twice at two scales.
     """
     source = tmp_path / "portrait.jpg"
     Image.new("RGB", (180, 320), (70, 90, 140)).save(source)
     shot = Shot(0, 0, 1, 1, 0, str(source), "image", 0, "", .6, "steady", "cut", .8,
-                image_effect="cinematic_depth", source_width=180, source_height=320)
+                image_effect="cinematic_depth", source_width=180, source_height=320,
+                focus_point=[.5, .4])
     cfg = RenderConfig(width=320, height=180, fps=10, crf=35, preset="ultrafast",
                        film_grain=0, vignette=False, image_background_blur=8)
     art = create_art_direction(
@@ -1150,6 +1163,154 @@ def test_a_single_image_still_gets_its_blurred_backdrop(tmp_path: Path) -> None:
 
     graph = ";".join(_image_filter_graph(shot, cfg, art, 1.0, 1)[0])
 
-    assert "gblur" in graph, "the single-image backdrop treatment was removed"
-    assert "force_original_aspect_ratio=decrease" in graph
+    assert "force_original_aspect_ratio=increase" in graph, "the image was not cover-scaled"
+    assert "force_original_aspect_ratio=decrease" not in graph, (
+        "the single image was letterboxed again"
+    )
+    assert "gblur" not in graph, "the same-image blurred backdrop came back"
+    # The still's full-range decode is converted to limited delivery (R-06).
+    assert "in_range=full:out_range=limited" in graph
+
+
+def test_a_focus_pull_racks_focus_at_a_single_scale(tmp_path: Path) -> None:
+    """R-04 redefines focus_pull as a same-scale rack, not a blurred-backdrop double.
+
+    It split one frame into a sharp and a blurred copy of the same size and cross-fades
+    them, so the picture comes into focus. Because the two copies are the same size this
+    is *not* the dual-scale double the rework forbids - and the graph must prove it by
+    never asking for a ``decrease`` foreground.
+    """
+    source = tmp_path / "flat.jpg"
+    Image.new("RGB", (320, 180), (90, 120, 160)).save(source)
+    shot = Shot(0, 0, 2, 2, 0, str(source), "image", 0, "", .6, "steady", "cut", .8,
+                melody=.5, image_effect="focus_pull")
+    cfg = RenderConfig(width=320, height=180, fps=10, film_grain=0, vignette=False)
+    art = create_art_direction(
+        make_analysis(duration=2, bpm=120, beats=[0, 2], sections=[0, 2], energy=.5),
+        [], cfg,
+    )
+
+    graph = ";".join(_image_filter_graph(shot, cfg, art, 2.0, 1)[0])
+
+    assert "split=2[focussharp][focussoft]" in graph, "the frame was not split into two copies"
+    assert "gblur" in graph, "the focus rack lost its blurred copy"
+    assert "blend=" in graph and "all_expr" in graph and "T/" in graph, (
+        "the rack never cross-faded over the shot"
+    )
+    assert "force_original_aspect_ratio=decrease" not in graph, (
+        "focus_pull became a dual-scale double"
+    )
+
+
+def test_the_grade_never_stacks_more_than_two_operators() -> None:
+    """R-06: shot match + director grade + section tint fold into at most two operators."""
+    shot = Shot(
+        0, 0, 2, 2, 0, "frame.jpg", "image", 0, "", .5, "steady", "cut", .5,
+        section_index=1, source_color=[210, 130, 70],
+    )
+    analysis = make_analysis(duration=2, bpm=90, beats=[], sections=[0, 2], energy=.4)
+    cfg = RenderConfig()
+    art = create_art_direction(analysis, [], cfg)
+    art.color_arc = ["cold blue", "warm amber"]
+
+    operators = _grade_filter(shot, art, 2, cfg)
+
+    assert len(operators) <= 2, operators
+    assert sum(1 for item in operators if item.startswith("eq=")) <= 1
+    assert sum(1 for item in operators if item.startswith("colorbalance=")) <= 1
+    if any(item.startswith("eq=") for item in operators):
+        eq = next(item for item in operators if item.startswith("eq="))
+        saturation = float(re.search(r"saturation=([\d.]+)", eq).group(1))
+        assert saturation <= 1.10 + 1e-6, f"the merged saturation gain was not clamped: {eq}"
+
+
+def test_the_vignette_is_withheld_from_an_already_dark_edge() -> None:
+    """R-06: a vignette on a frame that is dark at the edges only crushes the corners."""
+    cfg = RenderConfig(vignette=True)
+    art = create_art_direction(
+        make_analysis(duration=2, bpm=90, beats=[], sections=[0, 2], energy=.4), [], cfg,
+    )
+    dark = Shot(0, 0, 2, 2, 0, "a.jpg", "image", 0, "", .5, "steady", "cut", .5, edge_luma=.05)
+    bright = Shot(1, 0, 2, 2, 1, "b.jpg", "image", 0, "", .5, "steady", "cut", .5, edge_luma=.6)
+
+    assert _vignette(dark, art) == "", "a dark-edged frame was vignetted anyway"
+    assert _vignette(bright, art) == "vignette=PI/5"
+
+
+def test_grain_is_withheld_from_a_source_that_already_carries_noise() -> None:
+    """R-06: grain on an already-noisy source just feeds the encoder more noise."""
+    cfg = RenderConfig(film_grain=2.0)
+    art = create_art_direction(
+        make_analysis(duration=2, bpm=90, beats=[], sections=[0, 2], energy=.4), [], cfg,
+    )
+    clean = Shot(0, 0, 2, 2, 0, "a.jpg", "image", 0, "", .5, "steady", "cut", .5, noise_score=.05)
+    noisy = Shot(1, 0, 2, 2, 1, "b.jpg", "image", 0, "", .5, "steady", "cut", .5, noise_score=.9)
+
+    assert _grain(clean, art) == "noise=alls=2.0:allf=t+u"
+    assert _grain(noisy, art) == "", "grain was added on top of a noisy source"
+
+
+def test_a_single_image_full_bleed_converts_to_limited_range() -> None:
+    """R-06: the still links carry the full-range decode to limited; panels do not."""
+    full: list[str] = []
+    _fill_frame(full, 0, "x", 320, 180, focus=[.5, .5], full_range=True)
+    assert "in_range=full:out_range=limited" in ";".join(full)
+    assert "force_original_aspect_ratio=increase" in ";".join(full)
+
+    panel: list[str] = []
+    _fill_frame(panel, 0, "p", 320, 180)
+    assert "in_range" not in ";".join(panel)
+    assert "force_original_aspect_ratio=increase" in ";".join(panel)
+
+
+def test_delivery_is_tagged_limited_range() -> None:
+    """R-06: the delivery encode declares limited range so a player reads it correctly."""
+    args = _video_encode_args(RenderConfig(), intermediate=False)
+    assert args[args.index("-color_range") + 1] == "tv"
+    assert args[args.index("-pix_fmt") + 1] == "yuv420p"
+
+
+def test_the_local_dim_is_shaped_like_the_glyphs_and_gated_to_its_lines() -> None:
+    """R-05: no scrim by default - the dim is a glyph-shaped patch, gated by time.
+
+    The patch is the frame darkened and masked to the letters' own shape, not a translucent
+    band over the whole picture, and it is only switched on during the on-screen window of
+    the lines that asked for it.
+    """
+    cfg = RenderConfig(width=320, height=180, fps=10)
+    graph = _legibility_graph(
+        Path("lyrics.ass"), 4.0, cfg, None, [(1.0, 2.0), (3.0, 3.5)],
+    )
+
+    assert "alphamerge" in graph, "the dim is not shaped like the glyphs"
+    assert "eq=brightness=-" in graph, "the patch was not darkened"
+    assert "between(t,1.000,2.000)+between(t,3.000,3.500)" in graph, (
+        "the dim was not confined to the lines that needed it"
+    )
+    assert graph.count("ass=") == 2, "the mask and the drawn type should share one script"
+
+
+def test_the_local_dim_only_fires_for_a_bright_line() -> None:
+    """R-05: the dim is the exception. A dark-line song draws no dim at all."""
+    lines = [LyricLine(0, 1, "a"), LyricLine(1, 2, "b"), LyricLine(2, 3, "c")]
+    assert _dim_windows(lines, [.9, .3, .2]) == [(0, 1)]
+    assert _dim_windows(lines, [.2, .3, .4]) == []
+
+
+def test_the_line_region_is_the_bottom_band_for_the_classic_layout() -> None:
+    """The band layout has no placements, so its region is the strip at the foot."""
+    cfg = RenderConfig(width=1280, height=720, subtitle_margin=72, subtitle_size=45)
+    x0, y0, x1, y1 = _line_region(0, None, cfg)
+    assert (x0, x1) == (0.0, 1.0)
+    assert y1 == 1.0
+    assert .7 < y0 < 1.0
+
+
+def test_the_line_region_wraps_the_free_layout_placements() -> None:
+    """The free layout measures the box its fragments actually cover."""
+    cfg = RenderConfig(width=1000, height=500)
+    row = [Placement("甲", 100, 100), Placement("乙", 900, 400)]
+    x0, y0, x1, y1 = _line_region(0, [row], cfg)
+    assert x0 < .1 and y0 < .2
+    assert x1 > .9 and y1 > .8
 

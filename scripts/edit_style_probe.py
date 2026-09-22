@@ -86,10 +86,18 @@ def report(shots, duration: float, assets: list[MediaAsset]) -> dict[str, object
         "median": float(np.median(lengths)),
         "shortest": float(lengths.min()),
         "longest": float(lengths.max()),
+        # R-01 acceptance readings: how lopsided the length distribution is (p90/p10) and
+        # how much of the film is under a second (the "everything is a flash" tell).
+        "p10": float(np.percentile(lengths, 10)),
+        "p90": float(np.percentile(lengths, 90)),
+        "short": float((lengths < .8).mean()),
         "visible": visible / max(1, len(shots) - 1),
         "loud": loud / max(1, visible) if visible else 0.0,
         "quiet": quiet / max(1, visible) if visible else 0.0,
+        # R-07: how many distinct transition kinds the film spends, and how many of them
+        # are the loud-impact vocabulary.
         "families": len(transitions),
+        "impact_kinds": len({name for name in transitions if name in _EFFECT_TRANSITIONS}),
         "moves": len({shot.image_effect for shot in shots}),
         "size_clash": clashes / max(1, len(shots) - 1),
         "known": set(transitions) <= (set(_TRANSITION_LIBRARY) | set(_EFFECT_TRANSITIONS) | {"cut", "none"}),
@@ -123,23 +131,29 @@ def main() -> int:
         rows[name] = report(shots, args.duration, assets)
 
     header = f"{'风格':<12}{'镜头':>5}{'均长':>7}{'中位':>7}{'最短':>7}{'最长':>7}" \
-             f"{'可见转场':>9}{'其中冲击':>9}{'含蓄':>7}{'族数':>6}{'运镜':>5}{'同景别':>8}"
+             f"{'p90/p10':>9}{'短镜':>6}{'可见转场':>9}{'其中冲击':>9}{'含蓄':>7}" \
+             f"{'族数':>6}{'冲击族':>7}{'运镜':>5}{'同景别':>8}"
     print(f"同一首歌（{args.mood} · {args.duration:.0f}s · {len(assets)} 个素材）下各风格的编排结果")
     print()
     print(header)
     print("-" * len(header))
     for name, row in rows.items():
         label = EDIT_STYLES[name].label
+        spread = row["p90"] / max(row["p10"], .01)
         print(
             f"{label:<12}{row['shots']:>5}{row['mean']:>6.2f}s{row['median']:>6.2f}s"
             f"{row['shortest']:>6.2f}s{row['longest']:>6.2f}s"
+            f"{spread:>9.2f}{row['short']:>6.0%}"
             f"{row['visible']:>8.0%}{row['loud']:>9.0%}{row['quiet']:>7.0%}"
-            f"{row['families']:>6}{row['moves']:>5}{row['size_clash']:>8.0%}"
+            f"{row['families']:>6}{row['impact_kinds']:>7}{row['moves']:>5}{row['size_clash']:>8.0%}"
         )
 
     unknown = [name for name, row in rows.items() if not row["known"]]
     print()
     print("出现未登记的转场族：", unknown or "无")
+    busiest = max(rows, key=lambda name: rows[name]["families"])
+    print(f"族数最多 {EDIT_STYLES[busiest].label}（{rows[busiest]['families']} 个族） · "
+          f"全风格冲击族上限 {max(row['impact_kinds'] for row in rows.values())} 个")
     slowest = max(rows, key=lambda name: rows[name]["median"])
     fastest = min(rows, key=lambda name: rows[name]["median"])
     print(f"最慢 {EDIT_STYLES[slowest].label}（中位 {rows[slowest]['median']:.2f}s） · "

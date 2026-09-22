@@ -53,22 +53,31 @@ def build(duration: float, asset_count: int, *, video: bool = False, composite: 
 
 def report(title: str, duration: float, count: int, *, video: bool = False) -> None:
     analysis, lyrics, assets, similarities = build(duration, count, video=video)
+    # The three hero assets the semantic pass prefers, handed to the planner as motifs so
+    # they recur on purpose (R-03). Non-motifs, by contract, are not reused while unused
+    # supply lasts.
+    motifs = [0, 1, 2]
     shots = create_plan(
         analysis, lyrics, assets, similarities, min_shot=1.8, max_shot=5.5,
+        motifs=motifs, video_quota=.15,
     )
     primary = collections.Counter(shot.media_id for shot in shots)
     layers = collections.Counter(layer.media_id for shot in shots for layer in shot.layers)
     visible = collections.Counter(primary)
     visible.update(layers)
     repeated = {key: value for key, value in visible.items() if value > 1}
+    non_motif_repeats = {key: value for key, value in repeated.items() if key not in motifs}
+    motif_uses = {motif: primary.get(motif, 0) for motif in motifs}
     reused_slots = sum(value - 1 for value in visible.values())
     unused = [asset.id for asset in assets if asset.id not in visible]
+    motif_shot_count = sum(1 for shot in shots if shot.is_motif)
     print(f"{title}")
     print(f"  assets={count}  shots={len(shots)}  layer_slots={sum(layers.values())}")
     print(f"  max_uses={max(visible.values()) if visible else 0}  "
           f"assets_used={len(visible)}  assets_never_used={len(unused)}")
     print(f"  repeated_slots={reused_slots}  repeated_assets={len(repeated)}")
-    print(f"  usage={dict(sorted(visible.items()))}")
+    print(f"  motif_shots={motif_shot_count}  motif_uses={motif_uses}")
+    print(f"  non_motif_repeats={non_motif_repeats or '无'}")
 
 
 if __name__ == "__main__":
